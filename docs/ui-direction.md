@@ -20,6 +20,24 @@ Locked for v1. Update this doc before changing tokens or layout.
 - **Notebook tab** shows the read-only cells the model wrote for the current page (model-writes / user-reads).
 - **Schema tab** shows every ingested file plus the link graph between them.
 
+## Link review + skip warning
+
+After discovery, Cerno shows the proposed links in the Schema tab. The user can confirm/reject each, or hit **Skip review**.
+
+**Skip = auto-confirm all links.** Skip is not passive — it records `action="confirm"` with note `"auto: user skipped review"` on every link, and from that point analysis treats them as real.
+
+Because skip is destructive (bad links produce bad analysis silently), the skip button opens a confirmation modal with this copy:
+
+> **Skip link review?**
+>
+> Cerno will treat every proposed link as confirmed. Please review the AI's understanding matches what you expect — if any link is wrong, analysis can showcase incorrect results.
+>
+> You can still edit links later from the Schema tab.
+>
+> [ Cancel ] [ Skip anyway ]
+
+The warning is mandatory on first skip per session. It can be dismissed forever per user in Settings once they're comfortable, but the default is on.
+
 ## View-object pattern
 
 - Every chat prompt that produces visuals spawns a **page** (a view object).

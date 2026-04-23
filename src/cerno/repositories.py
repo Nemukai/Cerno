@@ -180,6 +180,7 @@ class LinkRepository:
         overlap: float,
         direction: str,
         score: float,
+        summary: str | None = None,
         source: str = "discovered",
         link_id: str | None = None,
     ) -> Link:
@@ -187,8 +188,8 @@ class LinkRepository:
         created_at = _now()
         self.conn.execute(
             """INSERT INTO links
-               (id, session_id, file_a, col_a, file_b, col_b, overlap, direction, score, source, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, session_id, file_a, col_a, file_b, col_b, overlap, direction, score, summary, source, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 lid,
                 session_id,
@@ -199,6 +200,7 @@ class LinkRepository:
                 overlap,
                 direction,
                 score,
+                summary,
                 source,
                 created_at.isoformat(),
             ),
@@ -213,8 +215,29 @@ class LinkRepository:
             overlap=overlap,
             direction=direction,  # type: ignore[arg-type]
             score=score,
+            summary=summary,
             source=source,  # type: ignore[arg-type]
             created_at=created_at,
+        )
+
+    def get(self, link_id: str) -> Link | None:
+        row = self.conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone()
+        return _row_to_link(row) if row else None
+
+    def latest_review(self, link_id: str) -> LinkReview | None:
+        row = self.conn.execute(
+            """SELECT * FROM link_reviews WHERE link_id = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (link_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return LinkReview(
+            id=row["id"],
+            link_id=row["link_id"],
+            action=row["action"],
+            notes=row["notes"],
+            created_at=datetime.fromisoformat(row["created_at"]),
         )
 
     def list_for_session(self, session_id: str) -> list[Link]:
@@ -587,6 +610,7 @@ def _row_to_link(row: sqlite3.Row) -> Link:
         overlap=row["overlap"],
         direction=row["direction"],
         score=row["score"],
+        summary=row["summary"],
         source=row["source"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )

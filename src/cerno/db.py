@@ -10,7 +10,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -184,6 +184,9 @@ _MIGRATIONS: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id, created_at)
         """,
     ],
+    2: [
+        "ALTER TABLE links ADD COLUMN summary TEXT",
+    ],
 }
 
 
@@ -209,7 +212,9 @@ _register_adapters()
 def connect(settings: Settings) -> sqlite3.Connection:
     path = settings.db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect(
+        path, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -218,7 +223,9 @@ def connect(settings: Settings) -> sqlite3.Connection:
 
 
 def connect_memory() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect(
+        ":memory:", detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     _apply_migrations(conn)

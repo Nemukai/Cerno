@@ -61,6 +61,7 @@ class Link(BaseModel):
     overlap: float
     direction: LinkDirection
     score: float
+    summary: str | None = None
     source: LinkSource = "discovered"
     created_at: datetime
 

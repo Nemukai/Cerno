@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from cerno import __version__
+from cerno.api.links import router as links_router
 from cerno.config import get_settings
 
 
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
 
+    app.include_router(links_router)
     return app
 
 

@@ -29,6 +29,11 @@ class Settings(BaseSettings):
 
     schema_confidence_threshold: float = 0.85
 
+    link_overlap_threshold: float = 0.6
+    link_sample_rows: int = 5
+    link_max_avg_length: int = 100
+    link_min_distinct: int = 3
+
     data_root: Path = Field(default_factory=lambda: Path.home() / ".cerno")
 
     def session_dir(self, session_id: str) -> Path:
