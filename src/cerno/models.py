@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 SessionStatus = Literal["new", "ingesting", "analyzing", "ready", "archived"]
 InferredKind = Literal["string", "int", "float", "date", "datetime", "bool", "category"]
 LinkDirection = Literal["many_to_one", "one_to_one", "many_to_many"]
+WidgetKind = Literal["kpi", "bar", "line", "pie", "table", "markdown"]
 LinkSource = Literal["discovered", "user_added"]
 LinkAction = Literal["confirm", "reject", "edit"]
 ReviewStatus = Literal["dismissed", "escalated"]
@@ -151,3 +152,11 @@ class AuditEvent(BaseModel):
     kind: str
     details: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+
+
+class Widget(BaseModel):
+    kind: WidgetKind
+    title: str
+    data: dict[str, Any]
+    options: dict[str, Any] = Field(default_factory=dict)
+    caption: str | None = None
