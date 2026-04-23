@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv
+.uv/
+
+# Node
+node_modules/
+.vite/
+frontend/dist/
+
+# Cerno runtime data
+.cerno/
+~/.cerno/
+*.parquet
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# PyInstaller artifacts
+*.spec.bak
+pyinstaller-build/
+
+# Logs
+*.log
+logs/

@@ -1,0 +1,62 @@
+[project]
+name = "cerno"
+version = "0.1.0"
+description = "Ranked anomaly triage for bulk tabular data. A Nemukai project."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "UNLICENSED" }
+authors = [{ name = "Nemukai" }]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "python-calamine>=0.2",
+    "openpyxl>=3.1",
+    "polars>=1.30",
+    "pyarrow>=18.0",
+    "duckdb>=1.1",
+    "pywebview>=5.3",
+    "httpx>=0.27",
+    "python-multipart>=0.0.12",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+cerno = "cerno.desktop:main"
+cerno-server = "cerno.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cerno"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
