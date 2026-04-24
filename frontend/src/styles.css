@@ -7,3 +7,19 @@ body,
 #root {
   height: 100%;
 }
+
+body {
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  color: #0E0E0E;
+  background: #FAFAFA;
+}
+
+.small-caps {
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+}
+
+.hairline {
+  border-color: #E5E5E5;
+}
