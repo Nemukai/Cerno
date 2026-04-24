@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from cerno.api.deps import ConnDep, SettingsDep
@@ -42,39 +42,43 @@ class FileUploadResponse(BaseModel):
 
 
 @router.post("/sessions/{session_id}/files", response_model=FileUploadResponse)
-def upload_file(
+def upload_files(
     session_id: str,
     conn: ConnDep,
     settings: SettingsDep,
-    upload: Annotated[UploadFile, File()],
-    filename: Annotated[str | None, Form()] = None,
+    uploads: Annotated[list[UploadFile], File()],
 ) -> FileUploadResponse:
     session = SessionRepository(conn).get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
-    original = filename or upload.filename or "upload.csv"
+    if not uploads:
+        raise HTTPException(status_code=400, detail="no files provided")
 
     tmp_dir = settings.session_dir(session_id)
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = tmp_dir / f"__upload_{original}"
-    with tmp_path.open("wb") as dest:
-        shutil.copyfileobj(upload.file, dest)
 
-    try:
-        ingested: list[IngestedFile] = ingest_file(
-            source_path=tmp_path,
-            original_filename=original,
-            session_id=session_id,
-            settings=settings,
-            files_repo=FileRepository(conn),
-            schemas_repo=SchemaRepository(conn),
-        )
-    except IngestError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    files_out: list[FileModel] = []
+    for upload in uploads:
+        original = upload.filename or "upload.csv"
+        tmp_path = tmp_dir / f"__upload_{original}"
+        with tmp_path.open("wb") as dest:
+            shutil.copyfileobj(upload.file, dest)
+        try:
+            ingested: list[IngestedFile] = ingest_file(
+                source_path=tmp_path,
+                original_filename=original,
+                session_id=session_id,
+                settings=settings,
+                files_repo=FileRepository(conn),
+                schemas_repo=SchemaRepository(conn),
+            )
+        except IngestError as exc:
+            raise HTTPException(status_code=400, detail=f"{original}: {exc}") from exc
+        finally:
+            tmp_path.unlink(missing_ok=True)
+        files_out.extend(i.file for i in ingested)
 
-    return FileUploadResponse(files=[i.file for i in ingested])
+    return FileUploadResponse(files=files_out)
 
 
 @router.get("/sessions/{session_id}/files", response_model=list[FileModel])

@@ -3,7 +3,7 @@ import type { Session } from "../lib/types";
 
 type Props = {
   session: Session | null;
-  onUpload: (file: File) => void;
+  onUpload: (files: File[]) => void;
   uploading: boolean;
 };
 
@@ -13,8 +13,8 @@ export function SessionHeader({ session, onUpload, uploading }: Props) {
   const handlePick = () => inputRef.current?.click();
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) onUpload(file);
+    const fs = Array.from(e.target.files ?? []);
+    if (fs.length > 0) onUpload(fs);
     e.target.value = "";
   };
 
@@ -31,6 +31,7 @@ export function SessionHeader({ session, onUpload, uploading }: Props) {
           ref={inputRef}
           type="file"
           accept=".csv,.xlsx,.xls"
+          multiple
           className="hidden"
           onChange={handleChange}
         />
@@ -40,7 +41,7 @@ export function SessionHeader({ session, onUpload, uploading }: Props) {
           disabled={!session || uploading}
           className="small-caps border border-ink px-3 py-1 text-xs hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {uploading ? "uploading\u2026" : "+ upload file"}
+          {uploading ? "uploading\u2026" : "+ upload files"}
         </button>
       </div>
     </div>

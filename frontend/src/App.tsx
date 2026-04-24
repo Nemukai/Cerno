@@ -8,7 +8,7 @@ import {
   listSessions,
   listTurns,
   postChat,
-  uploadFile,
+  uploadFiles,
 } from "./lib/api";
 import type {
   ChatTurn,
@@ -98,13 +98,15 @@ export function App() {
   );
 
   const handleUpload = useCallback(
-    async (file: File) => {
+    async (files: File[]) => {
+      if (files.length === 0) return;
       setError(null);
       setUploading(true);
       try {
-        const defaultName = file.name.replace(/\.[^.]+$/, "");
+        const first = files[0]!;
+        const defaultName = first.name.replace(/\.[^.]+$/, "");
         const s = await ensureSession(defaultName);
-        await uploadFile(s.id, file, file.name);
+        await uploadFiles(s.id, files);
         await refreshFiles(s.id);
       } catch (err) {
         setError((err as Error).message);
@@ -236,7 +238,7 @@ function FirstRun({
   uploading,
   error,
 }: {
-  onUpload: (file: File) => void;
+  onUpload: (files: File[]) => void;
   uploading: boolean;
   error: string | null;
 }) {
@@ -244,15 +246,15 @@ function FirstRun({
 
   const handlePick = () => inputRef.current?.click();
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) onUpload(f);
+    const fs = Array.from(e.target.files ?? []);
+    if (fs.length > 0) onUpload(fs);
     e.target.value = "";
   };
   const prevent = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const f = e.dataTransfer.files?.[0];
-    if (f) onUpload(f);
+    const fs = Array.from(e.dataTransfer.files ?? []);
+    if (fs.length > 0) onUpload(fs);
   };
 
   return (
@@ -275,6 +277,7 @@ function FirstRun({
           ref={inputRef}
           type="file"
           accept=".csv,.xlsx,.xls"
+          multiple
           className="hidden"
           onChange={handleChange}
         />
@@ -292,7 +295,7 @@ function FirstRun({
           <div className="mt-4 font-mono text-xs text-red-600">{error}</div>
         ) : null}
         <div className="mt-8 border border-dashed border-neutral-300 p-10 text-center text-xs text-neutral-500">
-          or drop a file anywhere in this window
+          or drop one or more files anywhere in this window
         </div>
       </div>
     </div>

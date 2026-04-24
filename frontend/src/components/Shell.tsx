@@ -20,7 +20,7 @@ type Props = {
   activeTab: TabKey;
   onTabChange: (tab: TabKey) => void;
   children: ReactNode;
-  onDropFile?: (file: File) => void;
+  onDropFile?: (files: File[]) => void;
 };
 
 export function Shell({
@@ -33,8 +33,8 @@ export function Shell({
 }: Props) {
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (file && onDropFile) onDropFile(file);
+    const fs = Array.from(e.dataTransfer.files ?? []);
+    if (fs.length > 0 && onDropFile) onDropFile(fs);
   };
   const prevent = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
 

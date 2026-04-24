@@ -57,14 +57,12 @@ export function getSession(id: string): Promise<Session> {
   return request<Session>(`/sessions/${id}`);
 }
 
-export function uploadFile(
+export function uploadFiles(
   sessionId: string,
-  file: File,
-  filename?: string,
+  files: File[],
 ): Promise<{ files: FileRecord[] }> {
   const form = new FormData();
-  form.append("upload", file);
-  if (filename) form.append("filename", filename);
+  for (const f of files) form.append("uploads", f, f.name);
   return postMultipart<{ files: FileRecord[] }>(
     `/sessions/${sessionId}/files`,
     form,
