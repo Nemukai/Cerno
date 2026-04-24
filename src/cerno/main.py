@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from cerno import __version__
+from cerno.api.chat import router as chat_router
+from cerno.api.dashboards import router as dashboards_router
 from cerno.api.links import router as links_router
 from cerno.config import get_settings
 
@@ -37,6 +39,8 @@ def create_app() -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     app.include_router(links_router)
+    app.include_router(dashboards_router)
+    app.include_router(chat_router)
     return app
 
 

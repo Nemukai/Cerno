@@ -391,6 +391,9 @@ class DashboardRepository:
         ).fetchall()
         return [_row_to_page(r) for r in rows]
 
+    def delete_page(self, page_id: str) -> None:
+        self.conn.execute("DELETE FROM dashboard_pages WHERE id = ?", (page_id,))
+
 
 class NotebookRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:

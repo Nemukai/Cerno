@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     link_max_avg_length: int = 100
     link_min_distinct: int = 3
 
+    anomaly_mad_threshold: float = 3.5
+    anomaly_rare_threshold: float = 0.01
+    anomaly_key_overlap_min: float = 0.6
+    anomaly_per_detector_limit: int = 100
+
+    chat_max_llm_calls: int = 8
+
     data_root: Path = Field(default_factory=lambda: Path.home() / ".cerno")
 
     def session_dir(self, session_id: str) -> Path:
