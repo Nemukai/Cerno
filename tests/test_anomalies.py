@@ -15,7 +15,8 @@ from cerno.repositories import (
     SessionRepository,
 )
 from cerno.services.anomalies import detect_anomalies, persist_anomalies
-from cerno.services.ingest import ingest_file
+
+from .conftest import install_file
 
 
 @pytest.fixture
@@ -30,48 +31,46 @@ def conn():
     c.close()
 
 
-def _write_csv(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
-
-
-def _seed(tmp_path: Path, settings: Settings, conn) -> tuple[str, dict[str, str]]:
+def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
     sessions = SessionRepository(conn)
-    files_repo = FileRepository(conn)
-    schemas_repo = SchemaRepository(conn)
     session = sessions.create("s")
 
-    orders = tmp_path / "orders.csv"
-    rows = [f"{1000 + i},{i + 1},{10.0 + i * 0.1}" for i in range(20)]
-    rows.append("1099,1,9999.0")
-    _write_csv(orders, "order_id,customer_id,amount\n" + "\n".join(rows) + "\n")
+    order_ids = list(range(1000, 1020)) + [1099]
+    customer_ids = [i + 1 for i in range(20)] + [1]
+    amounts = [10.0 + i * 0.1 for i in range(20)] + [9999.0]
+    orders_frame = pl.DataFrame(
+        {"order_id": order_ids, "customer_id": customer_ids, "amount": amounts}
+    )
 
-    customers = tmp_path / "customers.csv"
-    cust_rows = [f"{i + 1},Name{i + 1},{'N' if i < 19 else 'Z'}" for i in range(20)]
-    _write_csv(customers, "id,name,tier\n" + "\n".join(cust_rows) + "\n")
+    cust_ids = [i + 1 for i in range(20)]
+    cust_names = [f"Name{i + 1}" for i in range(20)]
+    cust_tiers = ["N"] * 19 + ["Z"]
+    customers_frame = pl.DataFrame(
+        {"id": cust_ids, "name": cust_names, "tier": cust_tiers}
+    )
 
-    o = ingest_file(
-        source_path=orders,
-        original_filename="orders.csv",
-        session_id=session.id,
+    o, _ = install_file(
+        conn=conn,
         settings=settings,
-        files_repo=files_repo,
-        schemas_repo=schemas_repo,
-    )[0].file
-    c = ingest_file(
-        source_path=customers,
-        original_filename="customers.csv",
         session_id=session.id,
+        filename="orders.csv",
+        frame=orders_frame,
+    )
+    c, _ = install_file(
+        conn=conn,
         settings=settings,
-        files_repo=files_repo,
-        schemas_repo=schemas_repo,
-    )[0].file
+        session_id=session.id,
+        filename="customers.csv",
+        frame=customers_frame,
+        column_overrides={"tier": "category"},
+    )
     return session.id, {"orders": o.id, "customers": c.id}
 
 
 def test_numeric_mad_flags_outlier(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
-    session_id, files = _seed(tmp_path, settings, conn)
+    session_id, files = _seed(settings, conn)
     drafts = detect_anomalies(
         session_id=session_id,
         settings=settings,
@@ -95,7 +94,7 @@ def test_numeric_mad_flags_outlier(
 def test_rare_value_flags_below_threshold(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
-    session_id, files = _seed(tmp_path, settings, conn)
+    session_id, files = _seed(settings, conn)
     # At default 1% threshold, tier=Z (1/20=5%) is NOT rare.
     drafts_default = detect_anomalies(
         session_id=session_id,
@@ -131,37 +130,38 @@ def test_rare_value_flags_below_threshold(
 def test_key_overlap_requires_confirmed_link(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
-    _seed(tmp_path, settings, conn)
-    # Add an orphan: orders references customer_id=999 which doesn't exist.
-    orders_path = tmp_path / "orders_v2.csv"
-    rows = [f"{1000 + i},{i + 1},{10.0 + i * 0.1}" for i in range(19)]
-    rows.append("1099,999,50.0")
-    _write_csv(orders_path, "order_id,customer_id,amount\n" + "\n".join(rows) + "\n")
-    cust_path = tmp_path / "customers_v2.csv"
-    cust_rows = [f"{i + 1},Name{i + 1}" for i in range(20)]
-    _write_csv(cust_path, "id,name\n" + "\n".join(cust_rows) + "\n")
+    _seed(settings, conn)
 
     sessions = SessionRepository(conn)
     files_repo = FileRepository(conn)
     schemas_repo = SchemaRepository(conn)
     links_repo = LinkRepository(conn)
     session2 = sessions.create("s2")
-    o = ingest_file(
-        source_path=orders_path,
-        original_filename="orders.csv",
-        session_id=session2.id,
+
+    order_ids = list(range(1000, 1019)) + [1099]
+    customer_ids = [i + 1 for i in range(19)] + [999]
+    amounts = [10.0 + i * 0.1 for i in range(19)] + [50.0]
+    orders_frame = pl.DataFrame(
+        {"order_id": order_ids, "customer_id": customer_ids, "amount": amounts}
+    )
+    customers_frame = pl.DataFrame(
+        {"id": [i + 1 for i in range(20)], "name": [f"Name{i + 1}" for i in range(20)]}
+    )
+
+    o, _ = install_file(
+        conn=conn,
         settings=settings,
-        files_repo=files_repo,
-        schemas_repo=schemas_repo,
-    )[0].file
-    c = ingest_file(
-        source_path=cust_path,
-        original_filename="customers.csv",
         session_id=session2.id,
+        filename="orders.csv",
+        frame=orders_frame,
+    )
+    c, _ = install_file(
+        conn=conn,
         settings=settings,
-        files_repo=files_repo,
-        schemas_repo=schemas_repo,
-    )[0].file
+        session_id=session2.id,
+        filename="customers.csv",
+        frame=customers_frame,
+    )
 
     link = links_repo.create(
         session_id=session2.id,
@@ -200,7 +200,7 @@ def test_key_overlap_requires_confirmed_link(
 def test_persist_anomalies_assigns_ids(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
-    session_id, _files = _seed(tmp_path, settings, conn)
+    session_id, _files = _seed(settings, conn)
     drafts = detect_anomalies(
         session_id=session_id,
         settings=settings,

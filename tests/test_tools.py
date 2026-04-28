@@ -149,11 +149,11 @@ async def test_read_cells_tool(tool_ctx: Any) -> None:
     assert result["cells"][0]["kind"] == "widget"
 
 
-async def test_tool_schemas_are_openai_shaped(tool_ctx: Any) -> None:
+async def test_tool_schemas_are_responses_shaped(tool_ctx: Any) -> None:
     ctx, _ = tool_ctx
     registry = build_tool_registry(ctx)
     schemas = registry.schemas()
-    names = {s["function"]["name"] for s in schemas}
+    names = {s["name"] for s in schemas}
     assert names == {
         "list_tables",
         "describe_table",
@@ -164,4 +164,5 @@ async def test_tool_schemas_are_openai_shaped(tool_ctx: Any) -> None:
     }
     for s in schemas:
         assert s["type"] == "function"
-        assert "parameters" in s["function"]
+        assert "parameters" in s
+        assert "function" not in s

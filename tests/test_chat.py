@@ -9,6 +9,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import polars as pl
+
 from cerno.api.chat import router as chat_router
 from cerno.api.deps import get_conn, get_llm_client
 from cerno.config import Settings, get_settings, reset_settings
@@ -17,12 +19,11 @@ from cerno.llm import LLMClient
 from cerno.repositories import (
     ChatRepository,
     DashboardRepository,
-    FileRepository,
     NotebookRepository,
-    SchemaRepository,
     SessionRepository,
 )
-from cerno.services.ingest import ingest_file
+
+from .conftest import install_file
 
 
 class FakeTransport:
@@ -37,32 +38,56 @@ class FakeTransport:
         return self._responses.pop(0)
 
 
+_RESP_COUNTER = {"n": 0}
+
+
 def _response(body: dict[str, Any], status: int = 200) -> httpx.Response:
     request = httpx.Request("POST", "http://test")
     return httpx.Response(status_code=status, json=body, request=request)
 
 
+def _next_response_id() -> str:
+    _RESP_COUNTER["n"] += 1
+    return f"resp_{_RESP_COUNTER['n']}"
+
+
 def _assistant_body(
     content: str = "",
     tool_calls: list[dict[str, Any]] | None = None,
-    finish: str = "stop",
+    finish: str = "completed",
 ) -> dict[str, Any]:
-    message: dict[str, Any] = {"role": "assistant", "content": content}
+    output: list[dict[str, Any]] = []
     if tool_calls:
-        message["tool_calls"] = tool_calls
+        for tc in tool_calls:
+            output.append(
+                {
+                    "id": f"fc_{tc['call_id']}",
+                    "type": "function_call",
+                    "call_id": tc["call_id"],
+                    "name": tc["name"],
+                    "arguments": tc["arguments"],
+                    "status": "completed",
+                }
+            )
+    if content:
+        output.append(
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content}],
+            }
+        )
     return {
-        "choices": [
-            {"index": 0, "message": message, "finish_reason": finish}
-        ]
+        "id": _next_response_id(),
+        "model": "test-model",
+        "status": finish,
+        "output": output,
     }
 
 
 def _tc(call_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": call_id,
-        "type": "function",
-        "function": {"name": name, "arguments": json.dumps(args)},
-    }
+    return {"call_id": call_id, "name": name, "arguments": json.dumps(args)}
 
 
 @pytest.fixture
@@ -104,37 +129,30 @@ def _seed_session_with_files(settings: Settings, tmp_path: Path) -> str:
     conn = connect(settings)
     try:
         sessions = SessionRepository(conn)
-        files_repo = FileRepository(conn)
-        schemas_repo = SchemaRepository(conn)
         session = sessions.create("s")
 
-        customers = tmp_path / "customers.csv"
-        customers.write_text(
-            "id,name\n" + "\n".join(f"{i},Name{i}" for i in range(1, 6)) + "\n",
-            encoding="utf-8",
+        customers_frame = pl.DataFrame(
+            {"id": list(range(1, 6)), "name": [f"Name{i}" for i in range(1, 6)]}
         )
-        orders = tmp_path / "orders.csv"
-        orders.write_text(
-            "order_id,customer_id\n"
-            + "\n".join(f"{1000 + i},{(i % 5) + 1}" for i in range(12))
-            + "\n",
-            encoding="utf-8",
+        orders_frame = pl.DataFrame(
+            {
+                "order_id": [1000 + i for i in range(12)],
+                "customer_id": [(i % 5) + 1 for i in range(12)],
+            }
         )
-        ingest_file(
-            source_path=customers,
-            original_filename="customers.csv",
-            session_id=session.id,
+        install_file(
+            conn=conn,
             settings=settings,
-            files_repo=files_repo,
-            schemas_repo=schemas_repo,
-        )
-        ingest_file(
-            source_path=orders,
-            original_filename="orders.csv",
             session_id=session.id,
+            filename="customers.csv",
+            frame=customers_frame,
+        )
+        install_file(
+            conn=conn,
             settings=settings,
-            files_repo=files_repo,
-            schemas_repo=schemas_repo,
+            session_id=session.id,
+            filename="orders.csv",
+            frame=orders_frame,
         )
         conn.commit()
         return session.id

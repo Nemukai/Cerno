@@ -1,21 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  approveSchema,
   buildDashboard,
   createSession,
+  deleteFile,
+  deleteSession,
   getDashboard,
+  getDiscovery,
+  getProcessingEvents,
   listFiles,
   listLinks,
   listSessions,
   listTurns,
   postChat,
+  processSession,
   uploadFiles,
 } from "./lib/api";
 import type {
   ChatTurn,
   DashboardPage,
+  DiscoveredFile,
+  DiscoveredLink,
+  DiscoveryResponse,
   FileRecord,
   Link,
   NotebookCell,
+  ProcessingEvent,
   Session,
 } from "./lib/types";
 import { ChatSidebar } from "./components/ChatSidebar";
@@ -26,9 +36,12 @@ import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
 
 export function App() {
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [session, setSession] = useState<Session | null>(null);
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [links, setLinks] = useState<Link[]>([]);
+  const [discovery, setDiscovery] = useState<DiscoveryResponse | null>(null);
+  const [events, setEvents] = useState<ProcessingEvent[]>([]);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [pages, setPages] = useState<DashboardPage[]>([]);
   const [cellsByPage, setCellsByPage] = useState<Record<string, NotebookCell[]>>(
@@ -36,11 +49,21 @@ export function App() {
   );
   const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
   const [focusPageId, setFocusPageId] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [approving, setApproving] = useState(false);
   const [sending, setSending] = useState(false);
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bootstrapped = useRef(false);
+  const pollRef = useRef<number | null>(null);
+
+  const refreshSessions = useCallback(async () => {
+    const list = await listSessions();
+    setSessions(list);
+    return list;
+  }, []);
 
   const refreshFiles = useCallback(async (sessionId: string) => {
     const fs = await listFiles(sessionId);
@@ -50,6 +73,16 @@ export function App() {
   const refreshLinks = useCallback(async (sessionId: string) => {
     const ls = await listLinks(sessionId);
     setLinks(ls);
+  }, []);
+
+  const refreshDiscovery = useCallback(async (sessionId: string) => {
+    const d = await getDiscovery(sessionId);
+    setDiscovery(d);
+  }, []);
+
+  const refreshEvents = useCallback(async (sessionId: string) => {
+    const e = await getProcessingEvents(sessionId);
+    setEvents(e);
   }, []);
 
   const refreshDashboard = useCallback(async (sessionId: string) => {
@@ -66,15 +99,8 @@ export function App() {
   useEffect(() => {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
-    listSessions()
-      .then((sessions) => {
-        if (sessions.length === 0) return;
-        const first = sessions[0];
-        if (!first) return;
-        setSession(first);
-      })
-      .catch((err: Error) => setError(err.message));
-  }, []);
+    refreshSessions().catch((err: Error) => setError(err.message));
+  }, [refreshSessions]);
 
   useEffect(() => {
     if (!session) return;
@@ -82,39 +108,199 @@ export function App() {
     Promise.all([
       refreshFiles(id),
       refreshLinks(id),
+      refreshDiscovery(id),
+      refreshEvents(id),
       refreshDashboard(id),
       refreshTurns(id),
     ]).catch((err: Error) => setError(err.message));
-  }, [session, refreshFiles, refreshLinks, refreshDashboard, refreshTurns]);
+  }, [
+    session,
+    refreshFiles,
+    refreshLinks,
+    refreshDiscovery,
+    refreshEvents,
+    refreshDashboard,
+    refreshTurns,
+  ]);
 
-  const ensureSession = useCallback(
-    async (name: string): Promise<Session> => {
-      if (session) return session;
-      const created = await createSession(name);
-      setSession(created);
-      return created;
+  useEffect(() => {
+    if (!session || !processing) {
+      if (pollRef.current !== null) {
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      return;
+    }
+    const id = session.id;
+    pollRef.current = window.setInterval(() => {
+      refreshEvents(id).catch(() => undefined);
+    }, 1500);
+    return () => {
+      if (pollRef.current !== null) {
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [session, processing, refreshEvents]);
+
+  const clearSessionState = useCallback(() => {
+    setFiles([]);
+    setLinks([]);
+    setDiscovery(null);
+    setEvents([]);
+    setTurns([]);
+    setPages([]);
+    setCellsByPage({});
+    setActiveTab("dashboard");
+    setFocusPageId(null);
+  }, []);
+
+  const handleCreateSession = useCallback(
+    async (name: string) => {
+      setError(null);
+      setStarting(true);
+      try {
+        const s = await createSession(name);
+        clearSessionState();
+        setSession(s);
+        await refreshSessions();
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setStarting(false);
+      }
     },
-    [session],
+    [clearSessionState, refreshSessions],
+  );
+
+  const handleResumeSession = useCallback(
+    (s: Session) => {
+      clearSessionState();
+      setSession(s);
+    },
+    [clearSessionState],
+  );
+
+  const handleHome = useCallback(() => {
+    setSession(null);
+    clearSessionState();
+    refreshSessions().catch((err: Error) => setError(err.message));
+  }, [clearSessionState, refreshSessions]);
+
+  const handleDeleteSession = useCallback(
+    async (id: string) => {
+      setError(null);
+      try {
+        await deleteSession(id);
+        if (session?.id === id) {
+          setSession(null);
+          clearSessionState();
+        }
+        await refreshSessions();
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [session, clearSessionState, refreshSessions],
   );
 
   const handleUpload = useCallback(
-    async (files: File[]) => {
-      if (files.length === 0) return;
+    async (uploaded: File[]) => {
+      if (uploaded.length === 0 || !session) return;
+      const seen = new Set<string>();
+      const deduped = uploaded.filter((f) => {
+        const key = `${f.name}:${f.size}:${f.lastModified}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (deduped.length === 0) return;
       setError(null);
       setUploading(true);
       try {
-        const first = files[0]!;
-        const defaultName = first.name.replace(/\.[^.]+$/, "");
-        const s = await ensureSession(defaultName);
-        await uploadFiles(s.id, files);
-        await refreshFiles(s.id);
+        await uploadFiles(session.id, deduped);
+        await Promise.all([
+          refreshFiles(session.id),
+          refreshDiscovery(session.id),
+        ]);
       } catch (err) {
         setError((err as Error).message);
       } finally {
         setUploading(false);
       }
     },
-    [ensureSession, refreshFiles],
+    [session, refreshFiles, refreshDiscovery],
+  );
+
+  const handleDeleteFile = useCallback(
+    async (fileId: string) => {
+      if (!session) return;
+      setError(null);
+      try {
+        await deleteFile(fileId);
+        await Promise.all([
+          refreshFiles(session.id),
+          refreshDiscovery(session.id),
+          refreshLinks(session.id),
+        ]);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [session, refreshFiles, refreshDiscovery, refreshLinks],
+  );
+
+  const handleProcess = useCallback(async () => {
+    if (!session) return;
+    setError(null);
+    setProcessing(true);
+    setEvents([]);
+    setActiveTab("schema");
+    try {
+      const result = await processSession(session.id);
+      setDiscovery(result);
+      await Promise.all([
+        refreshFiles(session.id),
+        refreshLinks(session.id),
+        refreshEvents(session.id),
+      ]);
+    } catch (err) {
+      setError((err as Error).message);
+      await refreshDiscovery(session.id).catch(() => undefined);
+      await refreshEvents(session.id).catch(() => undefined);
+    } finally {
+      setProcessing(false);
+    }
+  }, [session, refreshFiles, refreshLinks, refreshDiscovery, refreshEvents]);
+
+  const handleApprove = useCallback(
+    async (
+      filesPayload: DiscoveredFile[],
+      linksPayload: DiscoveredLink[],
+      overview: string,
+    ) => {
+      if (!session) return;
+      setError(null);
+      setApproving(true);
+      try {
+        const result = await approveSchema(session.id, {
+          files: filesPayload,
+          links: linksPayload,
+          overview,
+        });
+        setDiscovery(result);
+        await Promise.all([
+          refreshFiles(session.id),
+          refreshLinks(session.id),
+          refreshSessions(),
+        ]);
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setApproving(false);
+      }
+    },
+    [session, refreshFiles, refreshLinks, refreshSessions],
   );
 
   const handleSend = useCallback(
@@ -144,6 +330,7 @@ export function App() {
     try {
       await buildDashboard(session.id);
       await refreshDashboard(session.id);
+      setActiveTab("dashboard");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -156,14 +343,22 @@ export function App() {
     setFocusPageId(pageId);
   }, []);
 
-  const handleLinksChanged = useCallback(() => {
-    if (!session) return;
-    refreshLinks(session.id).catch((err: Error) => setError(err.message));
-  }, [session, refreshLinks]);
-
-  if (!session && files.length === 0) {
-    return <FirstRun onUpload={handleUpload} uploading={uploading} error={error} />;
+  if (!session) {
+    return (
+      <SessionStart
+        sessions={sessions}
+        onStart={handleCreateSession}
+        onResume={handleResumeSession}
+        onDelete={handleDeleteSession}
+        starting={starting}
+        error={error}
+        onDismissError={() => setError(null)}
+      />
+    );
   }
+
+  const discoveryStatus = discovery?.status ?? "empty";
+  const chatReady = discoveryStatus === "approved";
 
   return (
     <>
@@ -172,7 +367,7 @@ export function App() {
           <ChatSidebar
             turns={turns}
             pages={pages}
-            disabled={!session || files.length === 0}
+            disabled={!chatReady}
             sending={sending}
             onSend={handleSend}
             onOpenPage={handleOpenPage}
@@ -183,6 +378,8 @@ export function App() {
             session={session}
             onUpload={handleUpload}
             uploading={uploading}
+            onHome={handleHome}
+            onDelete={() => handleDeleteSession(session.id)}
           />
         }
         activeTab={activeTab}
@@ -194,9 +391,16 @@ export function App() {
             pages={pages}
             cellsByPage={cellsByPage}
             focusPageId={focusPageId}
+            files={files}
+            discoveryStatus={discoveryStatus}
+            onUpload={handleUpload}
+            uploading={uploading}
+            onDeleteFile={handleDeleteFile}
+            onProcess={handleProcess}
+            processing={processing}
             onBuildDashboard={handleBuildDashboard}
             building={building}
-            hasFiles={files.length > 0}
+            onReviewSchema={() => setActiveTab("schema")}
           />
         ) : null}
         {activeTab === "notebook" ? (
@@ -206,12 +410,17 @@ export function App() {
             focusPageId={focusPageId}
           />
         ) : null}
-        {activeTab === "schema" && session ? (
+        {activeTab === "schema" ? (
           <SchemaTab
-            sessionId={session.id}
             files={files}
             links={links}
-            onLinksChanged={handleLinksChanged}
+            discovery={discovery}
+            events={events}
+            processing={processing}
+            approving={approving}
+            onProcess={handleProcess}
+            onApprove={handleApprove}
+            canProcess={files.length >= 1}
           />
         ) : null}
       </Shell>
@@ -233,70 +442,125 @@ export function App() {
   );
 }
 
-function FirstRun({
-  onUpload,
-  uploading,
+function SessionStart({
+  sessions,
+  onStart,
+  onResume,
+  onDelete,
+  starting,
   error,
+  onDismissError,
 }: {
-  onUpload: (files: File[]) => void;
-  uploading: boolean;
+  sessions: Session[];
+  onStart: (name: string) => void;
+  onResume: (session: Session) => void;
+  onDelete: (id: string) => void;
+  starting: boolean;
   error: string | null;
+  onDismissError: () => void;
 }) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [name, setName] = useState("");
 
-  const handlePick = () => inputRef.current?.click();
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fs = Array.from(e.target.files ?? []);
-    if (fs.length > 0) onUpload(fs);
-    e.target.value = "";
+  const handleStart = () => {
+    const trimmed = name.trim();
+    const fallback = `session ${new Date().toLocaleDateString()}`;
+    onStart(trimmed.length > 0 ? trimmed : fallback);
   };
-  const prevent = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const fs = Array.from(e.dataTransfer.files ?? []);
-    if (fs.length > 0) onUpload(fs);
+
+  const handleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !starting) handleStart();
+  };
+
+  const handleDelete = (s: Session) => {
+    const ok = window.confirm(
+      `Delete session "${s.name}"? Files, links, dashboards, and chat history will be removed. This cannot be undone.`,
+    );
+    if (ok) onDelete(s.id);
   };
 
   return (
-    <div
-      className="flex h-full w-full items-center justify-center p-10"
-      onDragOver={prevent}
-      onDragEnter={prevent}
-      onDrop={handleDrop}
-    >
-      <div className="max-w-md">
+    <div className="flex h-full w-full items-center justify-center p-10">
+      <div className="w-full max-w-xl">
         <div className="small-caps text-xs text-neutral-500">cerno</div>
         <h1 className="mt-1 font-mono text-3xl tracking-tight text-ink">
           discern what matters
         </h1>
         <p className="mt-4 text-sm text-neutral-600">
-          Drop a CSV or XLSX file to start a session. Cerno ingests the file,
-          discovers links between tables, and builds you a dashboard.
+          Start a new session to ingest files, discover links between them, and
+          build a dashboard.
         </p>
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".csv,.xlsx,.xls"
-          multiple
-          className="hidden"
-          onChange={handleChange}
-        />
-        <div className="mt-6 flex gap-2">
+        <label className="mt-6 block">
+          <span className="small-caps text-xs text-neutral-500">
+            session name
+          </span>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="e.g. march billings"
+            className="mt-2 block w-full border border-ink px-3 py-2 font-mono text-sm focus:outline-none"
+          />
+        </label>
+        <div className="mt-5">
           <button
             type="button"
-            onClick={handlePick}
-            disabled={uploading}
+            onClick={handleStart}
+            disabled={starting}
             className="small-caps border border-ink bg-ember px-3 py-2 text-xs text-white hover:bg-ember-hover disabled:opacity-40"
           >
-            {uploading ? "uploading\u2026" : "+ new session"}
+            {starting ? "starting\u2026" : "+ start session"}
           </button>
         </div>
         {error ? (
-          <div className="mt-4 font-mono text-xs text-red-600">{error}</div>
+          <div className="mt-4 flex items-start justify-between gap-3 border border-red-300 px-3 py-2 font-mono text-xs text-red-600">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={onDismissError}
+              className="text-neutral-500 hover:text-ink"
+            >
+              {"\u00d7"}
+            </button>
+          </div>
         ) : null}
-        <div className="mt-8 border border-dashed border-neutral-300 p-10 text-center text-xs text-neutral-500">
-          or drop one or more files anywhere in this window
-        </div>
+
+        {sessions.length > 0 ? (
+          <section className="mt-10">
+            <div className="small-caps text-xs text-neutral-500">
+              resume a session
+            </div>
+            <ul className="mt-3">
+              {sessions.map((s) => (
+                <li
+                  key={s.id}
+                  className="hairline flex items-center justify-between gap-4 border-b py-3"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onResume(s)}
+                    className="flex min-w-0 flex-1 flex-col items-start text-left hover:text-ember"
+                  >
+                    <span className="truncate font-mono text-sm text-ink">
+                      {s.name}
+                    </span>
+                    <span className="small-caps text-[10px] text-neutral-500">
+                      {s.status} {"\u00b7"}{" "}
+                      {new Date(s.created_at).toLocaleString()}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(s)}
+                    className="small-caps border border-red-600 px-2 py-1 text-[11px] text-red-600 hover:bg-red-50"
+                  >
+                    delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </div>
     </div>
   );

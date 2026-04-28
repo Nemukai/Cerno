@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from cerno.db import dumps_json, loads_json
+
+logger = logging.getLogger(__name__)
 from cerno.models import (
     Anomaly,
     AuditEvent,
@@ -13,12 +16,15 @@ from cerno.models import (
     ChatTurn,
     Dashboard,
     DashboardPage,
+    DiscoveryStatus,
     File,
     FileSchema,
     Link,
     LinkReview,
     MessageRole,
     NotebookCell,
+    ProcessingEvent,
+    ProcessingEventKind,
     ReviewStatus,
     RunStatus,
     SchemaColumn,
@@ -72,6 +78,26 @@ class SessionRepository:
             "UPDATE sessions SET status = ? WHERE id = ?", (status, session_id)
         )
 
+    def set_discovery_status(
+        self, session_id: str, status: DiscoveryStatus
+    ) -> None:
+        self.conn.execute(
+            "UPDATE sessions SET discovery_status = ? WHERE id = ?",
+            (status, session_id),
+        )
+
+    def set_overview(self, session_id: str, overview: str | None) -> None:
+        self.conn.execute(
+            "UPDATE sessions SET overview = ? WHERE id = ?",
+            (overview, session_id),
+        )
+
+    def delete(self, session_id: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM sessions WHERE id = ?", (session_id,)
+        )
+        return cur.rowcount > 0
+
 
 class FileRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -84,24 +110,50 @@ class FileRepository:
         filename: str,
         parquet_path: str,
         row_count: int,
+        raw_parquet_path: str | None = None,
+        content_hash: str | None = None,
         file_id: str | None = None,
     ) -> File:
         fid = file_id or new_id()
         created_at = _now()
         self.conn.execute(
-            """INSERT INTO files (id, session_id, filename, parquet_path, row_count, schema_version, created_at)
-               VALUES (?, ?, ?, ?, ?, 1, ?)""",
-            (fid, session_id, filename, parquet_path, row_count, created_at.isoformat()),
+            """INSERT INTO files
+               (id, session_id, filename, parquet_path, raw_parquet_path,
+                row_count, schema_version, content_hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+            (
+                fid,
+                session_id,
+                filename,
+                parquet_path,
+                raw_parquet_path,
+                row_count,
+                content_hash,
+                created_at.isoformat(),
+            ),
         )
         return File(
             id=fid,
             session_id=session_id,
             filename=filename,
             parquet_path=parquet_path,
+            raw_parquet_path=raw_parquet_path,
             row_count=row_count,
             schema_version=1,
+            content_hash=content_hash,
             created_at=created_at,
         )
+
+    def find_by_hash(self, session_id: str, content_hash: str) -> File | None:
+        row = self.conn.execute(
+            "SELECT * FROM files WHERE session_id = ? AND content_hash = ? LIMIT 1",
+            (session_id, content_hash),
+        ).fetchone()
+        return _row_to_file(row) if row else None
+
+    def delete(self, file_id: str) -> bool:
+        cur = self.conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        return cur.rowcount > 0
 
     def get(self, file_id: str) -> File | None:
         row = self.conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
@@ -123,6 +175,48 @@ class FileRepository:
             raise LookupError(f"file not found: {file_id}")
         return int(row[0])
 
+    def update_processed(
+        self,
+        *,
+        file_id: str,
+        parquet_path: str,
+        row_count: int,
+        header_row: int | None,
+        friendly_name: str | None,
+        description: str | None,
+    ) -> None:
+        self.conn.execute(
+            """UPDATE files
+               SET parquet_path = ?, row_count = ?, header_row = ?,
+                   friendly_name = ?, description = ?
+               WHERE id = ?""",
+            (
+                parquet_path,
+                row_count,
+                header_row,
+                friendly_name,
+                description,
+                file_id,
+            ),
+        )
+
+    def set_metadata(
+        self,
+        *,
+        file_id: str,
+        header_row: int | None = None,
+        friendly_name: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            """UPDATE files
+               SET header_row = COALESCE(?, header_row),
+                   friendly_name = COALESCE(?, friendly_name),
+                   description = COALESCE(?, description)
+               WHERE id = ?""",
+            (header_row, friendly_name, description, file_id),
+        )
+
 
 class SchemaRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -136,8 +230,9 @@ class SchemaRepository:
         for col in schema.columns:
             self.conn.execute(
                 """INSERT INTO schema_columns
-                   (file_id, schema_version, name, dtype, inferred_kind, confidence, position)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (file_id, schema_version, name, dtype, inferred_kind,
+                    confidence, position, column_id, description)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     col.file_id,
                     col.schema_version,
@@ -146,6 +241,8 @@ class SchemaRepository:
                     col.inferred_kind,
                     col.confidence,
                     col.position,
+                    col.column_id,
+                    col.description,
                 ),
             )
 
@@ -246,6 +343,9 @@ class LinkRepository:
             (session_id,),
         ).fetchall()
         return [_row_to_link(r) for r in rows]
+
+    def delete_for_session(self, session_id: str) -> None:
+        self.conn.execute("DELETE FROM links WHERE session_id = ?", (session_id,))
 
     def add_review(
         self, *, link_id: str, action: str, notes: str | None = None
@@ -569,28 +669,86 @@ class AuditRepository:
         )
 
 
+class ProcessingEventRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def append(
+        self, *, session_id: str, kind: ProcessingEventKind, message: str
+    ) -> ProcessingEvent:
+        created_at = _now()
+        cursor = self.conn.execute(
+            """INSERT INTO processing_events (session_id, kind, message, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (session_id, kind, message, created_at.isoformat()),
+        )
+        try:
+            self.conn.commit()
+        except sqlite3.OperationalError as exc:
+            logger.warning("processing_events commit failed: %s", exc)
+        return ProcessingEvent(
+            id=cursor.lastrowid,
+            session_id=session_id,
+            kind=kind,
+            message=message,
+            created_at=created_at,
+        )
+
+    def list_for_session(self, session_id: str) -> list[ProcessingEvent]:
+        rows = self.conn.execute(
+            "SELECT * FROM processing_events WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        return [_row_to_processing_event(r) for r in rows]
+
+    def clear(self, session_id: str) -> None:
+        self.conn.execute(
+            "DELETE FROM processing_events WHERE session_id = ?", (session_id,)
+        )
+
+
 def _row_to_session(row: sqlite3.Row) -> Session:
+    keys = row.keys()
     return Session(
         id=row["id"],
         name=row["name"],
         status=row["status"],
+        discovery_status=row["discovery_status"] if "discovery_status" in keys else "empty",
+        overview=row["overview"] if "overview" in keys else None,
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
 def _row_to_file(row: sqlite3.Row) -> File:
+    keys = row.keys()
     return File(
         id=row["id"],
         session_id=row["session_id"],
         filename=row["filename"],
         parquet_path=row["parquet_path"],
+        raw_parquet_path=row["raw_parquet_path"] if "raw_parquet_path" in keys else None,
         row_count=row["row_count"],
         schema_version=row["schema_version"],
+        header_row=row["header_row"] if "header_row" in keys else None,
+        friendly_name=row["friendly_name"] if "friendly_name" in keys else None,
+        description=row["description"] if "description" in keys else None,
+        content_hash=row["content_hash"] if "content_hash" in keys else None,
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_processing_event(row: sqlite3.Row) -> ProcessingEvent:
+    return ProcessingEvent(
+        id=row["id"],
+        session_id=row["session_id"],
+        kind=row["kind"],
+        message=row["message"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
 def _row_to_schema_column(row: sqlite3.Row) -> SchemaColumn:
+    keys = row.keys()
     return SchemaColumn(
         file_id=row["file_id"],
         schema_version=row["schema_version"],
@@ -599,6 +757,8 @@ def _row_to_schema_column(row: sqlite3.Row) -> SchemaColumn:
         inferred_kind=row["inferred_kind"],
         confidence=row["confidence"],
         position=row["position"],
+        column_id=row["column_id"] if "column_id" in keys else None,
+        description=row["description"] if "description" in keys else None,
     )
 
 

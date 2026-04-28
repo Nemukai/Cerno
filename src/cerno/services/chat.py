@@ -81,11 +81,6 @@ async def run_chat_turn(
         )
         registry = build_tool_registry(ctx)
 
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ]
-
         def on_message(message: dict[str, Any]) -> None:
             _persist_loop_message(chat_repo, turn.id, message)
 
@@ -93,7 +88,10 @@ async def run_chat_turn(
             result = await run_tool_loop(
                 client=llm_client,
                 registry=registry,
-                messages=messages,
+                input=[{"role": "user", "content": user_message}],
+                instructions=SYSTEM_PROMPT,
+                reasoning_effort=settings.llm_reasoning_effort,
+                reasoning_summary=settings.llm_reasoning_summary,
                 max_calls=settings.chat_max_llm_calls,
                 on_message=on_message,
             )

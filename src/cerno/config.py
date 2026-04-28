@@ -18,14 +18,17 @@ class Settings(BaseSettings):
     api_port: int = 8765
     frontend_dev_url: str = "http://127.0.0.1:5173"
 
-    llm_enabled: bool = False
-    llm_provider: str = "openrouter"
-    llm_base_url: str = "https://openrouter.ai/api/v1"
+    llm_enabled: bool = True
+    llm_provider: str = "openai"
+    llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
-    llm_model: str = "z-ai/glm-4.7-flash"
-    llm_timeout_seconds: float = 45.0
+    llm_model: str = "gpt-5.4-mini"
+    llm_timeout_seconds: float = 300.0
+    link_max_llm_candidates: int = 30
     llm_site_url: str = "http://localhost"
     llm_app_name: str = "Cerno"
+    llm_reasoning_effort: str = "medium"
+    llm_reasoning_summary: str = "auto"
 
     schema_confidence_threshold: float = 0.85
 
@@ -48,6 +51,9 @@ class Settings(BaseSettings):
 
     def parquet_path(self, session_id: str, file_id: str) -> Path:
         return self.session_dir(session_id) / f"{file_id}.parquet"
+
+    def raw_parquet_path(self, session_id: str, file_id: str) -> Path:
+        return self.session_dir(session_id) / f"{file_id}.raw.parquet"
 
     def db_path(self) -> Path:
         return self.data_root / "cerno.sqlite"

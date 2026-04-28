@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -21,7 +22,8 @@ from cerno.repositories import (
 )
 from cerno.services.anomalies import detect_anomalies, persist_anomalies
 from cerno.services.dashboard import generate_overview
-from cerno.services.ingest import ingest_file
+
+from .conftest import install_file
 
 
 @pytest.fixture
@@ -36,42 +38,35 @@ def conn():
     c.close()
 
 
-def _write_csv(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
-
-
-def _seed(tmp_path: Path, settings: Settings, conn) -> tuple[str, dict[str, str]]:
+def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
     sessions = SessionRepository(conn)
-    files_repo = FileRepository(conn)
-    schemas_repo = SchemaRepository(conn)
     links_repo = LinkRepository(conn)
     session = sessions.create("s")
 
-    orders = tmp_path / "orders.csv"
-    rows = [f"{1000 + i},{(i % 20) + 1},{10.0 + i * 0.1}" for i in range(20)]
-    rows.append("1099,999,9999.0")
-    _write_csv(orders, "order_id,customer_id,amount\n" + "\n".join(rows) + "\n")
+    order_ids = list(range(1000, 1020)) + [1099]
+    customer_ids = [(i % 20) + 1 for i in range(20)] + [999]
+    amounts = [10.0 + i * 0.1 for i in range(20)] + [9999.0]
+    orders_frame = pl.DataFrame(
+        {"order_id": order_ids, "customer_id": customer_ids, "amount": amounts}
+    )
+    customers_frame = pl.DataFrame(
+        {"id": [i + 1 for i in range(20)], "name": [f"Name{i + 1}" for i in range(20)]}
+    )
 
-    customers = tmp_path / "customers.csv"
-    cust_rows = [f"{i + 1},Name{i + 1}" for i in range(20)]
-    _write_csv(customers, "id,name\n" + "\n".join(cust_rows) + "\n")
-
-    o = ingest_file(
-        source_path=orders,
-        original_filename="orders.csv",
-        session_id=session.id,
+    o, _ = install_file(
+        conn=conn,
         settings=settings,
-        files_repo=files_repo,
-        schemas_repo=schemas_repo,
-    )[0].file
-    c = ingest_file(
-        source_path=customers,
-        original_filename="customers.csv",
         session_id=session.id,
+        filename="orders.csv",
+        frame=orders_frame,
+    )
+    c, _ = install_file(
+        conn=conn,
         settings=settings,
-        files_repo=files_repo,
-        schemas_repo=schemas_repo,
-    )[0].file
+        session_id=session.id,
+        filename="customers.csv",
+        frame=customers_frame,
+    )
 
     link = links_repo.create(
         session_id=session.id,
@@ -117,7 +112,7 @@ def _run_pipeline(session_id: str, settings: Settings, conn) -> str:
 def test_overview_page_widget_order(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
-    session_id, _files = _seed(tmp_path, settings, conn)
+    session_id, _files = _seed(settings, conn)
     page_id = _run_pipeline(session_id, settings, conn)
 
     cells = NotebookRepository(conn).list_for_page(page_id)
@@ -142,7 +137,7 @@ def test_overview_page_widget_order(
 def test_overview_is_idempotent(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
-    session_id, _files = _seed(tmp_path, settings, conn)
+    session_id, _files = _seed(settings, conn)
     first_page = _run_pipeline(session_id, settings, conn)
     second_page = _run_pipeline(session_id, settings, conn)
     assert first_page != second_page
@@ -183,11 +178,11 @@ def api_client(api_settings: Settings):
 
 
 def _seed_via_settings(
-    tmp_path: Path, api_settings: Settings
+    api_settings: Settings,
 ) -> tuple[str, dict[str, str]]:
     c = connect(api_settings)
     try:
-        session_id, files = _seed(tmp_path, api_settings, c)
+        session_id, files = _seed(api_settings, c)
         c.commit()
         return session_id, files
     finally:
@@ -197,7 +192,7 @@ def _seed_via_settings(
 def test_build_dashboard_endpoint_returns_counts(
     tmp_path: Path, api_settings: Settings, api_client
 ) -> None:
-    session_id, _files = _seed_via_settings(tmp_path, api_settings)
+    session_id, _files = _seed_via_settings(api_settings)
     response = api_client.post(f"/sessions/{session_id}/build-dashboard")
     assert response.status_code == 200
     body = response.json()
@@ -209,7 +204,7 @@ def test_build_dashboard_endpoint_returns_counts(
 def test_get_dashboard_returns_pages_and_cells(
     tmp_path: Path, api_settings: Settings, api_client
 ) -> None:
-    session_id, _files = _seed_via_settings(tmp_path, api_settings)
+    session_id, _files = _seed_via_settings(api_settings)
     api_client.post(f"/sessions/{session_id}/build-dashboard")
     response = api_client.get(f"/sessions/{session_id}/dashboard")
     assert response.status_code == 200
@@ -224,7 +219,7 @@ def test_get_dashboard_returns_pages_and_cells(
 def test_anomalies_endpoint_respects_limit(
     tmp_path: Path, api_settings: Settings, api_client
 ) -> None:
-    session_id, _files = _seed_via_settings(tmp_path, api_settings)
+    session_id, _files = _seed_via_settings(api_settings)
     api_client.post(f"/sessions/{session_id}/build-dashboard")
     response = api_client.get(f"/sessions/{session_id}/anomalies?limit=3")
     assert response.status_code == 200

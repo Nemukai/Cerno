@@ -1,5 +1,7 @@
 export type SessionStatus = "new" | "ingesting" | "analyzing" | "ready" | "archived";
-export type InferredKind = "string" | "int" | "float" | "date" | "datetime" | "bool" | "category";
+export type DiscoveryStatus = "empty" | "discovering" | "pending_review" | "approved" | "failed";
+export type SimpleDtype = "string" | "int" | "float" | "date" | "datetime" | "bool" | "category";
+export type InferredKind = SimpleDtype;
 export type LinkDirection = "many_to_one" | "one_to_one" | "many_to_many";
 export type WidgetKind = "kpi" | "bar" | "line" | "pie" | "table" | "markdown";
 export type LinkSource = "discovered" | "user_added";
@@ -9,11 +11,23 @@ export type CellKind = "python" | "sql" | "widget";
 export type RunStatus = "ok" | "error" | "stale";
 export type TurnState = "pending" | "tool_running" | "rendering" | "complete" | "failed";
 export type MessageRole = "user" | "assistant" | "tool" | "system";
+export type ProcessingEventKind =
+  | "started"
+  | "reading_files"
+  | "calling_llm"
+  | "parsing_response"
+  | "saving_schema"
+  | "applying_schema"
+  | "reingesting_file"
+  | "done"
+  | "error";
 
 export type Session = {
   id: string;
   name: string;
   status: SessionStatus;
+  discovery_status: DiscoveryStatus;
+  overview: string | null;
   created_at: string;
 };
 
@@ -22,9 +36,61 @@ export type FileRecord = {
   session_id: string;
   filename: string;
   parquet_path: string;
+  raw_parquet_path: string | null;
   row_count: number;
   schema_version: number;
+  header_row: number | null;
+  friendly_name: string | null;
+  description: string | null;
+  content_hash: string | null;
   created_at: string;
+};
+
+export type ProcessingEvent = {
+  id: number;
+  session_id: string;
+  kind: ProcessingEventKind;
+  message: string;
+  created_at: string;
+};
+
+export type DiscoveredColumn = {
+  column_id: string;
+  name: string;
+  description: string;
+  dtype: SimpleDtype;
+};
+
+export type DiscoveredFile = {
+  file_id: string;
+  friendly_name: string;
+  description: string;
+  header_row: number;
+  columns: DiscoveredColumn[];
+};
+
+export type DiscoveredLink = {
+  file_a_id: string;
+  col_a: string;
+  file_b_id: string;
+  col_b: string;
+  direction: LinkDirection;
+  summary: string;
+};
+
+export type DiscoveryResponse = {
+  session_id: string;
+  status: DiscoveryStatus;
+  files: DiscoveredFile[];
+  links: DiscoveredLink[];
+  overview: string;
+};
+
+export type FilePreviewResponse = {
+  file_id: string;
+  columns: string[];
+  rows: unknown[][];
+  total_rows: number;
 };
 
 export type SchemaColumn = {
@@ -35,17 +101,14 @@ export type SchemaColumn = {
   inferred_kind: InferredKind;
   confidence: number;
   position: number;
+  column_id: string | null;
+  description: string | null;
 };
 
 export type FileSchema = {
   file_id: string;
   schema_version: number;
   columns: SchemaColumn[];
-};
-
-export type FileSchemaResponse = {
-  file: FileRecord;
-  schema: FileSchema;
 };
 
 export type Link = {

@@ -10,7 +10,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 _MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -186,6 +186,30 @@ _MIGRATIONS: dict[int, list[str]] = {
     ],
     2: [
         "ALTER TABLE links ADD COLUMN summary TEXT",
+    ],
+    3: [
+        "ALTER TABLE sessions ADD COLUMN discovery_status TEXT NOT NULL DEFAULT 'empty'",
+        "ALTER TABLE sessions ADD COLUMN overview TEXT",
+        "ALTER TABLE files ADD COLUMN raw_parquet_path TEXT",
+        "ALTER TABLE files ADD COLUMN header_row INTEGER",
+        "ALTER TABLE files ADD COLUMN friendly_name TEXT",
+        "ALTER TABLE files ADD COLUMN description TEXT",
+        "ALTER TABLE schema_columns ADD COLUMN description TEXT",
+        "ALTER TABLE schema_columns ADD COLUMN column_id TEXT",
+        """
+        CREATE TABLE IF NOT EXISTS processing_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_processing_events_session ON processing_events(session_id, id)",
+    ],
+    4: [
+        "ALTER TABLE files ADD COLUMN content_hash TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_files_session_hash ON files(session_id, content_hash)",
     ],
 }
 

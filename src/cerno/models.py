@@ -6,6 +6,18 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 SessionStatus = Literal["new", "ingesting", "analyzing", "ready", "archived"]
+DiscoveryStatus = Literal["empty", "discovering", "pending_review", "approved", "failed"]
+ProcessingEventKind = Literal[
+    "started",
+    "reading_files",
+    "calling_llm",
+    "parsing_response",
+    "saving_schema",
+    "applying_schema",
+    "reingesting_file",
+    "done",
+    "error",
+]
 InferredKind = Literal["string", "int", "float", "date", "datetime", "bool", "category"]
 LinkDirection = Literal["many_to_one", "one_to_one", "many_to_many"]
 WidgetKind = Literal["kpi", "bar", "line", "pie", "table", "markdown"]
@@ -23,6 +35,8 @@ class Session(BaseModel):
     id: str
     name: str
     status: SessionStatus = "new"
+    discovery_status: DiscoveryStatus = "empty"
+    overview: str | None = None
     created_at: datetime
 
 
@@ -31,8 +45,13 @@ class File(BaseModel):
     session_id: str
     filename: str
     parquet_path: str
+    raw_parquet_path: str | None = None
     row_count: int
     schema_version: int = 1
+    header_row: int | None = None
+    friendly_name: str | None = None
+    description: str | None = None
+    content_hash: str | None = None
     created_at: datetime
 
 
@@ -44,12 +63,22 @@ class SchemaColumn(BaseModel):
     inferred_kind: InferredKind
     confidence: float
     position: int
+    column_id: str | None = None
+    description: str | None = None
 
 
 class FileSchema(BaseModel):
     file_id: str
     schema_version: int
     columns: list[SchemaColumn]
+
+
+class ProcessingEvent(BaseModel):
+    id: int | None = None
+    session_id: str
+    kind: ProcessingEventKind
+    message: str
+    created_at: datetime
 
 
 class Link(BaseModel):

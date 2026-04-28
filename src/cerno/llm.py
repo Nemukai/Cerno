@@ -31,16 +31,18 @@ class Tool:
     description: str
     parameters: dict[str, Any]
     handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+    strict: bool = False
 
-    def to_openai_schema(self) -> dict[str, Any]:
-        return {
+    def to_schema(self) -> dict[str, Any]:
+        schema: dict[str, Any] = {
             "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
         }
+        if self.strict:
+            schema["strict"] = True
+        return schema
 
 
 class ToolRegistry:
@@ -58,7 +60,7 @@ class ToolRegistry:
         return self._tools[name]
 
     def schemas(self) -> list[dict[str, Any]]:
-        return [t.to_openai_schema() for t in self._tools.values()]
+        return [t.to_schema() for t in self._tools.values()]
 
     def names(self) -> list[str]:
         return list(self._tools)
@@ -66,7 +68,7 @@ class ToolRegistry:
 
 @dataclass
 class ToolCall:
-    id: str
+    call_id: str
     name: str
     arguments: dict[str, Any]
 
@@ -75,12 +77,27 @@ class ToolCall:
 class LLMResponse:
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
-    finish_reason: str = "stop"
+    response_id: str | None = None
+    reasoning_summary: str | None = None
+    status: str = "completed"
     raw: dict[str, Any] = field(default_factory=dict)
 
 
 class HTTPTransport(Protocol):
-    async def post(self, url: str, *, json: dict[str, Any], headers: dict[str, str]) -> httpx.Response: ...
+    async def post(
+        self, url: str, *, json: dict[str, Any], headers: dict[str, str]
+    ) -> httpx.Response: ...
+
+
+def _reasoning_block(
+    effort: str | None, summary: str | None
+) -> dict[str, Any] | None:
+    if not effort or effort.lower() in {"off", "none", ""}:
+        return None
+    block: dict[str, Any] = {"effort": effort}
+    if summary and summary.lower() not in {"off", "none", ""}:
+        block["summary"] = summary
+    return block
 
 
 class LLMClient:
@@ -102,26 +119,81 @@ class LLMClient:
             headers["X-Title"] = self.settings.llm_app_name
         return headers
 
+    async def respond(
+        self,
+        *,
+        input: list[dict[str, Any]] | str,
+        instructions: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        previous_response_id: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_summary: str | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        store: bool = True,
+    ) -> LLMResponse:
+        body: dict[str, Any] = {
+            "model": model or self.settings.llm_model,
+            "input": input,
+            "store": store,
+        }
+        if instructions is not None:
+            body["instructions"] = instructions
+        if previous_response_id is not None:
+            body["previous_response_id"] = previous_response_id
+        if tools:
+            body["tools"] = tools
+        block = _reasoning_block(
+            reasoning_effort or self.settings.llm_reasoning_effort,
+            reasoning_summary or self.settings.llm_reasoning_summary,
+        )
+        if block is not None:
+            body["reasoning"] = block
+        if temperature is not None:
+            body["temperature"] = temperature
+        if response_format is not None:
+            body["text"] = {"format": response_format}
+
+        url = f"{self.settings.llm_base_url.rstrip('/')}/responses"
+        response = await self._call_with_retry(url, body)
+        return _parse_response(response)
+
     async def complete(
         self,
         *,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
-        temperature: float = 0.2,
+        reasoning_effort: str | None = None,
+        reasoning_summary: str | None = None,
+        temperature: float | None = None,
     ) -> LLMResponse:
-        body: dict[str, Any] = {
-            "model": model or self.settings.llm_model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if tools:
-            body["tools"] = tools
-            body["tool_choice"] = "auto"
-
-        url = f"{self.settings.llm_base_url.rstrip('/')}/chat/completions"
-        response = await self._call_with_retry(url, body)
-        return _parse_response(response)
+        """Convenience: split system messages into `instructions`, pass the rest
+        as `input` items for the Responses API."""
+        instructions_parts: list[str] = []
+        input_items: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "system":
+                if isinstance(content, str) and content:
+                    instructions_parts.append(content)
+                continue
+            if role in ("user", "assistant"):
+                input_items.append({"role": role, "content": content})
+        instructions = (
+            "\n\n".join(instructions_parts) if instructions_parts else None
+        )
+        return await self.respond(
+            input=input_items,
+            instructions=instructions,
+            tools=tools,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            temperature=temperature,
+        )
 
     async def _call_with_retry(
         self, url: str, body: dict[str, Any], max_retries: int = 2
@@ -130,11 +202,15 @@ class LLMClient:
         last_error: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
-                response = await self._transport.post(url, json=body, headers=self._headers())
+                response = await self._transport.post(
+                    url, json=body, headers=self._headers()
+                )
                 if response.status_code == 429:
                     raise LLMRateLimitError(f"rate limited: {response.text}")
                 if response.status_code >= 400:
-                    raise LLMError(f"llm error {response.status_code}: {response.text}")
+                    raise LLMError(
+                        f"llm error {response.status_code}: {response.text}"
+                    )
                 parsed: dict[str, Any] = response.json()
                 return parsed
             except LLMRateLimitError as exc:
@@ -161,20 +237,36 @@ class _HttpxTransport:
 
 
 def _parse_response(raw: dict[str, Any]) -> LLMResponse:
-    choice = raw["choices"][0]
-    message = choice["message"]
-    content = message.get("content") or ""
-    finish_reason = choice.get("finish_reason") or "stop"
-    tool_calls_raw = message.get("tool_calls") or []
-    tool_calls = [
-        ToolCall(
-            id=tc["id"],
-            name=tc["function"]["name"],
-            arguments=_parse_args(tc["function"].get("arguments", "{}")),
-        )
-        for tc in tool_calls_raw
-    ]
-    return LLMResponse(content=content, tool_calls=tool_calls, finish_reason=finish_reason, raw=raw)
+    output = raw.get("output", []) or []
+    text_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+    reasoning_parts: list[str] = []
+    for item in output:
+        kind = item.get("type")
+        if kind == "message":
+            for part in item.get("content", []) or []:
+                if part.get("type") == "output_text":
+                    text_parts.append(part.get("text", ""))
+        elif kind == "function_call":
+            tool_calls.append(
+                ToolCall(
+                    call_id=item.get("call_id") or item.get("id", ""),
+                    name=item.get("name", ""),
+                    arguments=_parse_args(item.get("arguments", "{}")),
+                )
+            )
+        elif kind == "reasoning":
+            for part in item.get("summary", []) or []:
+                if part.get("type") == "summary_text":
+                    reasoning_parts.append(part.get("text", ""))
+    return LLMResponse(
+        content="".join(text_parts),
+        tool_calls=tool_calls,
+        response_id=raw.get("id"),
+        reasoning_summary="\n".join(reasoning_parts) if reasoning_parts else None,
+        status=raw.get("status") or "completed",
+        raw=raw,
+    )
 
 
 def _parse_args(raw: str | dict[str, Any]) -> dict[str, Any]:
@@ -198,19 +290,30 @@ class LoopResult:
     tool_turns: list[ToolTurn]
     finish_reason: str
     call_count: int
+    response_id: str | None = None
 
 
 async def run_tool_loop(
     *,
     client: LLMClient,
     registry: ToolRegistry,
-    messages: list[dict[str, Any]],
+    input: list[dict[str, Any]],
+    instructions: str | None = None,
+    reasoning_effort: str | None = None,
+    reasoning_summary: str | None = None,
     max_calls: int = DEFAULT_MAX_LLM_CALLS,
     on_message: Callable[[dict[str, Any]], None] | None = None,
 ) -> LoopResult:
+    """Run the tool-use loop against the Responses API.
+
+    The first turn sends `input` + `instructions` + `tools`. Subsequent turns
+    chain via `previous_response_id` and only ship the new
+    `function_call_output` items so reasoning state persists on the server.
+    """
     tool_turns: list[ToolTurn] = []
-    current_messages = list(messages)
     tools = registry.schemas()
+    pending_input: list[dict[str, Any]] = list(input)
+    previous_response_id: str | None = None
     call_count = 0
 
     while True:
@@ -220,47 +323,74 @@ async def run_tool_loop(
                 tool_turns=tool_turns,
                 finish_reason="max_calls",
                 call_count=call_count,
+                response_id=previous_response_id,
             )
 
-        response = await client.complete(messages=current_messages, tools=tools)
+        response = await client.respond(
+            input=pending_input,
+            tools=tools,
+            instructions=instructions if previous_response_id is None else None,
+            previous_response_id=previous_response_id,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+        )
         call_count += 1
+        previous_response_id = response.response_id
 
-        assistant_message: dict[str, Any] = {"role": "assistant", "content": response.content}
         if response.tool_calls:
-            assistant_message["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
-                }
-                for tc in response.tool_calls
-            ]
-        current_messages.append(assistant_message)
-        if on_message is not None:
-            on_message(assistant_message)
-
-        if not response.tool_calls:
-            return LoopResult(
-                final_message=response.content,
-                tool_turns=tool_turns,
-                finish_reason=response.finish_reason,
-                call_count=call_count,
-            )
-
-        for call in response.tool_calls:
-            tool = registry.get(call.name)
-            try:
-                result = await tool.handler(call.arguments)
-            except LLMToolError:
-                raise
-            except Exception as exc:
-                result = {"error": str(exc)}
-            tool_turns.append(ToolTurn(call=call, result=result))
-            tool_message = {
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": json.dumps(result),
-            }
-            current_messages.append(tool_message)
             if on_message is not None:
-                on_message(tool_message)
+                on_message(
+                    {
+                        "role": "assistant",
+                        "content": response.content,
+                        "tool_calls": [
+                            {
+                                "id": tc.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments),
+                                },
+                            }
+                            for tc in response.tool_calls
+                        ],
+                    }
+                )
+
+            pending_input = []
+            for call in response.tool_calls:
+                tool = registry.get(call.name)
+                try:
+                    result = await tool.handler(call.arguments)
+                except LLMToolError:
+                    raise
+                except Exception as exc:
+                    result = {"error": str(exc)}
+                tool_turns.append(ToolTurn(call=call, result=result))
+                payload = json.dumps(result)
+                pending_input.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": payload,
+                    }
+                )
+                if on_message is not None:
+                    on_message(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.call_id,
+                            "content": payload,
+                        }
+                    )
+            continue
+
+        if on_message is not None:
+            on_message({"role": "assistant", "content": response.content})
+        return LoopResult(
+            final_message=response.content,
+            tool_turns=tool_turns,
+            finish_reason=response.status,
+            call_count=call_count,
+            response_id=previous_response_id,
+        )

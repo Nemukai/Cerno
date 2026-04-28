@@ -8,12 +8,12 @@ from openpyxl import Workbook
 
 from cerno.config import Settings
 from cerno.db import connect_memory
-from cerno.repositories import FileRepository, SchemaRepository, SessionRepository
+from cerno.repositories import FileRepository, SessionRepository
 from cerno.services.ingest import (
     IngestError,
+    first_n_raw_rows,
     ingest_file,
-    read_tabular,
-    slugify_table_name,
+    read_raw_sheets,
 )
 
 
@@ -43,176 +43,138 @@ def _write_xlsx(path: Path, sheets: dict[str, list[list[object]]]) -> None:
     wb.save(str(path))
 
 
-def test_slugify_plain() -> None:
-    assert slugify_table_name("customers.csv") == "customers"
-
-
-def test_slugify_punctuation_and_case() -> None:
-    assert slugify_table_name("Customer Data 2024.xlsx") == "customer_data_2024"
-
-
-def test_slugify_leading_digit() -> None:
-    assert slugify_table_name("2024_sales.csv") == "t_2024_sales"
-
-
-def test_slugify_with_sheet() -> None:
-    assert slugify_table_name("report.xlsx", sheet="Q1 Summary") == "report_q1_summary"
-
-
-def test_slugify_empty_fallback() -> None:
-    assert slugify_table_name("---.csv") == "table"
-
-
-def test_read_csv(tmp_path: Path) -> None:
+def test_read_csv_keeps_all_rows_including_metadata(tmp_path: Path) -> None:
     csv = tmp_path / "customers.csv"
-    _write_csv(csv, "id,name,city\n1,Alice,Delhi\n2,Bob,Mumbai\n3,Carol,\n")
-    sheets = read_tabular(csv)
+    _write_csv(csv, "report header\n\nid,name\n1,Alice\n2,Bob\n")
+    sheets = read_raw_sheets(csv)
     assert len(sheets) == 1
     assert sheets[0].sheet_name is None
-    frame = sheets[0].frame
-    assert frame.columns == ["id", "name", "city"]
-    assert frame.height == 3
-    assert frame["city"].to_list()[2] is None
+    assert len(sheets[0].rows) == 5
+    assert sheets[0].rows[0][0] == "report header"
+    assert sheets[0].rows[2] == ["id", "name"]
 
 
-def test_read_xlsx_multiple_sheets(tmp_path: Path) -> None:
+def test_read_xlsx_keeps_metadata_rows(tmp_path: Path) -> None:
     xlsx = tmp_path / "report.xlsx"
     _write_xlsx(
         xlsx,
         {
-            "Sales": [["id", "amount"], [1, 100.5], [2, 200.0]],
-            "Returns": [["id", "reason"], [1, "damaged"], [2, "wrong item"]],
+            "Sales": [
+                ["Quarterly Report"],
+                [None, None],
+                ["id", "amount"],
+                [1, 100.5],
+                [2, 200.0],
+            ],
         },
     )
-    sheets = read_tabular(xlsx)
-    assert len(sheets) == 2
-    names = {s.sheet_name for s in sheets}
-    assert names == {"Sales", "Returns"}
+    sheets = read_raw_sheets(xlsx)
+    assert len(sheets) == 1
+    rows = sheets[0].rows
+    assert rows[0][0] == "Quarterly Report"
+    assert rows[2] == ["id", "amount"]
 
 
-def test_read_xlsx_dedupes_headers(tmp_path: Path) -> None:
-    xlsx = tmp_path / "dup.xlsx"
-    _write_xlsx(xlsx, {"S1": [["id", "id", "name"], [1, 2, "a"]]})
-    sheets = read_tabular(xlsx)
-    cols = sheets[0].frame.columns
-    assert cols == ["id", "id_1", "name"]
-
-
-def test_read_xlsx_fills_missing_header_names(tmp_path: Path) -> None:
-    xlsx = tmp_path / "missing.xlsx"
-    _write_xlsx(xlsx, {"S1": [["id", None, "name"], [1, 2, "a"]]})
-    sheets = read_tabular(xlsx)
-    assert sheets[0].frame.columns == ["id", "col_1", "name"]
+def test_read_xlsx_multiple_sheets(tmp_path: Path) -> None:
+    xlsx = tmp_path / "mix.xlsx"
+    _write_xlsx(
+        xlsx,
+        {
+            "Sales": [["id", "amount"], [1, 100.5]],
+            "Returns": [["id", "reason"], [1, "damaged"]],
+        },
+    )
+    sheets = read_raw_sheets(xlsx)
+    assert {s.sheet_name for s in sheets} == {"Sales", "Returns"}
 
 
 def test_unsupported_suffix_raises(tmp_path: Path) -> None:
     bogus = tmp_path / "notes.txt"
     bogus.write_text("hi", encoding="utf-8")
     with pytest.raises(IngestError):
-        read_tabular(bogus)
+        read_raw_sheets(bogus)
 
 
-def test_ingest_csv_writes_parquet_and_schema(
+def test_ingest_writes_raw_parquet_only(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
     sessions = SessionRepository(conn)
-    files = FileRepository(conn)
-    schemas = SchemaRepository(conn)
+    files_repo = FileRepository(conn)
     session = sessions.create("s")
 
     csv = tmp_path / "customers.csv"
-    _write_csv(
-        csv,
-        "id,name,city\n" + "\n".join(f"{i},Person{i},Delhi" for i in range(50)) + "\n",
-    )
+    _write_csv(csv, "id,name\n1,Alice\n2,Bob\n")
 
     results = ingest_file(
         source_path=csv,
         original_filename="customers.csv",
         session_id=session.id,
         settings=settings,
-        files_repo=files,
-        schemas_repo=schemas,
+        files_repo=files_repo,
     )
     assert len(results) == 1
-    ingested = results[0]
-    assert ingested.table_name == "customers"
-    assert ingested.file.row_count == 50
-    assert Path(ingested.file.parquet_path).exists()
-
-    stored = pl.read_parquet(ingested.file.parquet_path)
-    assert stored.columns == ["id", "name", "city"]
-    assert stored.height == 50
-
-    schema = schemas.get(ingested.file.id, 1)
-    assert schema is not None
-    kinds = {c.name: c.inferred_kind for c in schema.columns}
-    assert kinds["id"] == "int"
+    file = results[0].file
+    assert file.raw_parquet_path is not None
+    assert Path(file.raw_parquet_path).exists()
+    raw = pl.read_parquet(file.raw_parquet_path)
+    assert raw.height == 3  # header row + 2 data rows
+    assert file.parquet_path == ""  # processed parquet not yet written
 
 
-def test_ingest_xlsx_creates_one_file_per_sheet(
+def test_first_n_raw_rows_returns_lists(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
     sessions = SessionRepository(conn)
-    files = FileRepository(conn)
-    schemas = SchemaRepository(conn)
+    files_repo = FileRepository(conn)
     session = sessions.create("s")
 
+    csv = tmp_path / "x.csv"
+    _write_csv(csv, "id,name\n1,Alice\n2,Bob\n3,Carol\n")
+    results = ingest_file(
+        source_path=csv,
+        original_filename="x.csv",
+        session_id=session.id,
+        settings=settings,
+        files_repo=files_repo,
+    )
+    rows = first_n_raw_rows(Path(results[0].file.raw_parquet_path), limit=2)
+    assert rows[0] == ["id", "name"]
+    assert rows[1] == ["1", "Alice"]
+
+
+def test_ingest_xlsx_one_file_per_sheet(
+    tmp_path: Path, settings: Settings, conn
+) -> None:
+    sessions = SessionRepository(conn)
+    files_repo = FileRepository(conn)
+    session = sessions.create("s")
     xlsx = tmp_path / "mix.xlsx"
     _write_xlsx(
         xlsx,
         {
-            "Sales": [["id", "amount"]] + [[i, i * 1.5] for i in range(15)],
-            "Returns": [["id", "reason"]] + [[i, "x"] for i in range(10)],
+            "Sales": [["id", "amount"], [1, 100.5]],
+            "Returns": [["id", "reason"], [1, "damaged"]],
         },
     )
-
     results = ingest_file(
         source_path=xlsx,
         original_filename="mix.xlsx",
         session_id=session.id,
         settings=settings,
-        files_repo=files,
-        schemas_repo=schemas,
+        files_repo=files_repo,
     )
     assert len(results) == 2
-    names = {r.file.filename for r in results}
-    assert names == {"mix.xlsx#Sales", "mix.xlsx#Returns"}
-    table_names = {r.table_name for r in results}
-    assert table_names == {"mix_sales", "mix_returns"}
-    for r in results:
-        assert Path(r.file.parquet_path).exists()
-
-
-def test_ingest_xlsx_single_sheet_keeps_filename(
-    tmp_path: Path, settings: Settings, conn
-) -> None:
-    sessions = SessionRepository(conn)
-    files = FileRepository(conn)
-    schemas = SchemaRepository(conn)
-    session = sessions.create("s")
-
-    xlsx = tmp_path / "one.xlsx"
-    _write_xlsx(xlsx, {"OnlySheet": [["id"], [1], [2]]})
-
-    results = ingest_file(
-        source_path=xlsx,
-        original_filename="one.xlsx",
-        session_id=session.id,
-        settings=settings,
-        files_repo=files,
-        schemas_repo=schemas,
-    )
-    assert len(results) == 1
-    assert results[0].file.filename == "one.xlsx"
+    assert {r.file.filename for r in results} == {
+        "mix.xlsx#Sales",
+        "mix.xlsx#Returns",
+    }
 
 
 def test_ingest_missing_source_raises(
     tmp_path: Path, settings: Settings, conn
 ) -> None:
     sessions = SessionRepository(conn)
-    files = FileRepository(conn)
-    schemas = SchemaRepository(conn)
+    files_repo = FileRepository(conn)
     session = sessions.create("s")
     with pytest.raises(IngestError):
         ingest_file(
@@ -220,6 +182,5 @@ def test_ingest_missing_source_raises(
             original_filename="nope.csv",
             session_id=session.id,
             settings=settings,
-            files_repo=files,
-            schemas_repo=schemas,
+            files_repo=files_repo,
         )

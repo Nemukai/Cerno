@@ -1,16 +1,18 @@
 import type {
+  Anomaly,
   BuildDashboardResponse,
-  ChatResponse,
   ChatMessage,
+  ChatResponse,
   ChatTurn,
   DashboardResponse,
+  DiscoveredFile,
+  DiscoveredLink,
+  DiscoveryResponse,
+  FilePreviewResponse,
   FileRecord,
-  FileSchemaResponse,
   Link,
-  LinkAction,
-  LinkReview,
+  ProcessingEvent,
   Session,
-  Anomaly,
 } from "./types";
 
 export type Health = {
@@ -57,6 +59,14 @@ export function getSession(id: string): Promise<Session> {
   return request<Session>(`/sessions/${id}`);
 }
 
+export async function deleteSession(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/${id}`, { method: "DELETE" });
+  if (!res.ok && res.status !== 204) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText} ${body}`.trim());
+  }
+}
+
 export function uploadFiles(
   sessionId: string,
   files: File[],
@@ -73,33 +83,53 @@ export function listFiles(sessionId: string): Promise<FileRecord[]> {
   return request<FileRecord[]>(`/sessions/${sessionId}/files`);
 }
 
-export function getFileSchema(fileId: string): Promise<FileSchemaResponse> {
-  return request<FileSchemaResponse>(`/files/${fileId}/schema`);
+export async function deleteFile(fileId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/files/${fileId}`, { method: "DELETE" });
+  if (!res.ok && res.status !== 204) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText} ${body}`.trim());
+  }
 }
 
-export function discoverLinks(sessionId: string): Promise<Link[]> {
-  return postJson<Link[]>(`/sessions/${sessionId}/discover-links`, {});
+export function getFilePreview(
+  fileId: string,
+  limit = 100,
+): Promise<FilePreviewResponse> {
+  return request<FilePreviewResponse>(
+    `/files/${fileId}/preview?limit=${limit}`,
+  );
+}
+
+export function processSession(sessionId: string): Promise<DiscoveryResponse> {
+  return postJson<DiscoveryResponse>(`/sessions/${sessionId}/process`, {});
+}
+
+export function getDiscovery(sessionId: string): Promise<DiscoveryResponse> {
+  return request<DiscoveryResponse>(`/sessions/${sessionId}/discovery`);
+}
+
+export function approveSchema(
+  sessionId: string,
+  body: {
+    files: DiscoveredFile[];
+    links: DiscoveredLink[];
+    overview: string;
+  },
+): Promise<DiscoveryResponse> {
+  return postJson<DiscoveryResponse>(
+    `/sessions/${sessionId}/approve-schema`,
+    body,
+  );
+}
+
+export function getProcessingEvents(
+  sessionId: string,
+): Promise<ProcessingEvent[]> {
+  return request<ProcessingEvent[]>(`/sessions/${sessionId}/processing`);
 }
 
 export function listLinks(sessionId: string): Promise<Link[]> {
   return request<Link[]>(`/sessions/${sessionId}/links`);
-}
-
-export function reviewLink(
-  linkId: string,
-  action: LinkAction,
-  notes?: string,
-): Promise<LinkReview> {
-  return postJson<LinkReview>(`/links/${linkId}/review`, { action, notes });
-}
-
-export function skipReview(
-  sessionId: string,
-): Promise<{ auto_confirmed_count: number }> {
-  return postJson<{ auto_confirmed_count: number }>(
-    `/sessions/${sessionId}/skip-review`,
-    {},
-  );
 }
 
 export function buildDashboard(
