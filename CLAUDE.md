@@ -32,6 +32,7 @@ Cerno is a **link-aware data analysis tool**: upload files → agent discovers l
 - LLM connection is a trusted private pipe. No PII denylists, no column redaction gates — data flows freely to the model.
 - Numeric answers in chat go through `run_sql` or `run_python` (slot-filled into the response). Schema questions route through a non-tool path reading cached schema JSON directly.
 - The agent decides text-in-chat vs. spawn-a-dashboard-page based on whether its final answer emits widgets.
+- Before changing or recommending an LLM model name, web-search for the latest releases from OpenAI/Anthropic/Google so the choice reflects current state. Don't rely on memory — model lineups shift faster than the training cutoff.
 
 ## Style
 
