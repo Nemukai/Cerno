@@ -17,7 +17,7 @@ from cerno.repositories import (
 )
 from cerno.services.ingest import first_n_raw_rows
 
-DISCOVERY_MODEL = "gpt-5.4"
+DISCOVERY_MODEL = "gpt-5.5"
 DISCOVERY_REASONING_EFFORT = "high"
 DISCOVERY_REASONING_SUMMARY = "auto"
 SAMPLE_ROWS = 10
