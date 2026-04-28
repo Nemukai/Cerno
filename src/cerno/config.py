@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8765
     frontend_dev_url: str = "http://127.0.0.1:5173"
+    frontend_origin: str = "http://127.0.0.1:5173"
 
     llm_enabled: bool = True
     llm_provider: str = "openai"
@@ -44,16 +45,31 @@ class Settings(BaseSettings):
 
     chat_max_llm_calls: int = 8
 
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    session_secret: str = "dev-only-change-me"
+    session_cookie_name: str = "cerno_session"
+    session_max_age_seconds: int = 60 * 60 * 24 * 30
+
+    per_user_quota_gb: int = 5
+    daily_token_cap: int = 200_000
+
     data_root: Path = Field(default_factory=lambda: Path.home() / ".cerno")
 
-    def session_dir(self, session_id: str) -> Path:
-        return self.data_root / "sessions" / session_id
+    def users_dir(self) -> Path:
+        return self.data_root / "users"
 
-    def parquet_path(self, session_id: str, file_id: str) -> Path:
-        return self.session_dir(session_id) / f"{file_id}.parquet"
+    def user_dir(self, user_id: str) -> Path:
+        return self.users_dir() / user_id
 
-    def raw_parquet_path(self, session_id: str, file_id: str) -> Path:
-        return self.session_dir(session_id) / f"{file_id}.raw.parquet"
+    def session_dir(self, user_id: str, session_id: str) -> Path:
+        return self.user_dir(user_id) / "sessions" / session_id
+
+    def parquet_path(self, user_id: str, session_id: str, file_id: str) -> Path:
+        return self.session_dir(user_id, session_id) / f"{file_id}.parquet"
+
+    def raw_parquet_path(self, user_id: str, session_id: str, file_id: str) -> Path:
+        return self.session_dir(user_id, session_id) / f"{file_id}.raw.parquet"
 
     def db_path(self) -> Path:
         return self.data_root / "cerno.sqlite"

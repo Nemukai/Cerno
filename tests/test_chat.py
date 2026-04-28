@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 import polars as pl
 
 from cerno.api.chat import router as chat_router
-from cerno.api.deps import get_conn, get_llm_client
+from cerno.api.deps import get_conn, get_current_user, get_llm_client
 from cerno.config import Settings, get_settings, reset_settings
 from cerno.db import connect
 from cerno.llm import LLMClient
@@ -21,6 +21,7 @@ from cerno.repositories import (
     DashboardRepository,
     NotebookRepository,
     SessionRepository,
+    UserRepository,
 )
 
 from .conftest import install_file
@@ -104,7 +105,20 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def client(settings: Settings):
+def test_user_id(settings: Settings) -> str:
+    conn = connect(settings)
+    try:
+        user = UserRepository(conn).upsert_from_google(
+            google_sub="chat-test", email="chat@x", name=None, picture=None
+        )
+        conn.commit()
+        return user.id
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def client(settings: Settings, test_user_id: str):
     app = FastAPI()
     app.include_router(chat_router)
 
@@ -119,17 +133,31 @@ def client(settings: Settings):
         finally:
             conn.close()
 
+    def override_user():
+        with connect(settings) as _:
+            pass
+        conn = connect(settings)
+        try:
+            user = UserRepository(conn).get(test_user_id)
+            assert user is not None
+            return user
+        finally:
+            conn.close()
+
     app.dependency_overrides[get_settings] = override_settings
     app.dependency_overrides[get_conn] = override_conn
+    app.dependency_overrides[get_current_user] = override_user
     yield app, TestClient(app)
     reset_settings()
 
 
-def _seed_session_with_files(settings: Settings, tmp_path: Path) -> str:
+def _seed_session_with_files(
+    settings: Settings, tmp_path: Path, user_id: str
+) -> str:
     conn = connect(settings)
     try:
         sessions = SessionRepository(conn)
-        session = sessions.create("s")
+        session = sessions.create("s", user_id=user_id)
 
         customers_frame = pl.DataFrame(
             {"id": list(range(1, 6)), "name": [f"Name{i}" for i in range(1, 6)]}
@@ -143,6 +171,7 @@ def _seed_session_with_files(settings: Settings, tmp_path: Path) -> str:
         install_file(
             conn=conn,
             settings=settings,
+            user_id=user_id,
             session_id=session.id,
             filename="customers.csv",
             frame=customers_frame,
@@ -150,6 +179,7 @@ def _seed_session_with_files(settings: Settings, tmp_path: Path) -> str:
         install_file(
             conn=conn,
             settings=settings,
+            user_id=user_id,
             session_id=session.id,
             filename="orders.csv",
             frame=orders_frame,
@@ -161,10 +191,10 @@ def _seed_session_with_files(settings: Settings, tmp_path: Path) -> str:
 
 
 def test_chat_spawns_dashboard_page_with_widget(
-    settings: Settings, tmp_path: Path, client
+    settings: Settings, tmp_path: Path, client, test_user_id: str
 ) -> None:
     app, http = client
-    session_id = _seed_session_with_files(settings, tmp_path)
+    session_id = _seed_session_with_files(settings, tmp_path, test_user_id)
 
     transport = FakeTransport(
         [
@@ -262,10 +292,10 @@ def test_chat_spawns_dashboard_page_with_widget(
 
 
 def test_chat_text_only_reply_no_page(
-    settings: Settings, tmp_path: Path, client
+    settings: Settings, tmp_path: Path, client, test_user_id: str
 ) -> None:
     app, http = client
-    session_id = _seed_session_with_files(settings, tmp_path)
+    session_id = _seed_session_with_files(settings, tmp_path, test_user_id)
 
     transport = FakeTransport(
         [_response(_assistant_body(content="Two files: customers and orders."))]
@@ -284,10 +314,10 @@ def test_chat_text_only_reply_no_page(
 
 
 def test_list_turns_and_messages_endpoints(
-    settings: Settings, tmp_path: Path, client
+    settings: Settings, tmp_path: Path, client, test_user_id: str
 ) -> None:
     app, http = client
-    session_id = _seed_session_with_files(settings, tmp_path)
+    session_id = _seed_session_with_files(settings, tmp_path, test_user_id)
 
     transport = FakeTransport([_response(_assistant_body(content="hi"))])
     app.dependency_overrides[get_llm_client] = lambda: LLMClient(

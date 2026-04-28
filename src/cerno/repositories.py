@@ -21,6 +21,7 @@ from cerno.models import (
     FileSchema,
     Link,
     LinkReview,
+    LLMUsage,
     MessageRole,
     NotebookCell,
     ProcessingEvent,
@@ -31,6 +32,7 @@ from cerno.models import (
     Session,
     SessionStatus,
     TurnState,
+    User,
 )
 
 
@@ -52,24 +54,35 @@ class SessionRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
-    def create(self, name: str, session_id: str | None = None) -> Session:
+    def create(
+        self, name: str, user_id: str, session_id: str | None = None
+    ) -> Session:
         sid = session_id or new_id()
         created_at = _now()
         self.conn.execute(
-            "INSERT INTO sessions (id, name, status, created_at) VALUES (?, ?, ?, ?)",
-            (sid, name, "new", created_at.isoformat()),
+            "INSERT INTO sessions (id, user_id, name, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            (sid, user_id, name, "new", created_at.isoformat()),
         )
-        return Session(id=sid, name=name, status="new", created_at=created_at)
+        return Session(
+            id=sid, user_id=user_id, name=name, status="new", created_at=created_at
+        )
 
-    def get(self, session_id: str) -> Session | None:
-        row = self.conn.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
+    def get(self, session_id: str, user_id: str | None = None) -> Session | None:
+        if user_id is None:
+            row = self.conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            ).fetchone()
         return _row_to_session(row) if row else None
 
-    def list(self) -> list[Session]:
+    def list(self, user_id: str) -> list[Session]:
         rows = self.conn.execute(
-            "SELECT * FROM sessions ORDER BY created_at DESC"
+            "SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
         ).fetchall()
         return [_row_to_session(r) for r in rows]
 
@@ -92,10 +105,16 @@ class SessionRepository:
             (overview, session_id),
         )
 
-    def delete(self, session_id: str) -> bool:
-        cur = self.conn.execute(
-            "DELETE FROM sessions WHERE id = ?", (session_id,)
-        )
+    def delete(self, session_id: str, user_id: str | None = None) -> bool:
+        if user_id is None:
+            cur = self.conn.execute(
+                "DELETE FROM sessions WHERE id = ?", (session_id,)
+            )
+        else:
+            cur = self.conn.execute(
+                "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
         return cur.rowcount > 0
 
 
@@ -628,6 +647,12 @@ class ChatRepository:
             created_at=created_at,
         )
 
+    def get_turn(self, turn_id: str) -> ChatTurn | None:
+        row = self.conn.execute(
+            "SELECT * FROM chat_turns WHERE id = ?", (turn_id,)
+        ).fetchone()
+        return _row_to_turn(row) if row else None
+
     def list_turns(self, session_id: str) -> list[ChatTurn]:
         rows = self.conn.execute(
             "SELECT * FROM chat_turns WHERE session_id = ? ORDER BY created_at",
@@ -711,6 +736,7 @@ def _row_to_session(row: sqlite3.Row) -> Session:
     keys = row.keys()
     return Session(
         id=row["id"],
+        user_id=row["user_id"] if "user_id" in keys else None,
         name=row["name"],
         status=row["status"],
         discovery_status=row["discovery_status"] if "discovery_status" in keys else "empty",
@@ -745,6 +771,91 @@ def _row_to_processing_event(row: sqlite3.Row) -> ProcessingEvent:
         message=row["message"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )
+
+
+def _row_to_user(row: sqlite3.Row) -> User:
+    return User(
+        id=row["id"],
+        google_sub=row["google_sub"],
+        email=row["email"],
+        name=row["name"],
+        picture=row["picture"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        last_seen_at=datetime.fromisoformat(row["last_seen_at"]),
+    )
+
+
+class UserRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def upsert_from_google(
+        self,
+        *,
+        google_sub: str,
+        email: str,
+        name: str | None,
+        picture: str | None,
+    ) -> User:
+        now = _now().isoformat()
+        existing = self.conn.execute(
+            "SELECT * FROM users WHERE google_sub = ?", (google_sub,)
+        ).fetchone()
+        if existing is None:
+            uid = new_id()
+            self.conn.execute(
+                """INSERT INTO users
+                   (id, google_sub, email, name, picture, created_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (uid, google_sub, email, name, picture, now, now),
+            )
+            row = self.conn.execute(
+                "SELECT * FROM users WHERE id = ?", (uid,)
+            ).fetchone()
+            return _row_to_user(row)
+        self.conn.execute(
+            """UPDATE users
+               SET email = ?, name = ?, picture = ?, last_seen_at = ?
+               WHERE id = ?""",
+            (email, name, picture, now, existing["id"]),
+        )
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE id = ?", (existing["id"],)
+        ).fetchone()
+        return _row_to_user(row)
+
+    def get(self, user_id: str) -> User | None:
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        return _row_to_user(row) if row else None
+
+    def get_by_google_sub(self, google_sub: str) -> User | None:
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE google_sub = ?", (google_sub,)
+        ).fetchone()
+        return _row_to_user(row) if row else None
+
+
+class LLMUsageRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def get(self, user_id: str, day: str) -> int:
+        row = self.conn.execute(
+            "SELECT tokens_used FROM llm_usage WHERE user_id = ? AND day = ?",
+            (user_id, day),
+        ).fetchone()
+        return int(row["tokens_used"]) if row else 0
+
+    def add_tokens(self, user_id: str, day: str, tokens: int) -> int:
+        self.conn.execute(
+            """INSERT INTO llm_usage (user_id, day, tokens_used) VALUES (?, ?, ?)
+               ON CONFLICT(user_id, day) DO UPDATE
+               SET tokens_used = tokens_used + excluded.tokens_used""",
+            (user_id, day, tokens),
+        )
+        return self.get(user_id, day)
 
 
 def _row_to_schema_column(row: sqlite3.Row) -> SchemaColumn:

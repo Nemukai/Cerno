@@ -132,6 +132,7 @@ def reingest_file(
     *,
     file_id: str,
     spec: FileSpec,
+    user_id: str,
     settings: Settings,
     files_repo: FileRepository,
     schemas_repo: SchemaRepository,
@@ -179,7 +180,7 @@ def reingest_file(
             casted = _cast_column(frame[name], col.dtype)
             frame = frame.with_columns(casted.alias(name))
 
-    processed_path = settings.parquet_path(file.session_id, file.id)
+    processed_path = settings.parquet_path(user_id, file.session_id, file.id)
     frame.write_parquet(processed_path)
 
     files_repo.update_processed(
@@ -215,6 +216,7 @@ def reingest_file(
 def apply_approval(
     *,
     session_id: str,
+    user_id: str,
     payload: ApprovalPayload,
     settings: Settings,
     files_repo: FileRepository,
@@ -237,6 +239,7 @@ def apply_approval(
         reingest_file(
             file_id=spec.file_id,
             spec=spec,
+            user_id=user_id,
             settings=settings,
             files_repo=files_repo,
             schemas_repo=schemas_repo,

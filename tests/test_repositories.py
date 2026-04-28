@@ -25,25 +25,56 @@ def conn():
     c.close()
 
 
-def test_session_create_get_list(conn) -> None:
+@pytest.fixture
+def user_id(conn) -> str:
+    from cerno.repositories import UserRepository
+
+    user = UserRepository(conn).upsert_from_google(
+        google_sub="repo-test-sub",
+        email="repo@cerno.local",
+        name="Repo Test",
+        picture=None,
+    )
+    return user.id
+
+
+def test_session_create_get_list(conn, user_id: str) -> None:
     repo = SessionRepository(conn)
-    s = repo.create("test session")
+    s = repo.create("test session", user_id=user_id)
     fetched = repo.get(s.id)
     assert fetched is not None
     assert fetched.name == "test session"
     assert fetched.status == "new"
+    assert fetched.user_id == user_id
 
     repo.set_status(s.id, "ready")
     assert repo.get(s.id).status == "ready"  # type: ignore[union-attr]
 
-    sessions = repo.list()
+    sessions = repo.list(user_id=user_id)
     assert len(sessions) == 1
 
 
-def test_file_create_schema_version_bump(conn) -> None:
+def test_session_list_isolates_users(conn) -> None:
+    from cerno.repositories import UserRepository
+
+    repo = SessionRepository(conn)
+    users = UserRepository(conn)
+    a = users.upsert_from_google(google_sub="a", email="a@x", name=None, picture=None)
+    b = users.upsert_from_google(google_sub="b", email="b@x", name=None, picture=None)
+    repo.create("a-session", user_id=a.id)
+    repo.create("b-session", user_id=b.id)
+    assert [s.name for s in repo.list(user_id=a.id)] == ["a-session"]
+    assert [s.name for s in repo.list(user_id=b.id)] == ["b-session"]
+    a_sess = repo.list(user_id=a.id)[0]
+    assert repo.get(a_sess.id, user_id=b.id) is None
+    assert repo.delete(a_sess.id, user_id=b.id) is False
+    assert repo.delete(a_sess.id, user_id=a.id) is True
+
+
+def test_file_create_schema_version_bump(conn, user_id: str) -> None:
     sessions = SessionRepository(conn)
     files = FileRepository(conn)
-    s = sessions.create("s")
+    s = sessions.create("s", user_id=user_id)
     f = files.create(session_id=s.id, filename="a.csv", parquet_path="/tmp/a", row_count=100)
     assert f.schema_version == 1
     new_version = files.bump_schema_version(f.id)
@@ -53,11 +84,11 @@ def test_file_create_schema_version_bump(conn) -> None:
     assert refetched.schema_version == 2
 
 
-def test_schema_replace_round_trip(conn) -> None:
+def test_schema_replace_round_trip(conn, user_id: str) -> None:
     sessions = SessionRepository(conn)
     files = FileRepository(conn)
     schemas = SchemaRepository(conn)
-    s = sessions.create("s")
+    s = sessions.create("s", user_id=user_id)
     f = files.create(session_id=s.id, filename="a.csv", parquet_path="/tmp/a", row_count=100)
 
     schema = FileSchema(
@@ -90,11 +121,11 @@ def test_schema_replace_round_trip(conn) -> None:
     assert [c.name for c in fetched.columns] == ["a", "b"]
 
 
-def test_link_create_and_review(conn) -> None:
+def test_link_create_and_review(conn, user_id: str) -> None:
     sessions = SessionRepository(conn)
     files = FileRepository(conn)
     links = LinkRepository(conn)
-    s = sessions.create("s")
+    s = sessions.create("s", user_id=user_id)
     f1 = files.create(session_id=s.id, filename="a.csv", parquet_path="/tmp/a", row_count=100)
     f2 = files.create(session_id=s.id, filename="b.csv", parquet_path="/tmp/b", row_count=50)
 
@@ -116,11 +147,11 @@ def test_link_create_and_review(conn) -> None:
     assert listed[0].overlap == 0.92
 
 
-def test_anomaly_top_excludes_reviewed(conn) -> None:
+def test_anomaly_top_excludes_reviewed(conn, user_id: str) -> None:
     sessions = SessionRepository(conn)
     files = FileRepository(conn)
     anomalies = AnomalyRepository(conn)
-    s = sessions.create("s")
+    s = sessions.create("s", user_id=user_id)
     f = files.create(session_id=s.id, filename="a.csv", parquet_path="/tmp/a", row_count=100)
 
     from datetime import UTC, datetime
@@ -152,11 +183,11 @@ def test_anomaly_top_excludes_reviewed(conn) -> None:
     assert len(top_after) == 2
 
 
-def test_dashboard_pages_and_notebook_cells(conn) -> None:
+def test_dashboard_pages_and_notebook_cells(conn, user_id: str) -> None:
     sessions = SessionRepository(conn)
     dashboards = DashboardRepository(conn)
     notebook = NotebookRepository(conn)
-    s = sessions.create("s")
+    s = sessions.create("s", user_id=user_id)
 
     d = dashboards.create(s.id)
     page = dashboards.add_page(dashboard_id=d.id, title="Overview", kind="overview", position=0)
@@ -187,10 +218,10 @@ def test_dashboard_pages_and_notebook_cells(conn) -> None:
     assert updated.output == {"stdout": "done"}
 
 
-def test_chat_turn_lifecycle(conn) -> None:
+def test_chat_turn_lifecycle(conn, user_id: str) -> None:
     sessions = SessionRepository(conn)
     chat = ChatRepository(conn)
-    s = sessions.create("s")
+    s = sessions.create("s", user_id=user_id)
 
     turn = chat.create_turn(session_id=s.id, user_message="how many customers?")
     chat.append_message(turn_id=turn.id, role="user", content="how many customers?")

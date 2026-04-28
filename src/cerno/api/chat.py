@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from cerno.api.deps import ConnDep, LLMDep, SettingsDep
+from cerno.api.deps import ConnDep, LLMDep, SettingsDep, UserDep
 from cerno.models import ChatMessage, ChatTurn, Widget
 from cerno.repositories import (
     ChatRepository,
@@ -11,10 +11,24 @@ from cerno.repositories import (
     FileRepository,
     NotebookRepository,
     SchemaRepository,
+    SessionRepository,
 )
 from cerno.services.chat import run_chat_turn
 
 router = APIRouter(tags=["chat"])
+
+
+def _require_session_owned(conn, session_id: str, user_id: str) -> None:
+    if SessionRepository(conn).get(session_id, user_id=user_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+
+def _require_turn_owned(conn, turn_id: str, user_id: str) -> None:
+    turn = ChatRepository(conn).get_turn(turn_id)
+    if turn is None:
+        raise HTTPException(status_code=404, detail="turn not found")
+    if SessionRepository(conn).get(turn.session_id, user_id=user_id) is None:
+        raise HTTPException(status_code=404, detail="turn not found")
 
 
 class ChatRequest(BaseModel):
@@ -35,7 +49,9 @@ async def post_chat(
     conn: ConnDep,
     settings: SettingsDep,
     llm_client: LLMDep,
+    user: UserDep,
 ) -> ChatResponse:
+    _require_session_owned(conn, session_id, user.id)
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
@@ -62,10 +78,16 @@ async def post_chat(
 
 
 @router.get("/sessions/{session_id}/turns", response_model=list[ChatTurn])
-def get_session_turns(session_id: str, conn: ConnDep) -> list[ChatTurn]:
+def get_session_turns(
+    session_id: str, conn: ConnDep, user: UserDep
+) -> list[ChatTurn]:
+    _require_session_owned(conn, session_id, user.id)
     return ChatRepository(conn).list_turns(session_id)
 
 
 @router.get("/turns/{turn_id}/messages", response_model=list[ChatMessage])
-def get_turn_messages(turn_id: str, conn: ConnDep) -> list[ChatMessage]:
+def get_turn_messages(
+    turn_id: str, conn: ConnDep, user: UserDep
+) -> list[ChatMessage]:
+    _require_turn_owned(conn, turn_id, user.id)
     return ChatRepository(conn).list_messages(turn_id)

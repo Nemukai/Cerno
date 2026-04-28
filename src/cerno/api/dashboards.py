@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from cerno.api.deps import ConnDep, SettingsDep
+from fastapi import HTTPException
+
+from cerno.api.deps import ConnDep, SettingsDep, UserDep
 from cerno.models import Anomaly, DashboardPage, NotebookCell
 from cerno.repositories import (
     AnomalyRepository,
@@ -11,6 +13,7 @@ from cerno.repositories import (
     LinkRepository,
     NotebookRepository,
     SchemaRepository,
+    SessionRepository,
 )
 from cerno.services.anomalies import detect_anomalies, persist_anomalies
 from cerno.services.dashboard import generate_overview
@@ -18,10 +21,16 @@ from cerno.services.dashboard import generate_overview
 router = APIRouter(tags=["dashboard"])
 
 
+def _require_session_owned(conn, session_id: str, user_id: str) -> None:
+    if SessionRepository(conn).get(session_id, user_id=user_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+
 @router.post("/sessions/{session_id}/build-dashboard")
 def post_build_dashboard(
-    session_id: str, conn: ConnDep, settings: SettingsDep
+    session_id: str, conn: ConnDep, settings: SettingsDep, user: UserDep
 ) -> dict[str, object]:
+    _require_session_owned(conn, session_id, user.id)
     files_repo = FileRepository(conn)
     schemas_repo = SchemaRepository(conn)
     links_repo = LinkRepository(conn)
@@ -58,7 +67,10 @@ def post_build_dashboard(
 
 
 @router.get("/sessions/{session_id}/dashboard")
-def get_dashboard(session_id: str, conn: ConnDep) -> dict[str, object]:
+def get_dashboard(
+    session_id: str, conn: ConnDep, user: UserDep
+) -> dict[str, object]:
+    _require_session_owned(conn, session_id, user.id)
     dashboards_repo = DashboardRepository(conn)
     notebook_repo = NotebookRepository(conn)
     dashboard = dashboards_repo.get_for_session(session_id)
@@ -78,5 +90,8 @@ def get_dashboard(session_id: str, conn: ConnDep) -> dict[str, object]:
 
 
 @router.get("/sessions/{session_id}/anomalies", response_model=list[Anomaly])
-def get_anomalies(session_id: str, conn: ConnDep, limit: int = 20) -> list[Anomaly]:
+def get_anomalies(
+    session_id: str, conn: ConnDep, user: UserDep, limit: int = 20
+) -> list[Anomaly]:
+    _require_session_owned(conn, session_id, user.id)
     return AnomalyRepository(conn).top_for_session(session_id, limit=limit)

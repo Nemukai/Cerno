@@ -39,17 +39,34 @@ def conn():
     c.close()
 
 
+@pytest.fixture
+def user_id(conn) -> str:
+    from cerno.repositories import UserRepository
+
+    user = UserRepository(conn).upsert_from_google(
+        google_sub="reingest-test", email="reingest@x", name=None, picture=None
+    )
+    return user.id
+
+
 def _seed_csv(
-    settings: Settings, conn, tmp_path: Path, name: str, content: str
+    settings: Settings,
+    conn,
+    tmp_path: Path,
+    name: str,
+    content: str,
+    *,
+    user_id: str,
 ) -> str:
     sessions = SessionRepository(conn)
     if not sessions.get("S1"):
-        sessions.create("test", session_id="S1")
+        sessions.create("test", user_id=user_id, session_id="S1")
     csv = tmp_path / name
     csv.write_text(content, encoding="utf-8")
     results = ingest_file(
         source_path=csv,
         original_filename=name,
+        user_id=user_id,
         session_id="S1",
         settings=settings,
         files_repo=FileRepository(conn),
@@ -58,7 +75,7 @@ def _seed_csv(
 
 
 def test_reingest_skips_metadata_rows_and_casts(
-    settings: Settings, conn, tmp_path: Path
+    settings: Settings, conn, tmp_path: Path, user_id: str
 ) -> None:
     fid = _seed_csv(
         settings,
@@ -66,6 +83,7 @@ def test_reingest_skips_metadata_rows_and_casts(
         tmp_path,
         "orders.csv",
         "Quarterly Report\n\norder_id,amount\n1,10.5\n2,20.0\n,\n",
+        user_id=user_id,
     )
 
     spec = FileSpec(
@@ -81,6 +99,7 @@ def test_reingest_skips_metadata_rows_and_casts(
     reingest_file(
         file_id=fid,
         spec=spec,
+        user_id=user_id,
         settings=settings,
         files_repo=FileRepository(conn),
         schemas_repo=SchemaRepository(conn),
@@ -100,9 +119,9 @@ def test_reingest_skips_metadata_rows_and_casts(
 
 
 def test_reingest_rejects_header_row_beyond_file(
-    settings: Settings, conn, tmp_path: Path
+    settings: Settings, conn, tmp_path: Path, user_id: str
 ) -> None:
-    fid = _seed_csv(settings, conn, tmp_path, "x.csv", "id\n1\n")
+    fid = _seed_csv(settings, conn, tmp_path, "x.csv", "id\n1\n", user_id=user_id)
     spec = FileSpec(
         file_id=fid,
         header_row=99,
@@ -114,6 +133,7 @@ def test_reingest_rejects_header_row_beyond_file(
         reingest_file(
             file_id=fid,
             spec=spec,
+            user_id=user_id,
             settings=settings,
             files_repo=FileRepository(conn),
             schemas_repo=SchemaRepository(conn),
@@ -121,13 +141,23 @@ def test_reingest_rejects_header_row_beyond_file(
 
 
 def test_apply_approval_persists_links_and_marks_session_ready(
-    settings: Settings, conn, tmp_path: Path
+    settings: Settings, conn, tmp_path: Path, user_id: str
 ) -> None:
     o_id = _seed_csv(
-        settings, conn, tmp_path, "orders.csv", "order_id,customer_id\n1,10\n2,11\n"
+        settings,
+        conn,
+        tmp_path,
+        "orders.csv",
+        "order_id,customer_id\n1,10\n2,11\n",
+        user_id=user_id,
     )
     c_id = _seed_csv(
-        settings, conn, tmp_path, "customers.csv", "id,name\n10,Ada\n11,Bea\n"
+        settings,
+        conn,
+        tmp_path,
+        "customers.csv",
+        "id,name\n10,Ada\n11,Bea\n",
+        user_id=user_id,
     )
 
     payload = ApprovalPayload(
@@ -168,6 +198,7 @@ def test_apply_approval_persists_links_and_marks_session_ready(
 
     apply_approval(
         session_id="S1",
+        user_id=user_id,
         payload=payload,
         settings=settings,
         files_repo=FileRepository(conn),
@@ -189,9 +220,11 @@ def test_apply_approval_persists_links_and_marks_session_ready(
 
 
 def test_preview_rows_falls_back_to_raw(
-    settings: Settings, conn, tmp_path: Path
+    settings: Settings, conn, tmp_path: Path, user_id: str
 ) -> None:
-    fid = _seed_csv(settings, conn, tmp_path, "x.csv", "id,name\n1,Ada\n2,Bea\n")
+    fid = _seed_csv(
+        settings, conn, tmp_path, "x.csv", "id,name\n1,Ada\n2,Bea\n", user_id=user_id
+    )
     data = preview_rows(file_id=fid, limit=10, files_repo=FileRepository(conn))
     assert data["file_id"] == fid
     assert data["columns"] == ["c0", "c1"]

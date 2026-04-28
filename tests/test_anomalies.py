@@ -31,9 +31,19 @@ def conn():
     c.close()
 
 
-def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
+@pytest.fixture
+def user_id(conn) -> str:
+    from cerno.repositories import UserRepository
+
+    user = UserRepository(conn).upsert_from_google(
+        google_sub="anom-test", email="anom@x", name=None, picture=None
+    )
+    return user.id
+
+
+def _seed(settings: Settings, conn, user_id: str) -> tuple[str, dict[str, str]]:
     sessions = SessionRepository(conn)
-    session = sessions.create("s")
+    session = sessions.create("s", user_id=user_id)
 
     order_ids = list(range(1000, 1020)) + [1099]
     customer_ids = [i + 1 for i in range(20)] + [1]
@@ -52,6 +62,7 @@ def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
     o, _ = install_file(
         conn=conn,
         settings=settings,
+        user_id=user_id,
         session_id=session.id,
         filename="orders.csv",
         frame=orders_frame,
@@ -59,6 +70,7 @@ def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
     c, _ = install_file(
         conn=conn,
         settings=settings,
+        user_id=user_id,
         session_id=session.id,
         filename="customers.csv",
         frame=customers_frame,
@@ -68,9 +80,9 @@ def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
 
 
 def test_numeric_mad_flags_outlier(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
-    session_id, files = _seed(settings, conn)
+    session_id, files = _seed(settings, conn, user_id)
     drafts = detect_anomalies(
         session_id=session_id,
         settings=settings,
@@ -92,9 +104,9 @@ def test_numeric_mad_flags_outlier(
 
 
 def test_rare_value_flags_below_threshold(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
-    session_id, files = _seed(settings, conn)
+    session_id, files = _seed(settings, conn, user_id)
     # At default 1% threshold, tier=Z (1/20=5%) is NOT rare.
     drafts_default = detect_anomalies(
         session_id=session_id,
@@ -128,15 +140,15 @@ def test_rare_value_flags_below_threshold(
 
 
 def test_key_overlap_requires_confirmed_link(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
-    _seed(settings, conn)
+    _seed(settings, conn, user_id)
 
     sessions = SessionRepository(conn)
     files_repo = FileRepository(conn)
     schemas_repo = SchemaRepository(conn)
     links_repo = LinkRepository(conn)
-    session2 = sessions.create("s2")
+    session2 = sessions.create("s2", user_id=user_id)
 
     order_ids = list(range(1000, 1019)) + [1099]
     customer_ids = [i + 1 for i in range(19)] + [999]
@@ -151,6 +163,7 @@ def test_key_overlap_requires_confirmed_link(
     o, _ = install_file(
         conn=conn,
         settings=settings,
+        user_id=user_id,
         session_id=session2.id,
         filename="orders.csv",
         frame=orders_frame,
@@ -158,6 +171,7 @@ def test_key_overlap_requires_confirmed_link(
     c, _ = install_file(
         conn=conn,
         settings=settings,
+        user_id=user_id,
         session_id=session2.id,
         filename="customers.csv",
         frame=customers_frame,
@@ -198,9 +212,9 @@ def test_key_overlap_requires_confirmed_link(
 
 
 def test_persist_anomalies_assigns_ids(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
-    session_id, _files = _seed(settings, conn)
+    session_id, _files = _seed(settings, conn, user_id)
     drafts = detect_anomalies(
         session_id=session_id,
         settings=settings,

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cerno.api.dashboards import router as dashboards_router
-from cerno.api.deps import get_conn
+from cerno.api.deps import get_conn, get_current_user
 from cerno.config import Settings, get_settings, reset_settings
 from cerno.db import connect, connect_memory
 from cerno.repositories import (
@@ -19,6 +19,7 @@ from cerno.repositories import (
     NotebookRepository,
     SchemaRepository,
     SessionRepository,
+    UserRepository,
 )
 from cerno.services.anomalies import detect_anomalies, persist_anomalies
 from cerno.services.dashboard import generate_overview
@@ -38,10 +39,18 @@ def conn():
     c.close()
 
 
-def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
+@pytest.fixture
+def user_id(conn) -> str:
+    user = UserRepository(conn).upsert_from_google(
+        google_sub="dash-test", email="dash@x", name=None, picture=None
+    )
+    return user.id
+
+
+def _seed(settings: Settings, conn, user_id: str) -> tuple[str, dict[str, str]]:
     sessions = SessionRepository(conn)
     links_repo = LinkRepository(conn)
-    session = sessions.create("s")
+    session = sessions.create("s", user_id=user_id)
 
     order_ids = list(range(1000, 1020)) + [1099]
     customer_ids = [(i % 20) + 1 for i in range(20)] + [999]
@@ -56,6 +65,7 @@ def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
     o, _ = install_file(
         conn=conn,
         settings=settings,
+        user_id=user_id,
         session_id=session.id,
         filename="orders.csv",
         frame=orders_frame,
@@ -63,6 +73,7 @@ def _seed(settings: Settings, conn) -> tuple[str, dict[str, str]]:
     c, _ = install_file(
         conn=conn,
         settings=settings,
+        user_id=user_id,
         session_id=session.id,
         filename="customers.csv",
         frame=customers_frame,
@@ -110,9 +121,9 @@ def _run_pipeline(session_id: str, settings: Settings, conn) -> str:
 
 
 def test_overview_page_widget_order(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
-    session_id, _files = _seed(settings, conn)
+    session_id, _files = _seed(settings, conn, user_id)
     page_id = _run_pipeline(session_id, settings, conn)
 
     cells = NotebookRepository(conn).list_for_page(page_id)
@@ -135,9 +146,9 @@ def test_overview_page_widget_order(
 
 
 def test_overview_is_idempotent(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
-    session_id, _files = _seed(settings, conn)
+    session_id, _files = _seed(settings, conn, user_id)
     first_page = _run_pipeline(session_id, settings, conn)
     second_page = _run_pipeline(session_id, settings, conn)
     assert first_page != second_page
@@ -156,7 +167,20 @@ def api_settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def api_client(api_settings: Settings):
+def api_user_id(api_settings: Settings) -> str:
+    c = connect(api_settings)
+    try:
+        user = UserRepository(c).upsert_from_google(
+            google_sub="dash-api-test", email="dash-api@x", name=None, picture=None
+        )
+        c.commit()
+        return user.id
+    finally:
+        c.close()
+
+
+@pytest.fixture
+def api_client(api_settings: Settings, api_user_id: str):
     app = FastAPI()
     app.include_router(dashboards_router)
 
@@ -171,18 +195,26 @@ def api_client(api_settings: Settings):
         finally:
             c.close()
 
+    def override_user():
+        c = connect(api_settings)
+        try:
+            return UserRepository(c).get(api_user_id)
+        finally:
+            c.close()
+
     app.dependency_overrides[get_settings] = override_settings
     app.dependency_overrides[get_conn] = override_conn
+    app.dependency_overrides[get_current_user] = override_user
     yield TestClient(app)
     reset_settings()
 
 
 def _seed_via_settings(
-    api_settings: Settings,
+    api_settings: Settings, user_id: str
 ) -> tuple[str, dict[str, str]]:
     c = connect(api_settings)
     try:
-        session_id, files = _seed(api_settings, c)
+        session_id, files = _seed(api_settings, c, user_id)
         c.commit()
         return session_id, files
     finally:
@@ -190,9 +222,9 @@ def _seed_via_settings(
 
 
 def test_build_dashboard_endpoint_returns_counts(
-    tmp_path: Path, api_settings: Settings, api_client
+    tmp_path: Path, api_settings: Settings, api_client, api_user_id: str
 ) -> None:
-    session_id, _files = _seed_via_settings(api_settings)
+    session_id, _files = _seed_via_settings(api_settings, api_user_id)
     response = api_client.post(f"/sessions/{session_id}/build-dashboard")
     assert response.status_code == 200
     body = response.json()
@@ -202,9 +234,9 @@ def test_build_dashboard_endpoint_returns_counts(
 
 
 def test_get_dashboard_returns_pages_and_cells(
-    tmp_path: Path, api_settings: Settings, api_client
+    tmp_path: Path, api_settings: Settings, api_client, api_user_id: str
 ) -> None:
-    session_id, _files = _seed_via_settings(api_settings)
+    session_id, _files = _seed_via_settings(api_settings, api_user_id)
     api_client.post(f"/sessions/{session_id}/build-dashboard")
     response = api_client.get(f"/sessions/{session_id}/dashboard")
     assert response.status_code == 200
@@ -217,9 +249,9 @@ def test_get_dashboard_returns_pages_and_cells(
 
 
 def test_anomalies_endpoint_respects_limit(
-    tmp_path: Path, api_settings: Settings, api_client
+    tmp_path: Path, api_settings: Settings, api_client, api_user_id: str
 ) -> None:
-    session_id, _files = _seed_via_settings(api_settings)
+    session_id, _files = _seed_via_settings(api_settings, api_user_id)
     api_client.post(f"/sessions/{session_id}/build-dashboard")
     response = api_client.get(f"/sessions/{session_id}/anomalies?limit=3")
     assert response.status_code == 200

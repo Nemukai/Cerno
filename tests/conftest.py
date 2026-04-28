@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +11,8 @@ import polars as pl
 import pytest
 
 from cerno.config import Settings, reset_settings
-from cerno.models import FileSchema, SchemaColumn
-from cerno.repositories import FileRepository, SchemaRepository, SessionRepository
+from cerno.models import FileSchema, SchemaColumn, User
+from cerno.repositories import FileRepository, SchemaRepository
 
 
 @pytest.fixture
@@ -20,6 +22,7 @@ def tmp_data_root(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         root = Path(td)
         monkeypatch.setenv("CERNO_DATA_ROOT", str(root))
         monkeypatch.setenv("CERNO_LLM_ENABLED", "false")
+        monkeypatch.setenv("CERNO_SESSION_SECRET", "test-secret")
         yield root
     reset_settings()
 
@@ -29,6 +32,55 @@ def settings(tmp_data_root: Path) -> Settings:
     from cerno.config import get_settings
 
     return get_settings()
+
+
+@pytest.fixture
+def test_user(settings: Settings) -> User:
+    """A user row created directly in the SQLite DB.
+
+    The auth flow is bypassed in unit tests; the cookie fixture below signs a
+    cookie for this user so endpoint tests get past the UserDep guard.
+    """
+    from cerno.db import connect
+    from cerno.repositories import UserRepository
+
+    conn = connect(settings)
+    try:
+        user = UserRepository(conn).upsert_from_google(
+            google_sub="test-sub-123",
+            email="test@cerno.local",
+            name="Test User",
+            picture=None,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return user
+
+
+@pytest.fixture
+def auth_cookies(test_user: User, settings: Settings) -> dict[str, str]:
+    """Signed session cookie for the test user."""
+    from cerno.api.deps import cookie_serializer
+
+    token = cookie_serializer(settings).dumps({"user_id": test_user.id})
+    return {settings.session_cookie_name: token}
+
+
+@pytest.fixture
+def auth_client(
+    settings: Settings, auth_cookies: dict[str, str]
+):
+    """A FastAPI TestClient pre-loaded with the test user's session cookie."""
+    from fastapi.testclient import TestClient
+
+    from cerno.main import create_app
+
+    app = create_app()
+    client = TestClient(app)
+    for k, v in auth_cookies.items():
+        client.cookies.set(k, v)
+    return client
 
 
 _DTYPE_TO_INFERRED: dict[str, str] = {
@@ -47,6 +99,7 @@ def install_file(
     *,
     conn: Any,
     settings: Settings,
+    user_id: str,
     session_id: str,
     filename: str,
     frame: pl.DataFrame,
@@ -62,7 +115,7 @@ def install_file(
         parquet_path="",
         row_count=frame.height,
     )
-    parquet_path = settings.parquet_path(session_id, file.id)
+    parquet_path = settings.parquet_path(user_id, session_id, file.id)
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(parquet_path)
     files_repo.update_processed(
@@ -95,13 +148,22 @@ def install_file(
 
 
 @pytest.fixture
-def install_file_factory(settings: Settings):
-    """Pytest fixture exposing install_file as a closure with bound settings."""
+def install_file_factory(settings: Settings, test_user: User):
+    """Pytest fixture exposing install_file as a closure with bound settings + test user."""
 
-    def _factory(conn: Any, session_id: str, filename: str, frame: pl.DataFrame, **kwargs: Any):
+    def _factory(
+        conn: Any,
+        session_id: str,
+        filename: str,
+        frame: pl.DataFrame,
+        *,
+        user_id: str | None = None,
+        **kwargs: Any,
+    ):
         return install_file(
             conn=conn,
             settings=settings,
+            user_id=user_id or test_user.id,
             session_id=session_id,
             filename=filename,
             frame=frame,

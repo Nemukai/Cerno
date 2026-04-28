@@ -29,6 +29,7 @@ def test_settings_data_root_created(tmp_data_root: Path) -> None:
 
 def test_settings_path_helpers(tmp_data_root: Path) -> None:
     settings = get_settings()
-    assert settings.session_dir("abc").name == "abc"
-    assert settings.parquet_path("abc", "file1").suffix == ".parquet"
+    assert settings.user_dir("u1").name == "u1"
+    assert settings.session_dir("u1", "abc").name == "abc"
+    assert settings.parquet_path("u1", "abc", "file1").suffix == ".parquet"
     assert settings.db_path().name == "cerno.sqlite"

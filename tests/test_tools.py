@@ -37,7 +37,12 @@ def tool_ctx(two_parquets: tuple[Path, Path]):
         "orders": engine.to_pandas("orders"),
     }
     conn = connect_memory()
-    SessionRepository(conn).create("s", session_id="sess")
+    from cerno.repositories import UserRepository
+
+    user = UserRepository(conn).upsert_from_google(
+        google_sub="tools-test", email="tools@x", name=None, picture=None
+    )
+    SessionRepository(conn).create("s", user_id=user.id, session_id="sess")
     ctx = ToolContext(
         session_id="sess",
         engine=engine,

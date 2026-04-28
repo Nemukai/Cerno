@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from cerno.api.deps import ConnDep, LLMDep, SettingsDep
+from cerno.api.deps import ConnDep, LLMDep, SettingsDep, UserDep
 from cerno.models import File as FileModel
 from cerno.models import Link, ProcessingEvent, Session
 from cerno.repositories import (
@@ -32,34 +32,54 @@ from cerno.services.reingest import (
 router = APIRouter(tags=["sessions"])
 
 
-class CreateSessionBody(BaseModel):
-    name: str
-
-
-@router.post("/sessions", response_model=Session)
-def create_session(body: CreateSessionBody, conn: ConnDep) -> Session:
-    return SessionRepository(conn).create(body.name)
-
-
-@router.get("/sessions", response_model=list[Session])
-def list_sessions(conn: ConnDep) -> list[Session]:
-    return SessionRepository(conn).list()
-
-
-@router.get("/sessions/{session_id}", response_model=Session)
-def get_session(session_id: str, conn: ConnDep) -> Session:
-    session = SessionRepository(conn).get(session_id)
+def _require_session(
+    conn: sqlite3.Connection, session_id: str, user_id: str
+) -> Session:
+    session = SessionRepository(conn).get(session_id, user_id=user_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     return session
 
 
+def _require_file_for_user(
+    conn: sqlite3.Connection, file_id: str, user_id: str
+) -> tuple[FileModel, Session]:
+    file = FileRepository(conn).get(file_id)
+    if file is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    session = SessionRepository(conn).get(file.session_id, user_id=user_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="file not found")
+    return file, session
+
+
+class CreateSessionBody(BaseModel):
+    name: str
+
+
+@router.post("/sessions", response_model=Session)
+def create_session(body: CreateSessionBody, conn: ConnDep, user: UserDep) -> Session:
+    return SessionRepository(conn).create(body.name, user_id=user.id)
+
+
+@router.get("/sessions", response_model=list[Session])
+def list_sessions(conn: ConnDep, user: UserDep) -> list[Session]:
+    return SessionRepository(conn).list(user_id=user.id)
+
+
+@router.get("/sessions/{session_id}", response_model=Session)
+def get_session(session_id: str, conn: ConnDep, user: UserDep) -> Session:
+    return _require_session(conn, session_id, user.id)
+
+
 @router.delete("/sessions/{session_id}", status_code=204)
-def delete_session(session_id: str, conn: ConnDep, settings: SettingsDep) -> None:
-    deleted = SessionRepository(conn).delete(session_id)
+def delete_session(
+    session_id: str, conn: ConnDep, settings: SettingsDep, user: UserDep
+) -> None:
+    deleted = SessionRepository(conn).delete(session_id, user_id=user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="session not found")
-    session_dir = settings.session_dir(session_id)
+    session_dir = settings.session_dir(user.id, session_id)
     if session_dir.exists():
         shutil.rmtree(session_dir, ignore_errors=True)
 
@@ -73,16 +93,15 @@ def upload_files(
     session_id: str,
     conn: ConnDep,
     settings: SettingsDep,
+    user: UserDep,
     uploads: Annotated[list[UploadFile], File()],
 ) -> FileUploadResponse:
     sessions_repo = SessionRepository(conn)
-    session = sessions_repo.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="session not found")
+    _require_session(conn, session_id, user.id)
     if not uploads:
         raise HTTPException(status_code=400, detail="no files provided")
 
-    tmp_dir = settings.session_dir(session_id)
+    tmp_dir = settings.session_dir(user.id, session_id)
     tmp_dir.mkdir(parents=True, exist_ok=True)
     files_repo = FileRepository(conn)
 
@@ -97,6 +116,7 @@ def upload_files(
             ingested: list[IngestedFile] = ingest_file(
                 source_path=tmp_path,
                 original_filename=original,
+                user_id=user.id,
                 session_id=session_id,
                 settings=settings,
                 files_repo=files_repo,
@@ -116,37 +136,35 @@ def upload_files(
 
 
 @router.delete("/files/{file_id}", status_code=204)
-def delete_file(file_id: str, conn: ConnDep, settings: SettingsDep) -> None:
+def delete_file(
+    file_id: str, conn: ConnDep, settings: SettingsDep, user: UserDep
+) -> None:
+    file, session = _require_file_for_user(conn, file_id, user.id)
     files_repo = FileRepository(conn)
-    file = files_repo.get(file_id)
-    if file is None:
-        raise HTTPException(status_code=404, detail="file not found")
-    session_id = file.session_id
-    raw = settings.raw_parquet_path(session_id, file_id)
-    processed = settings.parquet_path(session_id, file_id)
-    files_repo.delete(file_id)
+    raw = settings.raw_parquet_path(user.id, session.id, file.id)
+    processed = settings.parquet_path(user.id, session.id, file.id)
+    files_repo.delete(file.id)
     for path in (raw, processed):
         try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
     sessions_repo = SessionRepository(conn)
-    session = sessions_repo.get(session_id)
-    if session is not None and session.discovery_status != "empty":
-        sessions_repo.set_discovery_status(session_id, "empty")
-        sessions_repo.set_overview(session_id, None)
+    fresh = sessions_repo.get(session.id, user_id=user.id)
+    if fresh is not None and fresh.discovery_status != "empty":
+        sessions_repo.set_discovery_status(session.id, "empty")
+        sessions_repo.set_overview(session.id, None)
 
 
 @router.get("/sessions/{session_id}/files", response_model=list[FileModel])
-def list_files(session_id: str, conn: ConnDep) -> list[FileModel]:
+def list_files(session_id: str, conn: ConnDep, user: UserDep) -> list[FileModel]:
+    _require_session(conn, session_id, user.id)
     return FileRepository(conn).list_for_session(session_id)
 
 
 @router.get("/files/{file_id}", response_model=FileModel)
-def get_file(file_id: str, conn: ConnDep) -> FileModel:
-    file = FileRepository(conn).get(file_id)
-    if file is None:
-        raise HTTPException(status_code=404, detail="file not found")
+def get_file(file_id: str, conn: ConnDep, user: UserDep) -> FileModel:
+    file, _ = _require_file_for_user(conn, file_id, user.id)
     return file
 
 
@@ -159,8 +177,9 @@ class FilePreviewResponse(BaseModel):
 
 @router.get("/files/{file_id}/preview", response_model=FilePreviewResponse)
 def get_file_preview(
-    file_id: str, conn: ConnDep, limit: int = 100
+    file_id: str, conn: ConnDep, user: UserDep, limit: int = 100
 ) -> FilePreviewResponse:
+    _require_file_for_user(conn, file_id, user.id)
     try:
         data = preview_rows(
             file_id=file_id, limit=limit, files_repo=FileRepository(conn)
@@ -214,14 +233,14 @@ _INFERRED_TO_SIMPLE = {
 
 
 def _build_discovery_response(
-    session_id: str, conn: sqlite3.Connection
+    session_id: str, conn: sqlite3.Connection, user_id: str
 ) -> DiscoveryResponse:
     sessions_repo = SessionRepository(conn)
     files_repo = FileRepository(conn)
     schemas_repo = SchemaRepository(conn)
     links_repo = LinkRepository(conn)
 
-    session = sessions_repo.get(session_id)
+    session = sessions_repo.get(session_id, user_id=user_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     files = files_repo.list_for_session(session_id)
@@ -274,11 +293,10 @@ async def post_process(
     conn: ConnDep,
     settings: SettingsDep,
     llm_client: LLMDep,
+    user: UserDep,
 ) -> DiscoveryResponse:
+    _require_session(conn, session_id, user.id)
     sessions_repo = SessionRepository(conn)
-    if sessions_repo.get(session_id) is None:
-        raise HTTPException(status_code=404, detail="session not found")
-
     files_repo = FileRepository(conn)
     links_repo = LinkRepository(conn)
     events_repo = ProcessingEventRepository(conn)
@@ -333,8 +351,10 @@ async def post_process(
 
 
 @router.get("/sessions/{session_id}/discovery", response_model=DiscoveryResponse)
-def get_discovery(session_id: str, conn: ConnDep) -> DiscoveryResponse:
-    return _build_discovery_response(session_id, conn)
+def get_discovery(
+    session_id: str, conn: ConnDep, user: UserDep
+) -> DiscoveryResponse:
+    return _build_discovery_response(session_id, conn, user.id)
 
 
 class ApprovalBody(BaseModel):
@@ -351,10 +371,9 @@ def post_approve(
     body: ApprovalBody,
     conn: ConnDep,
     settings: SettingsDep,
+    user: UserDep,
 ) -> DiscoveryResponse:
-    sessions_repo = SessionRepository(conn)
-    if sessions_repo.get(session_id) is None:
-        raise HTTPException(status_code=404, detail="session not found")
+    _require_session(conn, session_id, user.id)
 
     payload = ApprovalPayload(
         files=[
@@ -391,29 +410,34 @@ def post_approve(
     try:
         apply_approval(
             session_id=session_id,
+            user_id=user.id,
             payload=payload,
             settings=settings,
             files_repo=FileRepository(conn),
             schemas_repo=SchemaRepository(conn),
             links_repo=LinkRepository(conn),
-            sessions_repo=sessions_repo,
+            sessions_repo=SessionRepository(conn),
             events_repo=ProcessingEventRepository(conn),
         )
     except ReingestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return _build_discovery_response(session_id, conn)
+    return _build_discovery_response(session_id, conn, user.id)
 
 
 @router.get(
     "/sessions/{session_id}/processing", response_model=list[ProcessingEvent]
 )
 def get_processing_events(
-    session_id: str, conn: ConnDep
+    session_id: str, conn: ConnDep, user: UserDep
 ) -> list[ProcessingEvent]:
+    _require_session(conn, session_id, user.id)
     return ProcessingEventRepository(conn).list_for_session(session_id)
 
 
 @router.get("/sessions/{session_id}/links", response_model=list[Link])
-def get_session_links(session_id: str, conn: ConnDep) -> list[Link]:
+def get_session_links(
+    session_id: str, conn: ConnDep, user: UserDep
+) -> list[Link]:
+    _require_session(conn, session_id, user.id)
     return LinkRepository(conn).list_for_session(session_id)

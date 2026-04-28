@@ -31,8 +31,25 @@ TurnState = Literal["pending", "tool_running", "rendering", "complete", "failed"
 MessageRole = Literal["user", "assistant", "tool", "system"]
 
 
+class User(BaseModel):
+    id: str
+    google_sub: str
+    email: str
+    name: str | None = None
+    picture: str | None = None
+    created_at: datetime
+    last_seen_at: datetime
+
+
+class LLMUsage(BaseModel):
+    user_id: str
+    day: str
+    tokens_used: int
+
+
 class Session(BaseModel):
     id: str
+    user_id: str | None = None
     name: str
     status: SessionStatus = "new"
     discovery_status: DiscoveryStatus = "empty"

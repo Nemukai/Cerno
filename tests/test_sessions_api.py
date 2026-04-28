@@ -7,10 +7,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from cerno.api.deps import get_conn
+from cerno.api.deps import get_conn, get_current_user
 from cerno.api.sessions import router as sessions_router
 from cerno.config import Settings, get_settings, reset_settings
 from cerno.db import connect
+from cerno.repositories import UserRepository
 
 
 @pytest.fixture
@@ -22,7 +23,20 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def client(settings: Settings):
+def test_user_id(settings: Settings) -> str:
+    c = connect(settings)
+    try:
+        user = UserRepository(c).upsert_from_google(
+            google_sub="api-test", email="api@x", name=None, picture=None
+        )
+        c.commit()
+        return user.id
+    finally:
+        c.close()
+
+
+@pytest.fixture
+def client(settings: Settings, test_user_id: str):
     app = FastAPI()
     app.include_router(sessions_router)
 
@@ -37,8 +51,16 @@ def client(settings: Settings):
         finally:
             c.close()
 
+    def override_user():
+        c = connect(settings)
+        try:
+            return UserRepository(c).get(test_user_id)
+        finally:
+            c.close()
+
     app.dependency_overrides[get_settings] = override_settings
     app.dependency_overrides[get_conn] = override_conn
+    app.dependency_overrides[get_current_user] = override_user
     yield TestClient(app)
     reset_settings()
 
@@ -149,7 +171,7 @@ def test_upload_dedups_identical_files(settings: Settings, client: TestClient) -
 
 
 def test_delete_file_removes_record_and_resets_discovery(
-    settings: Settings, client: TestClient
+    settings: Settings, client: TestClient, test_user_id: str
 ) -> None:
     session_id = client.post("/sessions", json={"name": "demo"}).json()["id"]
     upload = client.post(
@@ -158,7 +180,7 @@ def test_delete_file_removes_record_and_resets_discovery(
     )
     file_id = upload.json()["files"][0]["id"]
 
-    raw_path = settings.raw_parquet_path(session_id, file_id)
+    raw_path = settings.raw_parquet_path(test_user_id, session_id, file_id)
     assert raw_path.exists()
 
     delete = client.delete(f"/files/{file_id}")

@@ -29,6 +29,16 @@ def conn():
     c.close()
 
 
+@pytest.fixture
+def user_id(conn) -> str:
+    from cerno.repositories import UserRepository
+
+    user = UserRepository(conn).upsert_from_google(
+        google_sub="ingest-test", email="ingest@x", name=None, picture=None
+    )
+    return user.id
+
+
 def _write_csv(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
@@ -96,11 +106,11 @@ def test_unsupported_suffix_raises(tmp_path: Path) -> None:
 
 
 def test_ingest_writes_raw_parquet_only(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
     sessions = SessionRepository(conn)
     files_repo = FileRepository(conn)
-    session = sessions.create("s")
+    session = sessions.create("s", user_id=user_id)
 
     csv = tmp_path / "customers.csv"
     _write_csv(csv, "id,name\n1,Alice\n2,Bob\n")
@@ -108,6 +118,7 @@ def test_ingest_writes_raw_parquet_only(
     results = ingest_file(
         source_path=csv,
         original_filename="customers.csv",
+        user_id=user_id,
         session_id=session.id,
         settings=settings,
         files_repo=files_repo,
@@ -122,17 +133,18 @@ def test_ingest_writes_raw_parquet_only(
 
 
 def test_first_n_raw_rows_returns_lists(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
     sessions = SessionRepository(conn)
     files_repo = FileRepository(conn)
-    session = sessions.create("s")
+    session = sessions.create("s", user_id=user_id)
 
     csv = tmp_path / "x.csv"
     _write_csv(csv, "id,name\n1,Alice\n2,Bob\n3,Carol\n")
     results = ingest_file(
         source_path=csv,
         original_filename="x.csv",
+        user_id=user_id,
         session_id=session.id,
         settings=settings,
         files_repo=files_repo,
@@ -143,11 +155,11 @@ def test_first_n_raw_rows_returns_lists(
 
 
 def test_ingest_xlsx_one_file_per_sheet(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
     sessions = SessionRepository(conn)
     files_repo = FileRepository(conn)
-    session = sessions.create("s")
+    session = sessions.create("s", user_id=user_id)
     xlsx = tmp_path / "mix.xlsx"
     _write_xlsx(
         xlsx,
@@ -159,6 +171,7 @@ def test_ingest_xlsx_one_file_per_sheet(
     results = ingest_file(
         source_path=xlsx,
         original_filename="mix.xlsx",
+        user_id=user_id,
         session_id=session.id,
         settings=settings,
         files_repo=files_repo,
@@ -171,15 +184,16 @@ def test_ingest_xlsx_one_file_per_sheet(
 
 
 def test_ingest_missing_source_raises(
-    tmp_path: Path, settings: Settings, conn
+    tmp_path: Path, settings: Settings, conn, user_id: str
 ) -> None:
     sessions = SessionRepository(conn)
     files_repo = FileRepository(conn)
-    session = sessions.create("s")
+    session = sessions.create("s", user_id=user_id)
     with pytest.raises(IngestError):
         ingest_file(
             source_path=tmp_path / "nope.csv",
             original_filename="nope.csv",
+            user_id=user_id,
             session_id=session.id,
             settings=settings,
             files_repo=files_repo,

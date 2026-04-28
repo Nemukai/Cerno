@@ -68,18 +68,35 @@ def conn():
     c.close()
 
 
+@pytest.fixture
+def user_id(conn) -> str:
+    from cerno.repositories import UserRepository
+
+    user = UserRepository(conn).upsert_from_google(
+        google_sub="discovery-test", email="discovery@x", name=None, picture=None
+    )
+    return user.id
+
+
 def _seed_csv(
-    settings: Settings, conn, tmp_path: Path, name: str, content: str
+    settings: Settings,
+    conn,
+    tmp_path: Path,
+    name: str,
+    content: str,
+    *,
+    user_id: str,
 ) -> str:
     files_repo = FileRepository(conn)
     sessions = SessionRepository(conn)
     if not sessions.get("S1"):
-        sessions.create("test", session_id="S1")
+        sessions.create("test", user_id=user_id, session_id="S1")
     csv = tmp_path / name
     csv.write_text(content, encoding="utf-8")
     results = ingest_file(
         source_path=csv,
         original_filename=name,
+        user_id=user_id,
         session_id="S1",
         settings=settings,
         files_repo=files_repo,
@@ -88,7 +105,7 @@ def _seed_csv(
 
 
 async def test_run_discovery_persists_metadata_and_links(
-    settings: Settings, conn, tmp_path: Path
+    settings: Settings, conn, tmp_path: Path, user_id: str
 ) -> None:
     o_id = _seed_csv(
         settings,
@@ -96,9 +113,15 @@ async def test_run_discovery_persists_metadata_and_links(
         tmp_path,
         "orders.csv",
         "Q1 Report\n\norder_id,customer_id\n1,10\n2,11\n",
+        user_id=user_id,
     )
     c_id = _seed_csv(
-        settings, conn, tmp_path, "customers.csv", "id,name\n10,Ada\n11,Bea\n"
+        settings,
+        conn,
+        tmp_path,
+        "customers.csv",
+        "id,name\n10,Ada\n11,Bea\n",
+        user_id=user_id,
     )
 
     payload = {
@@ -175,9 +198,11 @@ async def test_run_discovery_persists_metadata_and_links(
 
 
 async def test_run_discovery_marks_failed_when_llm_returns_no_files(
-    settings: Settings, conn, tmp_path: Path
+    settings: Settings, conn, tmp_path: Path, user_id: str
 ) -> None:
-    _seed_csv(settings, conn, tmp_path, "orders.csv", "id\n1\n2\n")
+    _seed_csv(
+        settings, conn, tmp_path, "orders.csv", "id\n1\n2\n", user_id=user_id
+    )
     transport = FakeTransport(
         [_resp({"files": [{"file_id": "ghost", "friendly_name": "x", "description": "", "header_row": 0, "columns": []}], "links": [], "overview": ""})]
     )
