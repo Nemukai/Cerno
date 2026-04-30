@@ -1,14 +1,21 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { googleLoginUrl, logout, useUser, type CurrentUser } from "../lib/auth";
 
 type AuthGateProps = {
-  children: (user: CurrentUser, signOut: () => Promise<void>) => ReactNode;
+  children: (
+    user: CurrentUser,
+    signOut: () => Promise<void>,
+    onUserUpdate: (next: CurrentUser) => void,
+  ) => ReactNode;
 };
 
 export function AuthGate({ children }: AuthGateProps) {
-  const { user, loading, error, refresh } = useUser();
+  const { user: serverUser, loading, error, refresh } = useUser();
+  const [override, setOverride] = useState<CurrentUser | null>(null);
 
-  if (loading) {
+  const user = override ?? serverUser;
+
+  if (loading && !override) {
     return (
       <div className="flex h-screen items-center justify-center bg-neutral-950 text-neutral-400">
         Loading…
@@ -16,7 +23,7 @@ export function AuthGate({ children }: AuthGateProps) {
     );
   }
 
-  if (error) {
+  if (error && !override) {
     return (
       <div className="flex h-screen items-center justify-center bg-neutral-950 text-red-400">
         Failed to load session: {error}
@@ -29,11 +36,12 @@ export function AuthGate({ children }: AuthGateProps) {
   }
 
   const signOut = async () => {
+    setOverride(null);
     await logout();
     await refresh();
   };
 
-  return <>{children(user, signOut)}</>;
+  return <>{children(user, signOut, setOverride)}</>;
 }
 
 function SignInScreen() {

@@ -61,7 +61,22 @@ def get_current_user(
     return user
 
 
+def get_granted_user(
+    user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    if user.access_status == "revoked":
+        raise HTTPException(
+            status_code=403, detail="access has been revoked"
+        )
+    if user.access_status != "granted":
+        raise HTTPException(
+            status_code=403, detail="beta access code required"
+        )
+    return user
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 ConnDep = Annotated[sqlite3.Connection, Depends(get_conn)]
 LLMDep = Annotated[LLMClient, Depends(get_llm_client)]
 UserDep = Annotated[User, Depends(get_current_user)]
+GrantedUserDep = Annotated[User, Depends(get_granted_user)]

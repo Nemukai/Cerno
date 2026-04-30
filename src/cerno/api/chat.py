@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from cerno.api.deps import ConnDep, LLMDep, SettingsDep, UserDep
+from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.models import ChatMessage, ChatTurn, Widget
 from cerno.repositories import (
     ChatRepository,
@@ -49,7 +49,7 @@ async def post_chat(
     conn: ConnDep,
     settings: SettingsDep,
     llm_client: LLMDep,
-    user: UserDep,
+    user: GrantedUserDep,
 ) -> ChatResponse:
     _require_session_owned(conn, session_id, user.id)
     message = body.message.strip()
@@ -79,7 +79,7 @@ async def post_chat(
 
 @router.get("/sessions/{session_id}/turns", response_model=list[ChatTurn])
 def get_session_turns(
-    session_id: str, conn: ConnDep, user: UserDep
+    session_id: str, conn: ConnDep, user: GrantedUserDep
 ) -> list[ChatTurn]:
     _require_session_owned(conn, session_id, user.id)
     return ChatRepository(conn).list_turns(session_id)
@@ -87,7 +87,7 @@ def get_session_turns(
 
 @router.get("/turns/{turn_id}/messages", response_model=list[ChatMessage])
 def get_turn_messages(
-    turn_id: str, conn: ConnDep, user: UserDep
+    turn_id: str, conn: ConnDep, user: GrantedUserDep
 ) -> list[ChatMessage]:
     _require_turn_owned(conn, turn_id, user.id)
     return ChatRepository(conn).list_messages(turn_id)

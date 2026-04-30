@@ -108,9 +108,11 @@ def settings(tmp_path: Path) -> Settings:
 def test_user_id(settings: Settings) -> str:
     conn = connect(settings)
     try:
-        user = UserRepository(conn).upsert_from_google(
+        repo = UserRepository(conn)
+        user = repo.upsert_from_google(
             google_sub="chat-test", email="chat@x", name=None, picture=None
         )
+        repo.mark_granted(user.id, "TEST")
         conn.commit()
         return user.id
     finally:

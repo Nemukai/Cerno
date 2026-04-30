@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from fastapi import HTTPException
 
-from cerno.api.deps import ConnDep, SettingsDep, UserDep
+from cerno.api.deps import ConnDep, GrantedUserDep, SettingsDep
 from cerno.models import Anomaly, DashboardPage, NotebookCell
 from cerno.repositories import (
     AnomalyRepository,
@@ -28,7 +28,7 @@ def _require_session_owned(conn, session_id: str, user_id: str) -> None:
 
 @router.post("/sessions/{session_id}/build-dashboard")
 def post_build_dashboard(
-    session_id: str, conn: ConnDep, settings: SettingsDep, user: UserDep
+    session_id: str, conn: ConnDep, settings: SettingsDep, user: GrantedUserDep
 ) -> dict[str, object]:
     _require_session_owned(conn, session_id, user.id)
     files_repo = FileRepository(conn)
@@ -68,7 +68,7 @@ def post_build_dashboard(
 
 @router.get("/sessions/{session_id}/dashboard")
 def get_dashboard(
-    session_id: str, conn: ConnDep, user: UserDep
+    session_id: str, conn: ConnDep, user: GrantedUserDep
 ) -> dict[str, object]:
     _require_session_owned(conn, session_id, user.id)
     dashboards_repo = DashboardRepository(conn)
@@ -91,7 +91,7 @@ def get_dashboard(
 
 @router.get("/sessions/{session_id}/anomalies", response_model=list[Anomaly])
 def get_anomalies(
-    session_id: str, conn: ConnDep, user: UserDep, limit: int = 20
+    session_id: str, conn: ConnDep, user: GrantedUserDep, limit: int = 20
 ) -> list[Anomaly]:
     _require_session_owned(conn, session_id, user.id)
     return AnomalyRepository(conn).top_for_session(session_id, limit=limit)

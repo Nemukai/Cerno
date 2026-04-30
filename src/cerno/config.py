@@ -51,8 +51,17 @@ class Settings(BaseSettings):
     session_cookie_name: str = "cerno_session"
     session_max_age_seconds: int = 60 * 60 * 24 * 30
 
+    operator_emails: str = ""
+
     per_user_quota_gb: int = 5
     daily_token_cap: int = 200_000
+
+    def operator_email_set(self) -> set[str]:
+        return {
+            e.strip().lower()
+            for e in self.operator_emails.split(",")
+            if e.strip()
+        }
 
     data_root: Path = Field(default_factory=lambda: Path.home() / ".cerno")
 

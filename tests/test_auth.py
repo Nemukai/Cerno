@@ -34,13 +34,34 @@ def app_client(app_settings: Settings) -> TestClient:
 
 @pytest.fixture
 def signed_in_user(app_settings: Settings):
+    """Signed-in + beta-granted user, ready to hit data-plane endpoints."""
     conn = connect(app_settings)
     try:
-        user = UserRepository(conn).upsert_from_google(
+        repo = UserRepository(conn)
+        user = repo.upsert_from_google(
             google_sub="auth-test-sub",
             email="auth-test@cerno.local",
             name="Auth Tester",
             picture="https://example.com/p.png",
+        )
+        granted = repo.mark_granted(user.id, "TEST")
+        conn.commit()
+        assert granted is not None
+        return granted
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def pending_user(app_settings: Settings):
+    """Signed-in but NOT beta-granted user."""
+    conn = connect(app_settings)
+    try:
+        user = UserRepository(conn).upsert_from_google(
+            google_sub="pending-test-sub",
+            email="pending-test@cerno.local",
+            name="Pending Tester",
+            picture=None,
         )
         conn.commit()
         return user

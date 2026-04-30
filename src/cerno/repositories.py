@@ -10,8 +10,10 @@ from cerno.db import dumps_json, loads_json
 
 logger = logging.getLogger(__name__)
 from cerno.models import (
+    AccessStatus,
     Anomaly,
     AuditEvent,
+    BetaCode,
     ChatMessage,
     ChatTurn,
     Dashboard,
@@ -774,14 +776,33 @@ def _row_to_processing_event(row: sqlite3.Row) -> ProcessingEvent:
 
 
 def _row_to_user(row: sqlite3.Row) -> User:
+    keys = row.keys()
     return User(
         id=row["id"],
         google_sub=row["google_sub"],
         email=row["email"],
         name=row["name"],
         picture=row["picture"],
+        access_status=row["access_status"] if "access_status" in keys else "pending",
+        access_granted_at=_parse_dt(row["access_granted_at"])
+        if "access_granted_at" in keys
+        else None,
+        access_code_used=row["access_code_used"]
+        if "access_code_used" in keys
+        else None,
         created_at=datetime.fromisoformat(row["created_at"]),
         last_seen_at=datetime.fromisoformat(row["last_seen_at"]),
+    )
+
+
+def _row_to_beta_code(row: sqlite3.Row) -> BetaCode:
+    return BetaCode(
+        code=row["code"],
+        note=row["note"],
+        max_uses=row["max_uses"],
+        uses_count=row["uses_count"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        expires_at=_parse_dt(row["expires_at"]),
     )
 
 
@@ -796,29 +817,60 @@ class UserRepository:
         email: str,
         name: str | None,
         picture: str | None,
+        operator_emails: set[str] | None = None,
     ) -> User:
         now = _now().isoformat()
+        is_operator = bool(operator_emails) and email.lower() in operator_emails
         existing = self.conn.execute(
             "SELECT * FROM users WHERE google_sub = ?", (google_sub,)
         ).fetchone()
         if existing is None:
             uid = new_id()
+            initial_status = "granted" if is_operator else "pending"
+            granted_at = now if is_operator else None
+            code_used = "OPERATOR" if is_operator else None
             self.conn.execute(
                 """INSERT INTO users
-                   (id, google_sub, email, name, picture, created_at, last_seen_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (uid, google_sub, email, name, picture, now, now),
+                   (id, google_sub, email, name, picture,
+                    access_status, access_granted_at, access_code_used,
+                    created_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    uid,
+                    google_sub,
+                    email,
+                    name,
+                    picture,
+                    initial_status,
+                    granted_at,
+                    code_used,
+                    now,
+                    now,
+                ),
             )
             row = self.conn.execute(
                 "SELECT * FROM users WHERE id = ?", (uid,)
             ).fetchone()
             return _row_to_user(row)
-        self.conn.execute(
-            """UPDATE users
-               SET email = ?, name = ?, picture = ?, last_seen_at = ?
-               WHERE id = ?""",
-            (email, name, picture, now, existing["id"]),
-        )
+        # Existing user: refresh profile + last_seen, and promote to granted if
+        # they're now in the operator list (operator_emails can change).
+        if is_operator and existing["access_status"] != "granted":
+            self.conn.execute(
+                """UPDATE users
+                   SET email = ?, name = ?, picture = ?, last_seen_at = ?,
+                       access_status = 'granted',
+                       access_granted_at = COALESCE(access_granted_at, ?),
+                       access_code_used = COALESCE(access_code_used, 'OPERATOR')
+                   WHERE id = ?""",
+                (email, name, picture, now, now, existing["id"]),
+            )
+        else:
+            self.conn.execute(
+                """UPDATE users
+                   SET email = ?, name = ?, picture = ?, last_seen_at = ?
+                   WHERE id = ?""",
+                (email, name, picture, now, existing["id"]),
+            )
         row = self.conn.execute(
             "SELECT * FROM users WHERE id = ?", (existing["id"],)
         ).fetchone()
@@ -835,6 +887,119 @@ class UserRepository:
             "SELECT * FROM users WHERE google_sub = ?", (google_sub,)
         ).fetchone()
         return _row_to_user(row) if row else None
+
+    def get_by_email(self, email: str) -> User | None:
+        row = self.conn.execute(
+            "SELECT * FROM users WHERE lower(email) = lower(?)", (email,)
+        ).fetchone()
+        return _row_to_user(row) if row else None
+
+    def list_all(self) -> list[User]:
+        rows = self.conn.execute(
+            "SELECT * FROM users ORDER BY created_at DESC"
+        ).fetchall()
+        return [_row_to_user(r) for r in rows]
+
+    def mark_granted(self, user_id: str, code: str) -> User | None:
+        now = _now().isoformat()
+        self.conn.execute(
+            """UPDATE users
+               SET access_status = 'granted',
+                   access_granted_at = ?,
+                   access_code_used = ?
+               WHERE id = ?""",
+            (now, code, user_id),
+        )
+        return self.get(user_id)
+
+    def set_access_status(
+        self, user_id: str, status: AccessStatus
+    ) -> User | None:
+        self.conn.execute(
+            "UPDATE users SET access_status = ? WHERE id = ?",
+            (status, user_id),
+        )
+        return self.get(user_id)
+
+
+class BetaCodeRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def create(
+        self,
+        *,
+        code: str,
+        note: str | None,
+        max_uses: int,
+        expires_at: datetime | None = None,
+    ) -> BetaCode:
+        normalized = code.strip().upper()
+        if not normalized:
+            raise ValueError("code cannot be empty")
+        if max_uses < 1:
+            raise ValueError("max_uses must be >= 1")
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO beta_codes
+               (code, note, max_uses, uses_count, created_at, expires_at)
+               VALUES (?, ?, ?, 0, ?, ?)""",
+            (
+                normalized,
+                note,
+                max_uses,
+                now.isoformat(),
+                expires_at.isoformat() if expires_at else None,
+            ),
+        )
+        return BetaCode(
+            code=normalized,
+            note=note,
+            max_uses=max_uses,
+            uses_count=0,
+            created_at=now,
+            expires_at=expires_at,
+        )
+
+    def get(self, code: str) -> BetaCode | None:
+        row = self.conn.execute(
+            "SELECT * FROM beta_codes WHERE code = ?",
+            (code.strip().upper(),),
+        ).fetchone()
+        return _row_to_beta_code(row) if row else None
+
+    def list_all(self) -> list[BetaCode]:
+        rows = self.conn.execute(
+            "SELECT * FROM beta_codes ORDER BY created_at DESC"
+        ).fetchall()
+        return [_row_to_beta_code(r) for r in rows]
+
+    def redeem(self, code: str) -> BetaCode | None:
+        """Atomically increment uses_count if the code is valid.
+
+        Returns the updated BetaCode on success, None if the code does not
+        exist, has expired, or has been exhausted.
+        """
+        normalized = code.strip().upper()
+        now_iso = _now().isoformat()
+        cursor = self.conn.execute(
+            """UPDATE beta_codes
+               SET uses_count = uses_count + 1
+               WHERE code = ?
+                 AND uses_count < max_uses
+                 AND (expires_at IS NULL OR expires_at > ?)""",
+            (normalized, now_iso),
+        )
+        if cursor.rowcount == 0:
+            return None
+        return self.get(normalized)
+
+    def delete(self, code: str) -> bool:
+        cursor = self.conn.execute(
+            "DELETE FROM beta_codes WHERE code = ?",
+            (code.strip().upper(),),
+        )
+        return cursor.rowcount > 0
 
 
 class LLMUsageRepository:

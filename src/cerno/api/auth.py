@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, SettingsDep, UserDep, cookie_serializer
 from cerno.auth import build_oauth
-from cerno.repositories import UserRepository
+from cerno.models import AccessStatus
+from cerno.repositories import BetaCodeRepository, UserRepository
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -16,6 +17,11 @@ class CurrentUser(BaseModel):
     email: str
     name: str | None = None
     picture: str | None = None
+    access_status: AccessStatus = "pending"
+
+
+class RedeemRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
 
 
 def _set_session_cookie(
@@ -67,6 +73,7 @@ async def google_callback(
         email=email,
         name=userinfo.get("name"),
         picture=userinfo.get("picture"),
+        operator_emails=settings.operator_email_set(),
     )
     response = RedirectResponse(url=settings.frontend_origin, status_code=302)
     _set_session_cookie(response, settings=settings, user_id=user.id)
@@ -76,7 +83,45 @@ async def google_callback(
 @router.get("/me", response_model=CurrentUser)
 def me(user: UserDep) -> CurrentUser:
     return CurrentUser(
-        id=user.id, email=user.email, name=user.name, picture=user.picture
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        picture=user.picture,
+        access_status=user.access_status,
+    )
+
+
+@router.post("/redeem", response_model=CurrentUser)
+def redeem(
+    body: RedeemRequest, conn: ConnDep, user: UserDep
+) -> CurrentUser:
+    if user.access_status == "revoked":
+        raise HTTPException(
+            status_code=403, detail="access has been revoked"
+        )
+    user_repo = UserRepository(conn)
+    if user.access_status == "granted":
+        return CurrentUser(
+            id=user.id,
+            email=user.email,
+            name=user.name,
+            picture=user.picture,
+            access_status="granted",
+        )
+    code = body.code.strip().upper()
+    redeemed = BetaCodeRepository(conn).redeem(code)
+    if redeemed is None:
+        raise HTTPException(
+            status_code=403, detail="invalid or expired code"
+        )
+    updated = user_repo.mark_granted(user.id, redeemed.code)
+    assert updated is not None
+    return CurrentUser(
+        id=updated.id,
+        email=updated.email,
+        name=updated.name,
+        picture=updated.picture,
+        access_status=updated.access_status,
     )
 
 

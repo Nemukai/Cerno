@@ -36,26 +36,31 @@ def settings(tmp_data_root: Path) -> Settings:
 
 @pytest.fixture
 def test_user(settings: Settings) -> User:
-    """A user row created directly in the SQLite DB.
+    """A user row created directly in the SQLite DB, pre-granted beta access.
 
     The auth flow is bypassed in unit tests; the cookie fixture below signs a
-    cookie for this user so endpoint tests get past the UserDep guard.
+    cookie for this user so endpoint tests get past the UserDep guard. The
+    user is pre-granted so they can hit data-plane endpoints without going
+    through the redeem flow.
     """
     from cerno.db import connect
     from cerno.repositories import UserRepository
 
     conn = connect(settings)
     try:
-        user = UserRepository(conn).upsert_from_google(
+        repo = UserRepository(conn)
+        user = repo.upsert_from_google(
             google_sub="test-sub-123",
             email="test@cerno.local",
             name="Test User",
             picture=None,
         )
+        granted = repo.mark_granted(user.id, "TEST")
         conn.commit()
     finally:
         conn.close()
-    return user
+    assert granted is not None
+    return granted
 
 
 @pytest.fixture

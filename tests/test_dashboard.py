@@ -170,9 +170,11 @@ def api_settings(tmp_path: Path) -> Settings:
 def api_user_id(api_settings: Settings) -> str:
     c = connect(api_settings)
     try:
-        user = UserRepository(c).upsert_from_google(
+        repo = UserRepository(c)
+        user = repo.upsert_from_google(
             google_sub="dash-api-test", email="dash-api@x", name=None, picture=None
         )
+        repo.mark_granted(user.id, "TEST")
         c.commit()
         return user.id
     finally:

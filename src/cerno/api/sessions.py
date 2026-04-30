@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from cerno.api.deps import ConnDep, LLMDep, SettingsDep, UserDep
+from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.models import File as FileModel
 from cerno.models import Link, ProcessingEvent, Session
 from cerno.repositories import (
@@ -58,23 +58,23 @@ class CreateSessionBody(BaseModel):
 
 
 @router.post("/sessions", response_model=Session)
-def create_session(body: CreateSessionBody, conn: ConnDep, user: UserDep) -> Session:
+def create_session(body: CreateSessionBody, conn: ConnDep, user: GrantedUserDep) -> Session:
     return SessionRepository(conn).create(body.name, user_id=user.id)
 
 
 @router.get("/sessions", response_model=list[Session])
-def list_sessions(conn: ConnDep, user: UserDep) -> list[Session]:
+def list_sessions(conn: ConnDep, user: GrantedUserDep) -> list[Session]:
     return SessionRepository(conn).list(user_id=user.id)
 
 
 @router.get("/sessions/{session_id}", response_model=Session)
-def get_session(session_id: str, conn: ConnDep, user: UserDep) -> Session:
+def get_session(session_id: str, conn: ConnDep, user: GrantedUserDep) -> Session:
     return _require_session(conn, session_id, user.id)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
 def delete_session(
-    session_id: str, conn: ConnDep, settings: SettingsDep, user: UserDep
+    session_id: str, conn: ConnDep, settings: SettingsDep, user: GrantedUserDep
 ) -> None:
     deleted = SessionRepository(conn).delete(session_id, user_id=user.id)
     if not deleted:
@@ -93,7 +93,7 @@ def upload_files(
     session_id: str,
     conn: ConnDep,
     settings: SettingsDep,
-    user: UserDep,
+    user: GrantedUserDep,
     uploads: Annotated[list[UploadFile], File()],
 ) -> FileUploadResponse:
     sessions_repo = SessionRepository(conn)
@@ -137,7 +137,7 @@ def upload_files(
 
 @router.delete("/files/{file_id}", status_code=204)
 def delete_file(
-    file_id: str, conn: ConnDep, settings: SettingsDep, user: UserDep
+    file_id: str, conn: ConnDep, settings: SettingsDep, user: GrantedUserDep
 ) -> None:
     file, session = _require_file_for_user(conn, file_id, user.id)
     files_repo = FileRepository(conn)
@@ -157,13 +157,13 @@ def delete_file(
 
 
 @router.get("/sessions/{session_id}/files", response_model=list[FileModel])
-def list_files(session_id: str, conn: ConnDep, user: UserDep) -> list[FileModel]:
+def list_files(session_id: str, conn: ConnDep, user: GrantedUserDep) -> list[FileModel]:
     _require_session(conn, session_id, user.id)
     return FileRepository(conn).list_for_session(session_id)
 
 
 @router.get("/files/{file_id}", response_model=FileModel)
-def get_file(file_id: str, conn: ConnDep, user: UserDep) -> FileModel:
+def get_file(file_id: str, conn: ConnDep, user: GrantedUserDep) -> FileModel:
     file, _ = _require_file_for_user(conn, file_id, user.id)
     return file
 
@@ -177,7 +177,7 @@ class FilePreviewResponse(BaseModel):
 
 @router.get("/files/{file_id}/preview", response_model=FilePreviewResponse)
 def get_file_preview(
-    file_id: str, conn: ConnDep, user: UserDep, limit: int = 100
+    file_id: str, conn: ConnDep, user: GrantedUserDep, limit: int = 100
 ) -> FilePreviewResponse:
     _require_file_for_user(conn, file_id, user.id)
     try:
@@ -293,7 +293,7 @@ async def post_process(
     conn: ConnDep,
     settings: SettingsDep,
     llm_client: LLMDep,
-    user: UserDep,
+    user: GrantedUserDep,
 ) -> DiscoveryResponse:
     _require_session(conn, session_id, user.id)
     sessions_repo = SessionRepository(conn)
@@ -352,7 +352,7 @@ async def post_process(
 
 @router.get("/sessions/{session_id}/discovery", response_model=DiscoveryResponse)
 def get_discovery(
-    session_id: str, conn: ConnDep, user: UserDep
+    session_id: str, conn: ConnDep, user: GrantedUserDep
 ) -> DiscoveryResponse:
     return _build_discovery_response(session_id, conn, user.id)
 
@@ -371,7 +371,7 @@ def post_approve(
     body: ApprovalBody,
     conn: ConnDep,
     settings: SettingsDep,
-    user: UserDep,
+    user: GrantedUserDep,
 ) -> DiscoveryResponse:
     _require_session(conn, session_id, user.id)
 
@@ -429,7 +429,7 @@ def post_approve(
     "/sessions/{session_id}/processing", response_model=list[ProcessingEvent]
 )
 def get_processing_events(
-    session_id: str, conn: ConnDep, user: UserDep
+    session_id: str, conn: ConnDep, user: GrantedUserDep
 ) -> list[ProcessingEvent]:
     _require_session(conn, session_id, user.id)
     return ProcessingEventRepository(conn).list_for_session(session_id)
@@ -437,7 +437,7 @@ def get_processing_events(
 
 @router.get("/sessions/{session_id}/links", response_model=list[Link])
 def get_session_links(
-    session_id: str, conn: ConnDep, user: UserDep
+    session_id: str, conn: ConnDep, user: GrantedUserDep
 ) -> list[Link]:
     _require_session(conn, session_id, user.id)
     return LinkRepository(conn).list_for_session(session_id)

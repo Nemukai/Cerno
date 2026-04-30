@@ -31,12 +31,18 @@ TurnState = Literal["pending", "tool_running", "rendering", "complete", "failed"
 MessageRole = Literal["user", "assistant", "tool", "system"]
 
 
+AccessStatus = Literal["pending", "granted", "revoked"]
+
+
 class User(BaseModel):
     id: str
     google_sub: str
     email: str
     name: str | None = None
     picture: str | None = None
+    access_status: AccessStatus = "pending"
+    access_granted_at: datetime | None = None
+    access_code_used: str | None = None
     created_at: datetime
     last_seen_at: datetime
 
@@ -45,6 +51,15 @@ class LLMUsage(BaseModel):
     user_id: str
     day: str
     tokens_used: int
+
+
+class BetaCode(BaseModel):
+    code: str
+    note: str | None = None
+    max_uses: int = 1
+    uses_count: int = 0
+    created_at: datetime
+    expires_at: datetime | None = None
 
 
 class Session(BaseModel):

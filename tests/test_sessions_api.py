@@ -26,9 +26,11 @@ def settings(tmp_path: Path) -> Settings:
 def test_user_id(settings: Settings) -> str:
     c = connect(settings)
     try:
-        user = UserRepository(c).upsert_from_google(
+        repo = UserRepository(c)
+        user = repo.upsert_from_google(
             google_sub="api-test", email="api@x", name=None, picture=None
         )
+        repo.mark_granted(user.id, "TEST")
         c.commit()
         return user.id
     finally:
