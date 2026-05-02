@@ -23,6 +23,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    settings.validate_runtime_safety()
     app = FastAPI(
         title="Cerno",
         version=__version__,

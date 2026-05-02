@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    app_env: str = "development"
     api_host: str = "127.0.0.1"
     api_port: int = 8765
     frontend_dev_url: str = "http://127.0.0.1:5173"
@@ -56,12 +57,22 @@ class Settings(BaseSettings):
     per_user_quota_gb: int = 5
     daily_token_cap: int = 200_000
 
+    def validate_runtime_safety(self) -> None:
+        production_like = self.app_env.lower() in {"prod", "production"}
+        public_auth = bool(self.google_client_id or self.google_client_secret)
+        https_frontend = self.frontend_origin.startswith("https://")
+        if self.session_secret == "dev-only-change-me" and (
+            production_like or public_auth or https_frontend
+        ):
+            raise RuntimeError(
+                "CERNO_SESSION_SECRET must be set to a strong secret outside local development"
+            )
+
+    def per_user_quota_bytes(self) -> int:
+        return self.per_user_quota_gb * 1024 * 1024 * 1024
+
     def operator_email_set(self) -> set[str]:
-        return {
-            e.strip().lower()
-            for e in self.operator_emails.split(",")
-            if e.strip()
-        }
+        return {e.strip().lower() for e in self.operator_emails.split(",") if e.strip()}
 
     data_root: Path = Field(default_factory=lambda: Path.home() / ".cerno")
 

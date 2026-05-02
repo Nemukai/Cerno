@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, SettingsDep, UserDep, cookie_serializer
 from cerno.auth import build_oauth
+from cerno.config import Settings
 from cerno.models import AccessStatus
 from cerno.repositories import BetaCodeRepository, UserRepository
 
@@ -24,9 +27,7 @@ class RedeemRequest(BaseModel):
     code: str = Field(min_length=1, max_length=64)
 
 
-def _set_session_cookie(
-    response: Response, *, settings, user_id: str
-) -> None:
+def _set_session_cookie(response: Response, *, settings: Settings, user_id: str) -> None:
     token = cookie_serializer(settings).dumps({"user_id": user_id})
     response.set_cookie(
         key=settings.session_cookie_name,
@@ -42,32 +43,24 @@ def _set_session_cookie(
 @router.get("/google/login")
 async def google_login(request: Request, settings: SettingsDep) -> Response:
     if not settings.google_client_id or not settings.google_client_secret:
-        raise HTTPException(
-            status_code=503, detail="google oauth not configured on server"
-        )
+        raise HTTPException(status_code=503, detail="google oauth not configured on server")
     oauth = build_oauth(settings)
     redirect_uri = str(request.url_for("google_callback"))
-    return await oauth.google.authorize_redirect(request, redirect_uri)
+    return cast(Response, await oauth.google.authorize_redirect(request, redirect_uri))
 
 
 @router.get("/google/callback", name="google_callback")
-async def google_callback(
-    request: Request, conn: ConnDep, settings: SettingsDep
-) -> Response:
+async def google_callback(request: Request, conn: ConnDep, settings: SettingsDep) -> Response:
     oauth = build_oauth(settings)
     try:
         token = await oauth.google.authorize_access_token(request)
     except Exception as exc:
-        raise HTTPException(
-            status_code=400, detail=f"oauth exchange failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=400, detail=f"oauth exchange failed: {exc}") from exc
     userinfo = token.get("userinfo") or {}
     sub = userinfo.get("sub")
     email = userinfo.get("email")
     if not sub or not email:
-        raise HTTPException(
-            status_code=400, detail="google did not return required identity"
-        )
+        raise HTTPException(status_code=400, detail="google did not return required identity")
     user = UserRepository(conn).upsert_from_google(
         google_sub=sub,
         email=email,
@@ -92,13 +85,9 @@ def me(user: UserDep) -> CurrentUser:
 
 
 @router.post("/redeem", response_model=CurrentUser)
-def redeem(
-    body: RedeemRequest, conn: ConnDep, user: UserDep
-) -> CurrentUser:
+def redeem(body: RedeemRequest, conn: ConnDep, user: UserDep) -> CurrentUser:
     if user.access_status == "revoked":
-        raise HTTPException(
-            status_code=403, detail="access has been revoked"
-        )
+        raise HTTPException(status_code=403, detail="access has been revoked")
     user_repo = UserRepository(conn)
     if user.access_status == "granted":
         return CurrentUser(
@@ -111,9 +100,7 @@ def redeem(
     code = body.code.strip().upper()
     redeemed = BetaCodeRepository(conn).redeem(code)
     if redeemed is None:
-        raise HTTPException(
-            status_code=403, detail="invalid or expired code"
-        )
+        raise HTTPException(status_code=403, detail="invalid or expired code")
     updated = user_repo.mark_granted(user.id, redeemed.code)
     assert updated is not None
     return CurrentUser(

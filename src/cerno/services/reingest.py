@@ -8,8 +8,6 @@ from typing import Any
 import polars as pl
 
 from cerno.config import Settings
-
-logger = logging.getLogger(__name__)
 from cerno.models import FileSchema, InferredKind, SchemaColumn
 from cerno.repositories import (
     FileRepository,
@@ -19,7 +17,9 @@ from cerno.repositories import (
     SessionRepository,
 )
 
-DTYPE_TO_POLARS: dict[str, pl.DataType] = {
+logger = logging.getLogger(__name__)
+
+DTYPE_TO_POLARS: dict[str, Any] = {
     "string": pl.String,
     "int": pl.Int64,
     "float": pl.Float64,
@@ -144,9 +144,7 @@ def reingest_file(
     raw = pl.read_parquet(file.raw_parquet_path)
     raw_rows = raw.to_numpy().tolist()
     if spec.header_row >= len(raw_rows):
-        raise ReingestError(
-            f"header_row {spec.header_row} beyond file length {len(raw_rows)}"
-        )
+        raise ReingestError(f"header_row {spec.header_row} beyond file length {len(raw_rows)}")
 
     data_rows = raw_rows[spec.header_row + 1 :]
     expected_width = len(spec.columns)
@@ -159,8 +157,7 @@ def reingest_file(
         elif expected_width < len(cells):
             cells = cells[:expected_width]
         normalized = [
-            None if c is None or (isinstance(c, str) and not c.strip()) else c
-            for c in cells
+            None if c is None or (isinstance(c, str) and not c.strip()) else c for c in cells
         ]
         if all(c is None for c in normalized):
             continue
@@ -171,8 +168,7 @@ def reingest_file(
         frame = pl.DataFrame({n: [] for n in column_names})
     else:
         frame_data = {
-            name: [row[i] for row in filtered_rows]
-            for i, name in enumerate(column_names)
+            name: [row[i] for row in filtered_rows] for i, name in enumerate(column_names)
         }
         frame = pl.DataFrame(frame_data)
         for i, col in enumerate(spec.columns):
@@ -270,9 +266,7 @@ def apply_approval(
     )
 
 
-def preview_rows(
-    *, file_id: str, limit: int, files_repo: FileRepository
-) -> dict[str, Any]:
+def preview_rows(*, file_id: str, limit: int, files_repo: FileRepository) -> dict[str, Any]:
     file = files_repo.get(file_id)
     if file is None:
         raise ReingestError(f"file not found: {file_id}")

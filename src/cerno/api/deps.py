@@ -45,9 +45,7 @@ def get_current_user(
     if not token:
         raise HTTPException(status_code=401, detail="not signed in")
     try:
-        payload = cookie_serializer(settings).loads(
-            token, max_age=settings.session_max_age_seconds
-        )
+        payload = cookie_serializer(settings).loads(token, max_age=settings.session_max_age_seconds)
     except SignatureExpired as exc:
         raise HTTPException(status_code=401, detail="session expired") from exc
     except BadSignature as exc:
@@ -65,13 +63,9 @@ def get_granted_user(
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
     if user.access_status == "revoked":
-        raise HTTPException(
-            status_code=403, detail="access has been revoked"
-        )
+        raise HTTPException(status_code=403, detail="access has been revoked")
     if user.access_status != "granted":
-        raise HTTPException(
-            status_code=403, detail="beta access code required"
-        )
+        raise HTTPException(status_code=403, detail="beta access code required")
     return user
 
 

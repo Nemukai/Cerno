@@ -6,9 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+import polars as pl
+
 from cerno.config import Settings
 from cerno.llm import LLMClient
-from cerno.models import LinkDirection
+from cerno.models import File, LinkDirection
 from cerno.repositories import (
     FileRepository,
     LinkRepository,
@@ -21,6 +23,7 @@ DISCOVERY_MODEL = "gpt-5.5"
 DISCOVERY_REASONING_EFFORT = "high"
 DISCOVERY_REASONING_SUMMARY = "auto"
 SAMPLE_ROWS = 10
+LINK_VALUE_SAMPLE_LIMIT = 10_000
 
 
 class DiscoveryError(RuntimeError):
@@ -62,6 +65,18 @@ class DiscoveryResult:
     raw_response: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class LinkCandidate:
+    file_a_id: str
+    col_a: str
+    file_b_id: str
+    col_b: str
+    direction: LinkDirection
+    overlap: float
+    score: float
+    summary: str
+
+
 SYSTEM_PROMPT = """You are Cerno's data discovery engine. Several tabular files have been uploaded.
 Your job is to look at the raw first rows of each file and decide:
 
@@ -75,6 +90,10 @@ Your job is to look at the raw first rows of each file and decide:
 Then, looking across all files, identify column-to-column relationships
 (shared identifiers, foreign keys, denormalized references). For each link explain it
 in one plain sentence and pick a direction.
+
+Prefer meaningful business identifiers over coincidental low-cardinality matches. A strong
+link usually has matching values and compatible names such as transaction_id, customer_id,
+vehicle number, order number, account code, toll shift, or other domain identifiers.
 
 Finally, write a 2-4 sentence overview of how all the files relate to each other.
 
@@ -172,7 +191,9 @@ def _parse_json_block(content: str) -> dict[str, Any]:
     try:
         return cast(dict[str, Any], json.loads(stripped))
     except json.JSONDecodeError as exc:
-        raise DiscoveryError(f"LLM returned invalid JSON: {exc}\n--- raw ---\n{content[:2000]}") from exc
+        raise DiscoveryError(
+            f"LLM returned invalid JSON: {exc}\n--- raw ---\n{content[:2000]}"
+        ) from exc
 
 
 def _parse_response(payload: dict[str, Any]) -> DiscoveryResult:
@@ -225,6 +246,171 @@ def _build_prompt(file_payload: list[dict[str, Any]]) -> str:
         "Return STRICT JSON matching the provided schema. No prose, no fences.\n\n"
         f"Files:\n{json.dumps(file_payload, default=str, indent=2)}"
     )
+
+
+def _normalized_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text or text in {"nan", "none", "null"}:
+        return None
+    if len(text) > 100:
+        return None
+    return re.sub(r"\s+", " ", text)
+
+
+def _values_for_column(file: File, discovered: DiscoveredFile, col_idx: int) -> set[str]:
+    if not file.raw_parquet_path or col_idx >= len(discovered.columns):
+        return set()
+    rows = pl.read_parquet(file.raw_parquet_path).to_numpy().tolist()
+    data_rows = rows[discovered.header_row + 1 :]
+    values: set[str] = set()
+    for row in data_rows:
+        if col_idx >= len(row):
+            continue
+        normalized = _normalized_value(row[col_idx])
+        if normalized is None:
+            continue
+        values.add(normalized)
+        if len(values) >= LINK_VALUE_SAMPLE_LIMIT:
+            break
+    return values
+
+
+def _looks_like_fk(left: str, right: str) -> bool:
+    left_name = left.lower().replace(" ", "_")
+    right_name = right.lower().replace(" ", "_")
+    if right_name in {"id", "code", "number", "no"} and left_name.endswith(
+        f"_{right_name}"
+    ):
+        return True
+    if right_name.endswith("_id") and left_name == right_name:
+        return True
+    return False
+
+
+def _candidate_direction(
+    a_col: str,
+    b_col: str,
+    a_distinct: int,
+    b_distinct: int,
+    overlap_a: float,
+    overlap_b: float,
+) -> tuple[LinkDirection, bool]:
+    if _looks_like_fk(a_col, b_col):
+        return "many_to_one", False
+    if _looks_like_fk(b_col, a_col):
+        return "many_to_one", True
+    if overlap_a >= 0.95 and overlap_b >= 0.95 and abs(a_distinct - b_distinct) <= 1:
+        return "one_to_one", False
+    if a_distinct > b_distinct and overlap_b >= 0.8:
+        return "many_to_one", False
+    if b_distinct > a_distinct and overlap_a >= 0.8:
+        return "many_to_one", True
+    return "many_to_many", False
+
+
+def _link_key(link: DiscoveredLink | LinkCandidate) -> frozenset[tuple[str, str]]:
+    return frozenset(
+        {
+            (link.file_a_id, link.col_a.lower()),
+            (link.file_b_id, link.col_b.lower()),
+        }
+    )
+
+
+def _find_overlap_candidates(
+    *, files: list[File], discovered_files: list[DiscoveredFile], settings: Settings
+) -> list[LinkCandidate]:
+    files_by_id = {file.id: file for file in files}
+    column_values: dict[tuple[str, str], set[str]] = {}
+
+    for discovered in discovered_files:
+        file = files_by_id.get(discovered.file_id)
+        if file is None:
+            continue
+        for idx, col in enumerate(discovered.columns):
+            column_values[(discovered.file_id, col.name)] = _values_for_column(
+                file, discovered, idx
+            )
+
+    candidates: list[LinkCandidate] = []
+    for a_idx, a_file in enumerate(discovered_files):
+        for b_file in discovered_files[a_idx + 1 :]:
+            for a_col in a_file.columns:
+                a_values = column_values.get((a_file.file_id, a_col.name), set())
+                if len(a_values) < settings.link_min_distinct:
+                    continue
+                for b_col in b_file.columns:
+                    b_values = column_values.get((b_file.file_id, b_col.name), set())
+                    if len(b_values) < settings.link_min_distinct:
+                        continue
+                    overlap = a_values & b_values
+                    if not overlap:
+                        continue
+                    overlap_a = len(overlap) / len(a_values)
+                    overlap_b = len(overlap) / len(b_values)
+                    strength = max(overlap_a, overlap_b)
+                    if strength < settings.link_overlap_threshold:
+                        continue
+                    direction, swap = _candidate_direction(
+                        a_col.name,
+                        b_col.name,
+                        len(a_values),
+                        len(b_values),
+                        overlap_a,
+                        overlap_b,
+                    )
+                    if swap:
+                        source_file, source_col = b_file, b_col
+                        target_file, target_col = a_file, a_col
+                        overlap_score = overlap_b
+                    else:
+                        source_file, source_col = a_file, a_col
+                        target_file, target_col = b_file, b_col
+                        overlap_score = overlap_a
+                    summary = (
+                        f"{source_file.friendly_name}.{source_col.name} shares "
+                        f"{len(overlap)} distinct values with "
+                        f"{target_file.friendly_name}.{target_col.name}."
+                    )
+                    candidates.append(
+                        LinkCandidate(
+                            file_a_id=source_file.file_id,
+                            col_a=source_col.name,
+                            file_b_id=target_file.file_id,
+                            col_b=target_col.name,
+                            direction=direction,
+                            overlap=overlap_score,
+                            score=strength,
+                            summary=summary,
+                        )
+                    )
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    return candidates
+
+
+def _merge_links(
+    links: list[DiscoveredLink], candidates: list[LinkCandidate]
+) -> list[DiscoveredLink]:
+    seen = {_link_key(link) for link in links}
+    merged = list(links)
+    for candidate in candidates:
+        key = _link_key(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(
+            DiscoveredLink(
+                file_a_id=candidate.file_a_id,
+                col_a=candidate.col_a,
+                file_b_id=candidate.file_b_id,
+                col_b=candidate.col_b,
+                direction=candidate.direction,
+                summary=candidate.summary,
+            )
+        )
+    return merged
 
 
 async def run_discovery(
@@ -290,9 +476,7 @@ async def run_discovery(
             },
         )
     except Exception as exc:
-        events_repo.append(
-            session_id=session_id, kind="error", message=f"LLM call failed: {exc}"
-        )
+        events_repo.append(session_id=session_id, kind="error", message=f"LLM call failed: {exc}")
         sessions_repo.set_discovery_status(session_id, "failed")
         raise DiscoveryError(f"LLM call failed: {exc}") from exc
 
@@ -322,19 +506,25 @@ async def run_discovery(
             description=df.description,
         )
 
+    candidates = _find_overlap_candidates(
+        files=files, discovered_files=result.files, settings=settings
+    )
+    result.links = _merge_links(result.links, candidates)
+
     links_repo.delete_for_session(session_id)
     for link in result.links:
         if link.file_a_id not in valid_ids or link.file_b_id not in valid_ids:
             continue
+        candidate = next((c for c in candidates if _link_key(c) == _link_key(link)), None)
         links_repo.create(
             session_id=session_id,
             file_a=link.file_a_id,
             col_a=link.col_a,
             file_b=link.file_b_id,
             col_b=link.col_b,
-            overlap=1.0,
+            overlap=candidate.overlap if candidate else 1.0,
             direction=link.direction,
-            score=1.0,
+            score=candidate.score if candidate else 1.0,
             summary=link.summary or None,
         )
 

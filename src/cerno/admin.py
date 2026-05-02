@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import re
 import secrets
+import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -32,8 +33,7 @@ _DURATION_RE = re.compile(r"^\s*(\d+)\s*([dwmh])\s*$", re.IGNORECASE)
 
 def _generate_code(prefix: str = "CERNO", segments: int = 2, segment_len: int = 4) -> str:
     parts = [prefix] + [
-        "".join(secrets.choice(_ALPHABET) for _ in range(segment_len))
-        for _ in range(segments)
+        "".join(secrets.choice(_ALPHABET) for _ in range(segment_len)) for _ in range(segments)
     ]
     return "-".join(parts)
 
@@ -41,9 +41,7 @@ def _generate_code(prefix: str = "CERNO", segments: int = 2, segment_len: int = 
 def _parse_duration(spec: str) -> datetime:
     match = _DURATION_RE.match(spec)
     if not match:
-        raise SystemExit(
-            f"invalid duration {spec!r}; use forms like 30d, 12h, 4w"
-        )
+        raise SystemExit(f"invalid duration {spec!r}; use forms like 30d, 12h, 4w")
     n = int(match.group(1))
     unit = match.group(2).lower()
     delta = {
@@ -55,7 +53,7 @@ def _parse_duration(spec: str) -> datetime:
     return datetime.now(UTC) + delta
 
 
-def _open_conn():
+def _open_conn() -> sqlite3.Connection:
     settings = get_settings()
     return connect(settings)
 
@@ -124,9 +122,7 @@ def cmd_list_users(args: argparse.Namespace) -> None:
     print("-" * 100)
     for u in users:
         code = u.access_code_used or ""
-        print(
-            f"{u.email:<40}  {u.access_status:<10}  {code:<22}  {u.created_at.isoformat()}"
-        )
+        print(f"{u.email:<40}  {u.access_status:<10}  {code:<22}  {u.created_at.isoformat()}")
 
 
 def cmd_grant(args: argparse.Namespace) -> None:
@@ -178,9 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("create-code", help="generate (or set) a beta code")
     p.add_argument("--note", help="who is this for / why")
     p.add_argument("--max-uses", type=int, default=1, help="default 1")
-    p.add_argument(
-        "--expires-in", help="duration like 30d, 12h, 4w (default: never)"
-    )
+    p.add_argument("--expires-in", help="duration like 30d, 12h, 4w (default: never)")
     p.add_argument("--code", help="set an explicit code instead of generating one")
     p.set_defaults(func=cmd_create_code)
 

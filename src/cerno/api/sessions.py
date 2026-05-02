@@ -8,11 +8,13 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
+from cerno.config import Settings
 from cerno.models import File as FileModel
 from cerno.models import Link, ProcessingEvent, Session
 from cerno.repositories import (
     FileRepository,
     LinkRepository,
+    LLMUsageRepository,
     ProcessingEventRepository,
     SchemaRepository,
     SessionRepository,
@@ -32,9 +34,21 @@ from cerno.services.reingest import (
 router = APIRouter(tags=["sessions"])
 
 
-def _require_session(
-    conn: sqlite3.Connection, session_id: str, user_id: str
-) -> Session:
+def _user_storage_bytes(settings: Settings, user_id: str) -> int:
+    root = settings.user_dir(user_id)
+    if not root.exists():
+        return 0
+    total = 0
+    for path in root.rglob("*"):
+        if path.is_file():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _require_session(conn: sqlite3.Connection, session_id: str, user_id: str) -> Session:
     session = SessionRepository(conn).get(session_id, user_id=user_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
@@ -112,6 +126,11 @@ def upload_files(
         tmp_path = tmp_dir / f"__upload_{original}"
         with tmp_path.open("wb") as dest:
             shutil.copyfileobj(upload.file, dest)
+        upload_size = tmp_path.stat().st_size
+        current_usage = max(0, _user_storage_bytes(settings, user.id) - upload_size)
+        if current_usage + upload_size > settings.per_user_quota_bytes():
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=413, detail="per-user storage quota exceeded")
         try:
             ingested: list[IngestedFile] = ingest_file(
                 source_path=tmp_path,
@@ -136,9 +155,7 @@ def upload_files(
 
 
 @router.delete("/files/{file_id}", status_code=204)
-def delete_file(
-    file_id: str, conn: ConnDep, settings: SettingsDep, user: GrantedUserDep
-) -> None:
+def delete_file(file_id: str, conn: ConnDep, settings: SettingsDep, user: GrantedUserDep) -> None:
     file, session = _require_file_for_user(conn, file_id, user.id)
     files_repo = FileRepository(conn)
     raw = settings.raw_parquet_path(user.id, session.id, file.id)
@@ -181,9 +198,7 @@ def get_file_preview(
 ) -> FilePreviewResponse:
     _require_file_for_user(conn, file_id, user.id)
     try:
-        data = preview_rows(
-            file_id=file_id, limit=limit, files_repo=FileRepository(conn)
-        )
+        data = preview_rows(file_id=file_id, limit=limit, files_repo=FileRepository(conn))
     except ReingestError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FilePreviewResponse(**data)
@@ -309,7 +324,7 @@ async def post_process(
             sessions_repo=sessions_repo,
             links_repo=links_repo,
             events_repo=events_repo,
-            llm_client=llm_client,
+            llm_client=llm_client.with_usage(LLMUsageRepository(conn), user.id),
         )
     except DiscoveryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -351,9 +366,7 @@ async def post_process(
 
 
 @router.get("/sessions/{session_id}/discovery", response_model=DiscoveryResponse)
-def get_discovery(
-    session_id: str, conn: ConnDep, user: GrantedUserDep
-) -> DiscoveryResponse:
+def get_discovery(session_id: str, conn: ConnDep, user: GrantedUserDep) -> DiscoveryResponse:
     return _build_discovery_response(session_id, conn, user.id)
 
 
@@ -363,9 +376,7 @@ class ApprovalBody(BaseModel):
     overview: str = ""
 
 
-@router.post(
-    "/sessions/{session_id}/approve-schema", response_model=DiscoveryResponse
-)
+@router.post("/sessions/{session_id}/approve-schema", response_model=DiscoveryResponse)
 def post_approve(
     session_id: str,
     body: ApprovalBody,
@@ -425,9 +436,7 @@ def post_approve(
     return _build_discovery_response(session_id, conn, user.id)
 
 
-@router.get(
-    "/sessions/{session_id}/processing", response_model=list[ProcessingEvent]
-)
+@router.get("/sessions/{session_id}/processing", response_model=list[ProcessingEvent])
 def get_processing_events(
     session_id: str, conn: ConnDep, user: GrantedUserDep
 ) -> list[ProcessingEvent]:
@@ -436,8 +445,6 @@ def get_processing_events(
 
 
 @router.get("/sessions/{session_id}/links", response_model=list[Link])
-def get_session_links(
-    session_id: str, conn: ConnDep, user: GrantedUserDep
-) -> list[Link]:
+def get_session_links(session_id: str, conn: ConnDep, user: GrantedUserDep) -> list[Link]:
     _require_session(conn, session_id, user.id)
     return LinkRepository(conn).list_for_session(session_id)

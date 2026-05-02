@@ -7,8 +7,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from cerno.db import dumps_json, loads_json
-
-logger = logging.getLogger(__name__)
 from cerno.models import (
     AccessStatus,
     Anomaly,
@@ -23,7 +21,6 @@ from cerno.models import (
     FileSchema,
     Link,
     LinkReview,
-    LLMUsage,
     MessageRole,
     NotebookCell,
     ProcessingEvent,
@@ -36,6 +33,8 @@ from cerno.models import (
     TurnState,
     User,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def new_id() -> str:
@@ -56,24 +55,18 @@ class SessionRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
-    def create(
-        self, name: str, user_id: str, session_id: str | None = None
-    ) -> Session:
+    def create(self, name: str, user_id: str, session_id: str | None = None) -> Session:
         sid = session_id or new_id()
         created_at = _now()
         self.conn.execute(
             "INSERT INTO sessions (id, user_id, name, status, created_at) VALUES (?, ?, ?, ?, ?)",
             (sid, user_id, name, "new", created_at.isoformat()),
         )
-        return Session(
-            id=sid, user_id=user_id, name=name, status="new", created_at=created_at
-        )
+        return Session(id=sid, user_id=user_id, name=name, status="new", created_at=created_at)
 
     def get(self, session_id: str, user_id: str | None = None) -> Session | None:
         if user_id is None:
-            row = self.conn.execute(
-                "SELECT * FROM sessions WHERE id = ?", (session_id,)
-            ).fetchone()
+            row = self.conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         else:
             row = self.conn.execute(
                 "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
@@ -89,13 +82,9 @@ class SessionRepository:
         return [_row_to_session(r) for r in rows]
 
     def set_status(self, session_id: str, status: SessionStatus) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET status = ? WHERE id = ?", (status, session_id)
-        )
+        self.conn.execute("UPDATE sessions SET status = ? WHERE id = ?", (status, session_id))
 
-    def set_discovery_status(
-        self, session_id: str, status: DiscoveryStatus
-    ) -> None:
+    def set_discovery_status(self, session_id: str, status: DiscoveryStatus) -> None:
         self.conn.execute(
             "UPDATE sessions SET discovery_status = ? WHERE id = ?",
             (status, session_id),
@@ -109,9 +98,7 @@ class SessionRepository:
 
     def delete(self, session_id: str, user_id: str | None = None) -> bool:
         if user_id is None:
-            cur = self.conn.execute(
-                "DELETE FROM sessions WHERE id = ?", (session_id,)
-            )
+            cur = self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         else:
             cur = self.conn.execute(
                 "DELETE FROM sessions WHERE id = ? AND user_id = ?",
@@ -368,9 +355,7 @@ class LinkRepository:
     def delete_for_session(self, session_id: str) -> None:
         self.conn.execute("DELETE FROM links WHERE session_id = ?", (session_id,))
 
-    def add_review(
-        self, *, link_id: str, action: str, notes: str | None = None
-    ) -> LinkReview:
+    def add_review(self, *, link_id: str, action: str, notes: str | None = None) -> LinkReview:
         created_at = _now()
         cursor = self.conn.execute(
             """INSERT INTO link_reviews (link_id, action, notes, created_at)
@@ -492,7 +477,16 @@ class DashboardRepository:
             """INSERT INTO dashboard_pages
                (id, dashboard_id, title, kind, source_chat_turn_id, pinned, position, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (pid, dashboard_id, title, kind, source_chat_turn_id, int(pinned), position, created_at.isoformat()),
+            (
+                pid,
+                dashboard_id,
+                title,
+                kind,
+                source_chat_turn_id,
+                int(pinned),
+                position,
+                created_at.isoformat(),
+            ),
         )
         return DashboardPage(
             id=pid,
@@ -593,9 +587,7 @@ class ChatRepository:
         )
 
     def set_turn_state(self, turn_id: str, state: TurnState) -> None:
-        self.conn.execute(
-            "UPDATE chat_turns SET state = ? WHERE id = ?", (state, turn_id)
-        )
+        self.conn.execute("UPDATE chat_turns SET state = ? WHERE id = ?", (state, turn_id))
 
     def complete_turn(
         self,
@@ -650,9 +642,7 @@ class ChatRepository:
         )
 
     def get_turn(self, turn_id: str) -> ChatTurn | None:
-        row = self.conn.execute(
-            "SELECT * FROM chat_turns WHERE id = ?", (turn_id,)
-        ).fetchone()
+        row = self.conn.execute("SELECT * FROM chat_turns WHERE id = ?", (turn_id,)).fetchone()
         return _row_to_turn(row) if row else None
 
     def list_turns(self, session_id: str) -> list[ChatTurn]:
@@ -729,9 +719,7 @@ class ProcessingEventRepository:
         return [_row_to_processing_event(r) for r in rows]
 
     def clear(self, session_id: str) -> None:
-        self.conn.execute(
-            "DELETE FROM processing_events WHERE session_id = ?", (session_id,)
-        )
+        self.conn.execute("DELETE FROM processing_events WHERE session_id = ?", (session_id,))
 
 
 def _row_to_session(row: sqlite3.Row) -> Session:
@@ -787,9 +775,7 @@ def _row_to_user(row: sqlite3.Row) -> User:
         access_granted_at=_parse_dt(row["access_granted_at"])
         if "access_granted_at" in keys
         else None,
-        access_code_used=row["access_code_used"]
-        if "access_code_used" in keys
-        else None,
+        access_code_used=row["access_code_used"] if "access_code_used" in keys else None,
         created_at=datetime.fromisoformat(row["created_at"]),
         last_seen_at=datetime.fromisoformat(row["last_seen_at"]),
     )
@@ -820,7 +806,7 @@ class UserRepository:
         operator_emails: set[str] | None = None,
     ) -> User:
         now = _now().isoformat()
-        is_operator = bool(operator_emails) and email.lower() in operator_emails
+        is_operator = operator_emails is not None and email.lower() in operator_emails
         existing = self.conn.execute(
             "SELECT * FROM users WHERE google_sub = ?", (google_sub,)
         ).fetchone()
@@ -848,9 +834,7 @@ class UserRepository:
                     now,
                 ),
             )
-            row = self.conn.execute(
-                "SELECT * FROM users WHERE id = ?", (uid,)
-            ).fetchone()
+            row = self.conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
             return _row_to_user(row)
         # Existing user: refresh profile + last_seen, and promote to granted if
         # they're now in the operator list (operator_emails can change).
@@ -871,15 +855,11 @@ class UserRepository:
                    WHERE id = ?""",
                 (email, name, picture, now, existing["id"]),
             )
-        row = self.conn.execute(
-            "SELECT * FROM users WHERE id = ?", (existing["id"],)
-        ).fetchone()
+        row = self.conn.execute("SELECT * FROM users WHERE id = ?", (existing["id"],)).fetchone()
         return _row_to_user(row)
 
     def get(self, user_id: str) -> User | None:
-        row = self.conn.execute(
-            "SELECT * FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
+        row = self.conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return _row_to_user(row) if row else None
 
     def get_by_google_sub(self, google_sub: str) -> User | None:
@@ -895,9 +875,7 @@ class UserRepository:
         return _row_to_user(row) if row else None
 
     def list_all(self) -> list[User]:
-        rows = self.conn.execute(
-            "SELECT * FROM users ORDER BY created_at DESC"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
         return [_row_to_user(r) for r in rows]
 
     def mark_granted(self, user_id: str, code: str) -> User | None:
@@ -912,9 +890,7 @@ class UserRepository:
         )
         return self.get(user_id)
 
-    def set_access_status(
-        self, user_id: str, status: AccessStatus
-    ) -> User | None:
+    def set_access_status(self, user_id: str, status: AccessStatus) -> User | None:
         self.conn.execute(
             "UPDATE users SET access_status = ? WHERE id = ?",
             (status, user_id),
@@ -969,9 +945,7 @@ class BetaCodeRepository:
         return _row_to_beta_code(row) if row else None
 
     def list_all(self) -> list[BetaCode]:
-        rows = self.conn.execute(
-            "SELECT * FROM beta_codes ORDER BY created_at DESC"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM beta_codes ORDER BY created_at DESC").fetchall()
         return [_row_to_beta_code(r) for r in rows]
 
     def redeem(self, code: str) -> BetaCode | None:

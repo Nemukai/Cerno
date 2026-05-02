@@ -127,9 +127,7 @@ async def run_chat_turn(
         engine.close()
 
 
-def _persist_loop_message(
-    chat_repo: ChatRepository, turn_id: str, message: dict[str, Any]
-) -> None:
+def _persist_loop_message(chat_repo: ChatRepository, turn_id: str, message: dict[str, Any]) -> None:
     role = message.get("role")
     if role == "assistant":
         content = message.get("content") or ""
@@ -150,9 +148,7 @@ def _persist_loop_message(
                     tool_args=args,
                 )
         else:
-            chat_repo.append_message(
-                turn_id=turn_id, role="assistant", content=content
-            )
+            chat_repo.append_message(turn_id=turn_id, role="assistant", content=content)
         return
     if role == "tool":
         raw = message.get("content") or "{}"

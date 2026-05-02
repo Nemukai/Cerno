@@ -11,7 +11,23 @@ if TYPE_CHECKING:
     import pandas as pd
 
 _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
-_READONLY_PREFIXES = {"select", "with", "show", "describe", "explain", "pragma"}
+_READONLY_PREFIXES = {"select", "with", "describe"}
+_DIRECT_FILE_SCAN_RE = re.compile(r"\b(from|join)\s+['\"]", re.IGNORECASE)
+_BLOCKED_SQL_FUNCTIONS = {
+    "glob",
+    "parquet_scan",
+    "read_blob",
+    "read_csv",
+    "read_csv_auto",
+    "read_json",
+    "read_json_auto",
+    "read_json_objects",
+    "read_ndjson",
+    "read_ndjson_auto",
+    "read_parquet",
+    "read_text",
+    "sqlite_scan",
+}
 
 
 class EngineError(RuntimeError):
@@ -48,16 +64,13 @@ class DuckDBEngine:
         self._conn = duckdb.connect(":memory:")
         self._tables: dict[str, TableInfo] = {}
 
-    def register_file(
-        self, *, table_name: str, parquet_path: Path | str, row_count: int
-    ) -> None:
+    def register_file(self, *, table_name: str, parquet_path: Path | str, row_count: int) -> None:
         if not _IDENT_RE.match(table_name):
             raise EngineError(f"invalid table name: {table_name}")
         path_str = str(parquet_path)
         escaped = path_str.replace("'", "''")
         self._conn.execute(
-            f"CREATE OR REPLACE VIEW \"{table_name}\" "
-            f"AS SELECT * FROM read_parquet('{escaped}')"
+            f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{escaped}')"
         )
         self._tables[table_name] = TableInfo(
             name=table_name, parquet_path=path_str, row_count=row_count
@@ -69,21 +82,16 @@ class DuckDBEngine:
     def describe_table(self, table_name: str) -> list[dict[str, Any]]:
         self._require_table(table_name)
         rows = self._conn.execute(f'DESCRIBE "{table_name}"').fetchall()
-        return [
-            {"column": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in rows
-        ]
+        return [{"column": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in rows]
 
     def run_sql(self, sql: str, *, max_rows: int = 1000) -> SqlResult:
-        if not _looks_readonly(sql):
-            raise EngineError("only SELECT / WITH / SHOW / DESCRIBE queries are allowed")
+        _validate_readonly_query(sql)
         cursor = self._conn.execute(sql)
         columns = [d[0] for d in cursor.description or []]
         fetched = cursor.fetchmany(max_rows + 1)
         truncated = len(fetched) > max_rows
         rows = [list(r) for r in fetched[:max_rows]]
-        return SqlResult(
-            columns=columns, rows=rows, row_count=len(rows), truncated=truncated
-        )
+        return SqlResult(columns=columns, rows=rows, row_count=len(rows), truncated=truncated)
 
     def to_pandas(self, table_name: str) -> pd.DataFrame:
         self._require_table(table_name)
@@ -103,9 +111,28 @@ class DuckDBEngine:
             raise EngineError(f"unknown table: {table_name}")
 
 
-def _looks_readonly(sql: str) -> bool:
+def _validate_readonly_query(sql: str) -> None:
+    try:
+        statements = duckdb.extract_statements(sql)
+    except duckdb.ParserException as exc:
+        raise EngineError(f"invalid SQL: {exc}") from exc
+    if len(statements) != 1:
+        raise EngineError("exactly one SQL statement is allowed")
     stripped = sql.strip().rstrip(";").lower()
     if not stripped:
-        return False
+        raise EngineError("empty SQL is not allowed")
     first = stripped.split(None, 1)[0]
-    return first in _READONLY_PREFIXES
+    if first not in _READONLY_PREFIXES:
+        raise EngineError("only SELECT / WITH / DESCRIBE queries are allowed")
+    if _DIRECT_FILE_SCAN_RE.search(sql):
+        raise EngineError("direct file scans are not allowed")
+    blocked = _find_blocked_sql_function(sql)
+    if blocked:
+        raise EngineError(f"SQL function is not allowed: {blocked}")
+
+
+def _find_blocked_sql_function(sql: str) -> str | None:
+    for name in _BLOCKED_SQL_FUNCTIONS:
+        if re.search(rf"\b{re.escape(name)}\s*\(", sql, re.IGNORECASE):
+            return name
+    return None
