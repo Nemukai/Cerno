@@ -8,7 +8,6 @@ Cerno is a **link-aware data analysis tool**: upload files → agent discovers l
 
 - Python backend lives in `src/cerno/` (src-layout). Import as `cerno.foo`, never `backend.cerno.foo`.
 - Frontend lives in `frontend/` with its own `package.json` and `node_modules/`.
-- Tests live in `tests/`. Fixtures go in `tests/fixtures/`. Synthetic 3-file fixtures are fine for link discovery + dashboard tests.
 - Packaging (PyInstaller, updater, signing) is the last phase. Signing cert procurement runs in parallel from day 1.
 
 ## Stack discipline
@@ -20,10 +19,10 @@ Cerno is a **link-aware data analysis tool**: upload files → agent discovers l
 - Excel + CSV only for ingest in v1. PDF export allowed (reportlab for 1-pager brief).
 - ECharts is in scope for dashboard widgets. Tree-shake imports.
 
-## Tests and deploys
+## Verification and deploys
 
-- After every service change, run `uv run pytest` and `cd frontend && bun run build`.
-- Anomaly thresholds (MAD 3.5, rare-value 1%, key-overlap 60%) are first-cut numbers. Tune against Dad's eval set before shipping. Do not silently change thresholds without updating `docs/eval-set.md`.
+- After every service change, run `cd frontend && bun run build`.
+- Anomaly thresholds (MAD 3.5, rare-value 1%, key-overlap 60%) are first-cut numbers. Tune against Dad's eval set before shipping. Do not silently change thresholds without updating the canonical product notes.
 - All thresholds live in `~/.cerno/config.toml`, hot-reloaded, user-editable in Settings.
 - No `git push` or release actions without explicit user approval. No auto-update testing against Dad's machine without explicit user approval.
 

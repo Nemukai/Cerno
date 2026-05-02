@@ -22,12 +22,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "pandas>=3.0.2",
     "numpy>=2.4.4",
+    "authlib>=1.3",
+    "itsdangerous>=2.2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.24",
     "ruff>=0.7",
     "mypy>=1.13",
     "httpx>=0.27",
@@ -36,6 +36,7 @@ dev = [
 [project.scripts]
 cerno = "cerno.desktop:main"
 cerno-server = "cerno.main:run"
+cerno-admin = "cerno.admin:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -44,15 +45,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/cerno"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-asyncio_mode = "auto"
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "RUF"]

@@ -3,13 +3,22 @@ from __future__ import annotations
 import ast
 import builtins
 import io
+import multiprocessing as mp
+import os
+import tempfile
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
+from queue import Empty
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows desktop build fallback.
+    resource = None  # type: ignore[assignment]
 
 _SAFE_BUILTIN_NAMES = (
     "abs",
@@ -71,8 +80,60 @@ _SAFE_BUILTIN_NAMES = (
     "StopIteration",
 )
 
-SAFE_BUILTINS: dict[str, Any] = {
-    name: getattr(builtins, name) for name in _SAFE_BUILTIN_NAMES
+SAFE_BUILTINS: dict[str, Any] = {name: getattr(builtins, name) for name in _SAFE_BUILTIN_NAMES}
+
+DEFAULT_TIMEOUT_SECONDS = 5.0
+DEFAULT_MEMORY_BYTES = 1024 * 1024 * 1024
+
+_BLOCKED_CALL_NAMES = {"eval", "exec", "compile", "input", "open", "__import__"}
+_BLOCKED_ATTRS = {
+    "from_file",
+    "fromregex",
+    "genfromtxt",
+    "load",
+    "loads",
+    "loadtxt",
+    "memmap",
+    "read_clipboard",
+    "read_csv",
+    "read_excel",
+    "read_feather",
+    "read_fwf",
+    "read_gbq",
+    "read_hdf",
+    "read_html",
+    "read_json",
+    "read_orc",
+    "read_parquet",
+    "read_pickle",
+    "read_sas",
+    "read_spss",
+    "read_sql",
+    "read_sql_query",
+    "read_sql_table",
+    "read_stata",
+    "read_table",
+    "read_xml",
+    "save",
+    "savetxt",
+    "savez",
+    "savez_compressed",
+    "to_clipboard",
+    "to_csv",
+    "to_excel",
+    "to_feather",
+    "to_gbq",
+    "to_hdf",
+    "to_html",
+    "to_json",
+    "to_latex",
+    "to_markdown",
+    "to_orc",
+    "to_parquet",
+    "to_pickle",
+    "to_sql",
+    "to_stata",
+    "to_xml",
 }
 
 
@@ -120,6 +181,31 @@ def _split_last_expression(code: str) -> tuple[str, str | None]:
     return code, None
 
 
+def _validate_ast(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise SandboxError("imports are not allowed")
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            raise SandboxError("global and nonlocal statements are not allowed")
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            raise SandboxError("dunder names are not allowed")
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") or node.attr in _BLOCKED_ATTRS:
+                raise SandboxError(f"attribute is not allowed: {node.attr}")
+        if isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            if name in _BLOCKED_CALL_NAMES:
+                raise SandboxError(f"call is not allowed: {name}")
+
+
+def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
 def _nan_to_none(values: list[Any]) -> list[Any]:
     out: list[Any] = []
     for v in values:
@@ -161,10 +247,16 @@ def _preview_value(value: Any, *, max_rows: int = 20) -> tuple[str, dict[str, An
 
 
 def run_python(
-    code: str, *, tables: dict[str, pd.DataFrame] | None = None
+    code: str,
+    *,
+    tables: dict[str, pd.DataFrame] | None = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    memory_bytes: int = DEFAULT_MEMORY_BYTES,
 ) -> SandboxResult:
     tables = tables or {}
     try:
+        tree = ast.parse(code, mode="exec")
+        _validate_ast(tree)
         body_src, tail_src = _split_last_expression(code)
     except SyntaxError as exc:
         return SandboxResult(
@@ -174,6 +266,67 @@ def run_python(
             error=f"SyntaxError: {exc.msg}",
             traceback=traceback.format_exc(),
         )
+    except SandboxError as exc:
+        return SandboxResult(
+            ok=False,
+            stdout="",
+            stderr="",
+            error=f"SandboxError: {exc}",
+            traceback=traceback.format_exc(),
+        )
+
+    ctx = mp.get_context("spawn")
+    queue: mp.Queue[SandboxResult] = ctx.Queue(maxsize=1)
+    proc = ctx.Process(
+        target=_run_python_child,
+        args=(body_src, tail_src, tables, queue, memory_bytes),
+    )
+    proc.start()
+    proc.join(timeout_seconds)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(1)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        return SandboxResult(
+            ok=False,
+            stdout="",
+            stderr="",
+            error=f"TimeoutError: code exceeded {timeout_seconds:g}s limit",
+        )
+    try:
+        return queue.get_nowait()
+    except Empty:
+        return SandboxResult(
+            ok=False,
+            stdout="",
+            stderr="",
+            error=f"SandboxError: worker exited with code {proc.exitcode}",
+        )
+
+
+def _run_python_child(
+    body_src: str,
+    tail_src: str | None,
+    tables: dict[str, pd.DataFrame],
+    queue: mp.Queue[SandboxResult],
+    memory_bytes: int,
+) -> None:
+    if resource is not None:
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+        except (OSError, ValueError):
+            pass
+    with tempfile.TemporaryDirectory(prefix="cerno-sandbox-") as td:
+        os.chdir(td)
+        result = _run_python_in_process(body_src, tail_src, tables)
+    queue.put(result)
+
+
+def _run_python_in_process(
+    body_src: str, tail_src: str | None, tables: dict[str, pd.DataFrame]
+) -> SandboxResult:
 
     env: dict[str, Any] = {
         "__builtins__": SAFE_BUILTINS,
@@ -223,7 +376,5 @@ def run_python(
     )
 
 
-def _detect_tables_used(
-    env: dict[str, Any], tables: dict[str, pd.DataFrame]
-) -> list[str]:
+def _detect_tables_used(env: dict[str, Any], tables: dict[str, pd.DataFrame]) -> list[str]:
     return [name for name in tables if env.get(name) is tables[name]]

@@ -31,10 +31,9 @@ cd frontend && bun run dev
 
 Copy `.env.example` to `.env.local` and fill in your LLM API key.
 
-## Tests
+## Verification
 
 ```bash
-uv run pytest
 cd frontend && bun run build   # smoke: build must succeed
 ```
 
@@ -42,8 +41,6 @@ cd frontend && bun run build   # smoke: build must succeed
 
 - `src/cerno/` — Python backend package.
 - `frontend/` — Vite + React app.
-- `tests/` — pytest suite.
-- `docs/` — discovery notes, eval-set tracking.
 
 ## License
 

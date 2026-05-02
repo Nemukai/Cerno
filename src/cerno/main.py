@@ -6,8 +6,10 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from cerno import __version__
+from cerno.api.auth import router as auth_router
 from cerno.api.chat import router as chat_router
 from cerno.api.dashboards import router as dashboards_router
 from cerno.api.sessions import router as sessions_router
@@ -21,14 +23,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    settings.validate_runtime_safety()
     app = FastAPI(
         title="Cerno",
         version=__version__,
         lifespan=lifespan,
     )
     app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret,
+        same_site="lax",
+        https_only=settings.frontend_origin.startswith("https://"),
+    )
+    app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.frontend_dev_url],
+        allow_origins=list({settings.frontend_dev_url, settings.frontend_origin}),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -38,6 +47,7 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
 
+    app.include_router(auth_router)
     app.include_router(sessions_router)
     app.include_router(dashboards_router)
     app.include_router(chat_router)

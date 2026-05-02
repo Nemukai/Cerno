@@ -1,4 +1,5 @@
-import type { DashboardPage, NotebookCell, Widget } from "../lib/types";
+import type { DashboardPage, NotebookCell } from "../lib/types";
+import { widgetFromCell } from "../lib/widgets";
 import { WidgetRenderer } from "./WidgetRenderer";
 
 type Props = {
@@ -6,20 +7,6 @@ type Props = {
   cellsByPage: Record<string, NotebookCell[]>;
   focusPageId: string | null;
 };
-
-function widgetFromCell(cell: NotebookCell): Widget | null {
-  if (cell.kind !== "widget") return null;
-  const out = cell.output;
-  if (!out) return null;
-  if (
-    typeof out.kind === "string" &&
-    typeof out.title === "string" &&
-    typeof out.data === "object"
-  ) {
-    return out as unknown as Widget;
-  }
-  return null;
-}
 
 function formatRunStatus(cell: NotebookCell): string {
   if (!cell.last_run_status && !cell.last_run_at) return "";

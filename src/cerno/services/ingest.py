@@ -88,10 +88,8 @@ def read_raw_sheets(source_path: Path) -> list[RawSheet]:
             sheets: list[RawSheet] = []
             for name in workbook.sheet_names:
                 sheet = workbook.get_sheet_by_name(name)
-                rows: list[list[Any]] = sheet.to_python()
-                normalized = [
-                    [_normalize_cell(cell) for cell in row] for row in rows
-                ]
+                sheet_rows: list[list[Any]] = sheet.to_python()
+                normalized = [[_normalize_cell(cell) for cell in row] for row in sheet_rows]
                 width = max((len(r) for r in normalized), default=0)
                 if width == 0:
                     continue
@@ -115,7 +113,9 @@ def _raw_to_frame(rows: list[list[Any]]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame()
     width = len(rows[0])
-    columns = {f"c{i}": [str(row[i]) if row[i] is not None else None for row in rows] for i in range(width)}
+    columns = {
+        f"c{i}": [str(row[i]) if row[i] is not None else None for row in rows] for i in range(width)
+    }
     return pl.DataFrame(columns)
 
 
@@ -123,6 +123,7 @@ def ingest_file(
     *,
     source_path: Path,
     original_filename: str,
+    user_id: str,
     session_id: str,
     settings: Settings,
     files_repo: FileRepository,
@@ -135,7 +136,7 @@ def ingest_file(
     if existing is not None:
         return [IngestedFile(file=existing, duplicate=True)]
 
-    session_dir = settings.session_dir(session_id)
+    session_dir = settings.session_dir(user_id, session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
 
     sheets = read_raw_sheets(source_path)
@@ -154,7 +155,7 @@ def ingest_file(
             content_hash=content_hash,
         )
         raw_frame = _raw_to_frame(sheet.rows)
-        raw_path = settings.raw_parquet_path(session_id, file.id)
+        raw_path = settings.raw_parquet_path(user_id, session_id, file.id)
         raw_frame.write_parquet(raw_path)
         files_repo.conn.execute(
             "UPDATE files SET raw_parquet_path = ? WHERE id = ?",

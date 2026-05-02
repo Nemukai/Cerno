@@ -10,7 +10,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 _MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -211,6 +211,45 @@ _MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE files ADD COLUMN content_hash TEXT",
         "CREATE INDEX IF NOT EXISTS idx_files_session_hash ON files(session_id, content_hash)",
     ],
+    5: [
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            google_sub TEXT UNIQUE NOT NULL,
+            email TEXT NOT NULL,
+            name TEXT,
+            picture TEXT,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS llm_usage (
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            tokens_used INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, day)
+        )
+        """,
+        "ALTER TABLE sessions ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)",
+    ],
+    6: [
+        "ALTER TABLE users ADD COLUMN access_status TEXT NOT NULL DEFAULT 'pending'",
+        "ALTER TABLE users ADD COLUMN access_granted_at TEXT",
+        "ALTER TABLE users ADD COLUMN access_code_used TEXT",
+        """
+        CREATE TABLE IF NOT EXISTS beta_codes (
+            code TEXT PRIMARY KEY,
+            note TEXT,
+            max_uses INTEGER NOT NULL DEFAULT 1,
+            uses_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_users_access_status ON users(access_status)",
+    ],
 }
 
 
@@ -236,9 +275,7 @@ _register_adapters()
 def connect(settings: Settings) -> sqlite3.Connection:
     path = settings.db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(
-        path, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False
-    )
+    conn = sqlite3.connect(path, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")

@@ -4,11 +4,13 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
 
 from cerno.config import Settings
+from cerno.repositories import LLMUsageRepository
 
 DEFAULT_MAX_LLM_CALLS = 5
 
@@ -79,6 +81,7 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     response_id: str | None = None
     reasoning_summary: str | None = None
+    usage_total_tokens: int = 0
     status: str = "completed"
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -89,9 +92,7 @@ class HTTPTransport(Protocol):
     ) -> httpx.Response: ...
 
 
-def _reasoning_block(
-    effort: str | None, summary: str | None
-) -> dict[str, Any] | None:
+def _reasoning_block(effort: str | None, summary: str | None) -> dict[str, Any] | None:
     if not effort or effort.lower() in {"off", "none", ""}:
         return None
     block: dict[str, Any] = {"effort": effort}
@@ -105,9 +106,21 @@ class LLMClient:
         self,
         settings: Settings,
         transport: HTTPTransport | None = None,
+        usage_repo: LLMUsageRepository | None = None,
+        user_id: str | None = None,
     ) -> None:
         self.settings = settings
         self._transport = transport or _HttpxTransport(settings.llm_timeout_seconds)
+        self._usage_repo = usage_repo
+        self._user_id = user_id
+
+    def with_usage(self, usage_repo: LLMUsageRepository, user_id: str) -> LLMClient:
+        return LLMClient(
+            settings=self.settings,
+            transport=self._transport,
+            usage_repo=usage_repo,
+            user_id=user_id,
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -156,8 +169,11 @@ class LLMClient:
             body["text"] = {"format": response_format}
 
         url = f"{self.settings.llm_base_url.rstrip('/')}/responses"
+        self._ensure_token_budget()
         response = await self._call_with_retry(url, body)
-        return _parse_response(response)
+        parsed = _parse_response(response)
+        self._record_token_usage(parsed.usage_total_tokens)
+        return parsed
 
     async def complete(
         self,
@@ -182,9 +198,7 @@ class LLMClient:
                 continue
             if role in ("user", "assistant"):
                 input_items.append({"role": role, "content": content})
-        instructions = (
-            "\n\n".join(instructions_parts) if instructions_parts else None
-        )
+        instructions = "\n\n".join(instructions_parts) if instructions_parts else None
         return await self.respond(
             input=input_items,
             instructions=instructions,
@@ -202,15 +216,11 @@ class LLMClient:
         last_error: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
-                response = await self._transport.post(
-                    url, json=body, headers=self._headers()
-                )
+                response = await self._transport.post(url, json=body, headers=self._headers())
                 if response.status_code == 429:
                     raise LLMRateLimitError(f"rate limited: {response.text}")
                 if response.status_code >= 400:
-                    raise LLMError(
-                        f"llm error {response.status_code}: {response.text}"
-                    )
+                    raise LLMError(f"llm error {response.status_code}: {response.text}")
                 parsed: dict[str, Any] = response.json()
                 return parsed
             except LLMRateLimitError as exc:
@@ -223,6 +233,20 @@ class LLMClient:
                 raise LLMError(f"http error: {exc}") from exc
         assert last_error is not None
         raise last_error
+
+    def _usage_day(self) -> str:
+        return datetime.now(UTC).date().isoformat()
+
+    def _ensure_token_budget(self) -> None:
+        if self._usage_repo is None or self._user_id is None:
+            return
+        if self._usage_repo.get(self._user_id, self._usage_day()) >= self.settings.daily_token_cap:
+            raise LLMRateLimitError("daily LLM token cap exceeded")
+
+    def _record_token_usage(self, tokens: int) -> None:
+        if tokens <= 0 or self._usage_repo is None or self._user_id is None:
+            return
+        self._usage_repo.add_tokens(self._user_id, self._usage_day(), tokens)
 
 
 class _HttpxTransport:
@@ -264,9 +288,23 @@ def _parse_response(raw: dict[str, Any]) -> LLMResponse:
         tool_calls=tool_calls,
         response_id=raw.get("id"),
         reasoning_summary="\n".join(reasoning_parts) if reasoning_parts else None,
+        usage_total_tokens=_parse_total_tokens(raw.get("usage")),
         status=raw.get("status") or "completed",
         raw=raw,
     )
+
+
+def _parse_total_tokens(usage: Any) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    total = usage.get("total_tokens")
+    if isinstance(total, int):
+        return total
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        return input_tokens + output_tokens
+    return 0
 
 
 def _parse_args(raw: str | dict[str, Any]) -> dict[str, Any]:

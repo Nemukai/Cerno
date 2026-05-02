@@ -4,8 +4,8 @@ import type {
   DiscoveryStatus,
   FileRecord,
   NotebookCell,
-  Widget,
 } from "../lib/types";
+import { widgetFromCell } from "../lib/widgets";
 import { WidgetRenderer } from "./WidgetRenderer";
 
 type Props = {
@@ -23,20 +23,6 @@ type Props = {
   building: boolean;
   onReviewSchema: () => void;
 };
-
-function widgetFromCell(cell: NotebookCell): Widget | null {
-  if (cell.kind !== "widget") return null;
-  const out = cell.output;
-  if (!out) return null;
-  if (
-    typeof out.kind === "string" &&
-    typeof out.title === "string" &&
-    typeof out.data === "object"
-  ) {
-    return out as unknown as Widget;
-  }
-  return null;
-}
 
 export function DashboardTab({
   pages,
@@ -84,7 +70,9 @@ export function DashboardTab({
         const cells = cellsByPage[page.id] ?? [];
         const widgets = cells
           .map(widgetFromCell)
-          .filter((w): w is Widget => w !== null);
+          .filter((w) => w !== null);
+        const kpis = widgets.filter((widget) => widget.kind === "kpi");
+        const visuals = widgets.filter((widget) => widget.kind !== "kpi");
         const num = String(page.position + 1).padStart(2, "0");
         return (
           <section
@@ -104,13 +92,22 @@ export function DashboardTab({
                 No widgets on this page.
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-x-10 md:grid-cols-2">
-                {widgets.map((w, i) => (
-                  <div key={i} className="hairline border-b">
-                    <WidgetRenderer widget={w} />
+              <>
+                {kpis.length > 0 ? (
+                  <div className="grid gap-x-10 border-b border-neutral-200 md:grid-cols-2 xl:grid-cols-4">
+                    {kpis.map((widget, i) => (
+                      <WidgetRenderer key={`${widget.title}-${i}`} widget={widget} />
+                    ))}
                   </div>
-                ))}
-              </div>
+                ) : null}
+                <div className="grid grid-cols-1 gap-x-10 md:grid-cols-2">
+                  {visuals.map((widget, i) => (
+                    <div key={`${widget.title}-${i}`} className="hairline border-b">
+                      <WidgetRenderer widget={widget} />
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </section>
         );

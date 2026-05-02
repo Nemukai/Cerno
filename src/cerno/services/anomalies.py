@@ -169,9 +169,7 @@ def _detect_key_overlap(
     drafts: list[AnomalyDraft] = []
     all_links = links_repo.list_for_session(session_id)
     incoming = [
-        link
-        for link in all_links
-        if link.file_b == file.id and link.direction == "many_to_one"
+        link for link in all_links if link.file_b == file.id and link.direction == "many_to_one"
     ]
     confirmed_incoming = []
     for link in incoming:
@@ -218,8 +216,7 @@ def _detect_key_overlap(
                     score_normalized=80.0,
                     score_raw=1.0,
                     source_code=(
-                        f"{table_a}[~{table_a}['{link.col_a}'].isin("
-                        f"{table_b}['{link.col_b}'])]"
+                        f"{table_a}[~{table_a}['{link.col_a}'].isin({table_b}['{link.col_b}'])]"
                     ),
                 )
             )
@@ -245,16 +242,8 @@ def detect_anomalies(
         if schema is None:
             continue
         frame = _load_frame(file)
-        drafts.extend(
-            _detect_numeric_mad(
-                file=file, schema=schema, frame=frame, settings=settings
-            )
-        )
-        drafts.extend(
-            _detect_rare_value(
-                file=file, schema=schema, frame=frame, settings=settings
-            )
-        )
+        drafts.extend(_detect_numeric_mad(file=file, schema=schema, frame=frame, settings=settings))
+        drafts.extend(_detect_rare_value(file=file, schema=schema, frame=frame, settings=settings))
         drafts.extend(
             _detect_key_overlap(
                 file=file,
