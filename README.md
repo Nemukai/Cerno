@@ -32,7 +32,7 @@ Prototype in active development. Current implementation includes:
 
 Still pending before a serious MVP:
 
-- A polished landing page and session dashboard.
+- A polished landing page and Workspaces surface.
 - Stronger demo-data validation against real office-style workbooks.
 - Export flows.
 - Desktop shell, packaging, signing, and updater work.

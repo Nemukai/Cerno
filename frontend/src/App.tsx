@@ -36,10 +36,20 @@ import { SchemaTab } from "./components/SchemaTab";
 import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
 
+type WorkspaceMetric = {
+  fileCount: number;
+  rowCount: number;
+  lastOpenedAt: string | null;
+  loaded: boolean;
+};
+
 export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [homeView, setHomeView] = useState<"landing" | "sessions">("landing");
   const [session, setSession] = useState<Session | null>(null);
+  const [workspaceMetrics, setWorkspaceMetrics] = useState<
+    Record<string, WorkspaceMetric>
+  >({});
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [links, setLinks] = useState<Link[]>([]);
   const [discovery, setDiscovery] = useState<DiscoveryResponse | null>(null);
@@ -112,6 +122,49 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (session) return;
+    let cancelled = false;
+    if (sessions.length === 0) {
+      setWorkspaceMetrics({});
+      return;
+    }
+    Promise.all(
+      sessions.map(async (item) => {
+        try {
+          const workspaceFiles = await listFiles(item.id);
+          return [
+            item.id,
+            {
+              fileCount: workspaceFiles.length,
+              rowCount: workspaceFiles.reduce(
+                (sum, file) => sum + file.row_count,
+                0,
+              ),
+              lastOpenedAt: getWorkspaceLastOpened(item.id),
+              loaded: true,
+            },
+          ] as const;
+        } catch {
+          return [
+            item.id,
+            {
+              fileCount: 0,
+              rowCount: 0,
+              lastOpenedAt: getWorkspaceLastOpened(item.id),
+              loaded: false,
+            },
+          ] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setWorkspaceMetrics(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, sessions]);
+
+  useEffect(() => {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
     refreshSessions().catch((err: Error) => setError(err.message));
@@ -182,6 +235,7 @@ export function App() {
         const s = await createSession(name);
         clearSessionState();
         setHomeView("sessions");
+        markWorkspaceOpened(s.id);
         setSession(s);
         await refreshSessions();
       } catch (err) {
@@ -197,6 +251,7 @@ export function App() {
     (s: Session) => {
       clearSessionState();
       setHomeView("sessions");
+      markWorkspaceOpened(s.id);
       setSession(s);
     },
     [clearSessionState],
@@ -214,6 +269,11 @@ export function App() {
       setError(null);
       try {
         await deleteSession(id);
+        setWorkspaceMetrics((current) => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
         if (session?.id === id) {
           setSession(null);
           clearSessionState();
@@ -405,11 +465,12 @@ export function App() {
       );
     }
     return (
-      <SessionsDashboard
+      <WorkspacesPage
         sessions={sessions}
         onStart={handleCreateSession}
         onResume={handleResumeSession}
         onDelete={handleDeleteSession}
+        metrics={workspaceMetrics}
         starting={starting}
         error={error}
         onDismissError={() => setError(null)}
@@ -594,7 +655,7 @@ function LandingPage({
                 enter workspace
               </button>
               <div className="font-mono text-xs text-neutral-500">
-                {sessionCount} saved session{sessionCount === 1 ? "" : "s"}
+                {sessionCount} saved workspace{sessionCount === 1 ? "" : "s"}
               </div>
             </div>
           </div>
@@ -609,7 +670,7 @@ function LandingPage({
           <LandingFact
             index="02"
             title="Dashboard next"
-            body="Approved sessions open into generated views that can be reshaped for the task."
+            body="Approved workspaces open into generated views that can be reshaped for the task."
           />
           <LandingFact
             index="03"
@@ -640,11 +701,12 @@ function LandingFact({
   );
 }
 
-function SessionsDashboard({
+function WorkspacesPage({
   sessions,
   onStart,
   onResume,
   onDelete,
+  metrics,
   starting,
   error,
   onDismissError,
@@ -654,6 +716,7 @@ function SessionsDashboard({
   onStart: (name: string) => void;
   onResume: (session: Session) => void;
   onDelete: (id: string) => void;
+  metrics: Record<string, WorkspaceMetric>;
   starting: boolean;
   error: string | null;
   onDismissError: () => void;
@@ -661,11 +724,11 @@ function SessionsDashboard({
 }) {
   const [name, setName] = useState("");
   const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 });
-  const stats = buildSessionStats(sessions);
+  const stats = buildWorkspaceStats(sessions, metrics);
 
   const handleStart = () => {
     const trimmed = name.trim();
-    const fallback = `session ${new Date().toLocaleDateString()}`;
+    const fallback = `workspace ${new Date().toLocaleDateString()}`;
     onStart(trimmed.length > 0 ? trimmed : fallback);
   };
 
@@ -675,7 +738,7 @@ function SessionsDashboard({
 
   const handleDelete = (s: Session) => {
     const ok = window.confirm(
-      `Delete session "${s.name}"? Files, links, dashboards, and chat history will be removed. This cannot be undone.`,
+      `Delete workspace "${s.name}"? Files, links, dashboards, and chat history will be removed. This cannot be undone.`,
     );
     if (ok) onDelete(s.id);
   };
@@ -688,116 +751,85 @@ function SessionsDashboard({
     });
   };
 
-  const asciiRows = [
-    "CERNO::LINK_GRAPH   +--+--+--+   DISCOVERY_PIPELINE",
-    "      .--.     rows -> joins -> signals      .--.",
-    "  +---|  |---+  [hash] [schema] [rank]  +---|  |---+",
-    "      '--'     outliers / keys / lineage      '--'",
-    ">>> ingest.csv :::::::::::: correlate.xlsx :::::::::",
-    "     SELECT * FROM memory WHERE signal > noise",
-    "  01001011 01000101 01011001 00101101 01010011",
-    "schema_map -> relationship_graph -> dashboard_queue",
-  ];
-
   return (
     <div
-      className="relative flex min-h-full w-full overflow-hidden bg-paper px-6 py-10 text-ink"
+      className="relative flex min-h-full w-full overflow-hidden bg-[#fff8f1] px-7 py-10 text-ink"
       onMouseMove={handlePointerMove}
     >
-      <div className="pointer-events-none absolute inset-0 opacity-90">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.92),transparent_34%),linear-gradient(180deg,rgba(255,247,238,0.95),rgba(250,246,238,0.88))]" />
         <div
-          className="absolute inset-y-0 w-32 bg-ember/10 blur-2xl transition-transform duration-200 ease-out"
+          className="absolute h-72 w-72 rounded-full bg-ember/20 blur-3xl transition-transform duration-300 ease-out"
           style={{
             left: `${pointer.x * 100}%`,
-            transform: "translateX(-50%) skewX(-12deg)",
+            top: `${pointer.y * 100}%`,
+            transform: "translate(-50%, -50%)",
           }}
         />
         <div
-          className="absolute inset-0 bg-[linear-gradient(115deg,transparent_0%,rgba(232,93,35,0.10)_var(--scan),transparent_calc(var(--scan)_+_18%))]"
-          style={
-            {
-              "--scan": `${pointer.x * 100}%`,
-            } as React.CSSProperties
-          }
+          className="absolute h-[28rem] w-[28rem] rounded-full bg-orange-200/25 blur-3xl transition-transform duration-500 ease-out"
+          style={{
+            left: `${100 - pointer.x * 45}%`,
+            top: `${18 + pointer.y * 24}%`,
+            transform: "translate(-50%, -50%)",
+          }}
         />
-        <div className="absolute inset-0 flex select-none flex-col justify-around py-8 font-mono text-[10px] uppercase leading-loose text-ember/25 sm:text-xs lg:text-sm">
-          {Array.from({ length: 18 }).map((_, i) => {
-            const direction = i % 2 === 0 ? 1 : -1;
-            const driftX = (pointer.x - 0.5) * direction * (18 + (i % 5) * 4);
-            const driftY = (pointer.y - 0.5) * direction * 10;
-            return (
-              <div
-                key={i}
-                className="whitespace-nowrap transition-transform duration-200 ease-out"
-                style={{
-                  transform: `translate3d(${driftX}px, ${driftY}px, 0)`,
-                  opacity: 0.16 + (i % 4) * 0.06,
-                }}
-              >
-                {asciiRows[i % asciiRows.length]}{" "}
-                {asciiRows[(i + 3) % asciiRows.length]}
-              </div>
-            );
-          })}
-        </div>
       </div>
 
-      <main className="relative z-10 mx-auto flex w-full max-w-6xl flex-col py-4">
+      <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-col py-4">
         <header className="flex items-center justify-between gap-4">
           <button
             type="button"
             onClick={onBackToLanding}
-            className="small-caps text-xs text-neutral-500 hover:text-ember"
+            className="small-caps text-sm text-neutral-500 hover:text-ember"
           >
             cerno
           </button>
-          <div className="small-caps text-xs text-neutral-500">workspace dashboard</div>
+          <div className="small-caps text-sm text-neutral-500">workspaces</div>
         </header>
 
-        <section className="mt-14 grid gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(22rem,0.9fr)]">
+        <section className="mt-16 grid gap-12 lg:grid-cols-[minmax(0,1.05fr)_minmax(25rem,0.95fr)]">
           <div>
-            <div className="small-caps text-xs text-ember">sessions</div>
-            <h1 className="mt-2 max-w-3xl font-mono text-4xl tracking-tight text-ink sm:text-5xl">
-              Choose the workspace, then work the data.
+            <div className="small-caps text-sm text-ember">workspaces</div>
+            <h1 className="mt-3 max-w-4xl font-mono text-5xl leading-tight tracking-tight text-ink sm:text-6xl">
+              Open a workspace or start with new files.
             </h1>
-            <p className="mt-4 max-w-2xl text-sm leading-6 text-neutral-600">
-              Create a session for a new upload or resume a saved one. Sessions carry
-              files, the approved schema map, generated guidance, dashboard views,
-              and chat history together.
+            <p className="mt-6 max-w-3xl text-lg leading-8 text-neutral-600">
+              Upload Excel files, ask questions, generate insights, and save useful charts.
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-x-8 gap-y-5 border-y border-ink/10 py-5">
-            <SessionStat label="total" value={stats.total} />
-            <SessionStat label="ready" value={stats.ready} />
-            <SessionStat label="in review" value={stats.review} />
-            <SessionStat label="latest" value={stats.latestLabel} />
+          <div className="grid grid-cols-2 gap-x-10 gap-y-7 border-y border-ink/10 bg-white/40 px-5 py-7 backdrop-blur">
+            <WorkspaceStat label="workspaces" value={stats.workspaces} />
+            <WorkspaceStat label="files uploaded" value={stats.filesUploaded} />
+            <WorkspaceStat label="last activity" value={stats.lastActivity} />
+            <WorkspaceStat label="total rows" value={stats.totalRows} />
           </div>
         </section>
 
-        <section className="mx-auto mt-12 w-full max-w-4xl">
-          <div className="mt-8 w-full border border-ember/50 bg-white/85 p-1 shadow-[0_18px_70px_rgba(232,93,35,0.16)] backdrop-blur">
-            <div className="flex flex-col gap-1 sm:flex-row">
-              <label className="flex min-w-0 flex-1 items-center gap-3 bg-paper px-4 py-3 text-left text-ink">
-                <span className="small-caps shrink-0 text-[11px] text-neutral-500">
-                  session
+        <section className="mx-auto mt-14 w-full max-w-5xl">
+          <div className="w-full border border-ember/50 bg-white/90 p-2 shadow-[0_24px_80px_rgba(232,93,35,0.18)] backdrop-blur">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <label className="flex min-w-0 flex-1 items-center gap-4 bg-[#fffaf5] px-5 py-4 text-left text-ink">
+                <span className="small-caps shrink-0 text-sm text-neutral-500">
+                  What are you analyzing?
                 </span>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={handleKey}
-                  placeholder="march billings"
-                  className="min-w-0 flex-1 bg-transparent font-mono text-sm text-ink placeholder:text-neutral-400 focus:outline-none"
+                  placeholder="Excel files, monthly sales, audit data..."
+                  className="min-w-0 flex-1 bg-transparent text-base text-ink placeholder:text-neutral-400 focus:outline-none"
                 />
               </label>
               <button
                 type="button"
                 onClick={handleStart}
                 disabled={starting}
-                className="small-caps bg-ember px-5 py-3 text-xs text-white transition hover:bg-ember-hover disabled:opacity-40"
+                className="small-caps bg-ember px-7 py-4 text-sm text-white transition hover:bg-ember-hover disabled:opacity-40"
               >
-                {starting ? "starting..." : "start session"}
+                {starting ? "starting..." : "start workspace"}
               </button>
             </div>
           </div>
@@ -816,53 +848,34 @@ function SessionsDashboard({
           ) : null}
         </section>
 
-        <section className="mx-auto mt-12 w-full max-w-4xl">
-          <div className="flex items-end justify-between gap-4 border-b border-ink/10 pb-3">
+        <section className="mx-auto mt-14 w-full max-w-5xl">
+          <div className="flex items-end justify-between gap-4 border-b border-ink/10 pb-4">
             <div>
-              <div className="small-caps text-xs text-ember/80">
-                saved workspaces
-              </div>
-              <h2 className="mt-1 font-mono text-xl text-ink">
-                Pick up where the data left off
+              <div className="small-caps text-sm text-ember/80">current workspaces</div>
+              <h2 className="mt-2 font-mono text-2xl text-ink">
+                Saved analysis rooms
               </h2>
             </div>
-            <span className="font-mono text-xs text-neutral-500">
+            <span className="text-sm text-neutral-500">
               {sessions.length} saved
             </span>
           </div>
 
           {sessions.length > 0 ? (
-            <ul className="mt-4 grid gap-3">
+            <ul className="mt-5 grid gap-4">
               {sessions.map((s) => (
-                <li key={s.id}>
-                  <div className="group flex items-center gap-4 border border-ink/10 bg-white/80 px-4 py-3 shadow-[0_10px_35px_rgba(14,14,14,0.04)] transition hover:border-ember/70 hover:bg-ember/[0.08]">
-                    <button
-                      type="button"
-                      onClick={() => onResume(s)}
-                      className="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-1 text-left"
-                    >
-                      <span className="row-span-2 h-8 w-1 bg-ember transition group-hover:h-10" />
-                      <span className="truncate font-mono text-sm text-ink">
-                        {s.name}
-                      </span>
-                      <span className="small-caps text-[10px] text-neutral-500">
-                        {s.status} / {new Date(s.created_at).toLocaleString()}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(s)}
-                      className="small-caps border border-red-300/50 px-2 py-1 text-[11px] text-red-600 transition hover:border-red-300 hover:bg-red-50"
-                    >
-                      delete
-                    </button>
-                  </div>
-                </li>
+                <WorkspaceRow
+                  key={s.id}
+                  session={s}
+                  metric={metrics[s.id]}
+                  onResume={() => onResume(s)}
+                  onDelete={() => handleDelete(s)}
+                />
               ))}
             </ul>
           ) : (
-            <div className="mt-4 border border-dashed border-ink/15 bg-white/50 px-4 py-6 font-mono text-sm text-neutral-500">
-              No saved sessions yet.
+            <div className="mt-5 border border-dashed border-ink/15 bg-white/70 px-5 py-8 text-base text-neutral-500">
+              No saved workspaces yet.
             </div>
           )}
         </section>
@@ -871,7 +884,7 @@ function SessionsDashboard({
   );
 }
 
-function SessionStat({
+function WorkspaceStat({
   label,
   value,
 }: {
@@ -880,25 +893,152 @@ function SessionStat({
 }) {
   return (
     <div>
-      <div className="small-caps text-[11px] text-neutral-500">{label}</div>
-      <div className="mt-1 font-mono text-2xl text-ink">{value}</div>
+      <div className="small-caps text-sm text-neutral-500">{label}</div>
+      <div className="mt-2 font-mono text-3xl text-ink">{value}</div>
     </div>
   );
 }
 
-function buildSessionStats(sessions: Session[]) {
-  const ready = sessions.filter((session) => session.status === "ready").length;
-  const review = sessions.filter(
-    (session) => session.discovery_status === "pending_review",
-  ).length;
+function WorkspaceRow({
+  session,
+  metric,
+  onResume,
+  onDelete,
+}: {
+  session: Session;
+  metric?: WorkspaceMetric;
+  onResume: () => void;
+  onDelete: () => void;
+}) {
+  const activity = workspaceActivity(session, metric);
+  const fileCount = metric?.loaded ? metric.fileCount : null;
+  const rowCount = metric?.loaded ? metric.rowCount : null;
+
+  return (
+    <li>
+      <div className="group grid gap-4 border border-ink/10 bg-white/90 px-5 py-5 shadow-[0_14px_45px_rgba(80,45,20,0.06)] backdrop-blur transition hover:border-ember/60 hover:bg-white md:grid-cols-[minmax(0,1fr)_auto]">
+        <button
+          type="button"
+          onClick={onResume}
+          className="min-w-0 text-left"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <span className="h-3 w-3 bg-ember shadow-[0_0_24px_rgba(232,93,35,0.45)]" />
+            <span className="truncate font-mono text-xl text-ink">{session.name}</span>
+            <span className="small-caps border border-neutral-200 bg-[#fff8f1] px-2 py-1 text-sm text-neutral-600">
+              {workspaceStatusLabel(session)}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-4 text-sm text-neutral-600 sm:grid-cols-4">
+            <WorkspaceFact label="files" value={formatMaybeNumber(fileCount)} />
+            <WorkspaceFact label="rows" value={formatMaybeNumber(rowCount)} />
+            <WorkspaceFact label="last activity" value={formatActivity(activity)} />
+            <WorkspaceFact
+              label="created"
+              value={formatActivity(session.created_at)}
+            />
+          </div>
+        </button>
+        <div className="flex items-center gap-2 md:flex-col md:items-end md:justify-between">
+          <button
+            type="button"
+            onClick={onResume}
+            className="small-caps bg-ink px-4 py-2 text-sm text-white transition hover:bg-ember"
+          >
+            open
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="small-caps border border-red-300/60 px-3 py-2 text-sm text-red-600 transition hover:border-red-300 hover:bg-red-50"
+          >
+            delete
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function WorkspaceFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="small-caps text-sm text-neutral-400">{label}</div>
+      <div className="mt-1 text-base text-ink">{value}</div>
+    </div>
+  );
+}
+
+function buildWorkspaceStats(
+  sessions: Session[],
+  metrics: Record<string, WorkspaceMetric>,
+) {
+  const filesUploaded = sessions.reduce(
+    (sum, session) => sum + (metrics[session.id]?.fileCount ?? 0),
+    0,
+  );
+  const totalRows = sessions.reduce(
+    (sum, session) => sum + (metrics[session.id]?.rowCount ?? 0),
+    0,
+  );
   const latest = sessions
-    .map((session) => new Date(session.created_at))
+    .map((session) => new Date(workspaceActivity(session, metrics[session.id])))
     .filter((date) => !Number.isNaN(date.getTime()))
     .sort((a, b) => b.getTime() - a.getTime())[0];
   return {
-    total: sessions.length,
-    ready,
-    review,
-    latestLabel: latest ? latest.toLocaleDateString() : "none",
+    workspaces: formatCompactNumber(sessions.length),
+    filesUploaded: formatCompactNumber(filesUploaded),
+    lastActivity: latest ? formatActivity(latest.toISOString()) : "none",
+    totalRows: formatCompactNumber(totalRows),
   };
+}
+
+function workspaceActivity(session: Session, metric?: WorkspaceMetric): string {
+  return metric?.lastOpenedAt ?? session.created_at;
+}
+
+function workspaceStatusLabel(session: Session): string {
+  if (session.discovery_status === "pending_review") return "review";
+  if (session.discovery_status === "approved") return "approved";
+  return session.status;
+}
+
+function formatMaybeNumber(value: number | null): string {
+  return value === null ? "loading" : formatCompactNumber(value);
+}
+
+function formatCompactNumber(value: number): string {
+  if (value < 1_000) return value.toLocaleString();
+  if (value < 1_000_000) {
+    const compact = value / 1_000;
+    return `${compact >= 10 ? compact.toFixed(0) : compact.toFixed(1)}K`;
+  }
+  const compact = value / 1_000_000;
+  return `${compact >= 10 ? compact.toFixed(0) : compact.toFixed(1)}M`;
+}
+
+function formatActivity(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+}
+
+function workspaceOpenedKey(id: string): string {
+  return `cerno:workspace-opened:${id}`;
+}
+
+function markWorkspaceOpened(id: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(workspaceOpenedKey(id), new Date().toISOString());
+}
+
+function getWorkspaceLastOpened(id: string): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(workspaceOpenedKey(id));
 }

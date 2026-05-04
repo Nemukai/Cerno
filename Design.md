@@ -11,7 +11,7 @@ reviewed data map, generated schema guidance, dashboard views, and grounded chat
 The current flow is:
 
 1. Landing page
-2. Workspace dashboard with sessions and stats
+2. Workspaces page with saved workspaces and stats
 3. Session workspace with persistent chat on the left
 4. Dashboard and schema tabs in the main pane
 5. Schema review and guidance before dashboard and chat become useful
@@ -30,7 +30,7 @@ energy and identity, but it should not turn the whole app into a one-color theme
 ## Layout Principles
 
 - Landing page is the brand entrance.
-- Workspace dashboard is the session control room.
+- Workspaces is the workspace control room.
 - Session workspace keeps chat persistent on the left.
 - Main work happens through top tabs, currently Dashboard and Schema.
 - Schema guidance is merged into the Schema surface.
@@ -46,11 +46,11 @@ The landing page uses a full-viewport light background with pointer-reactive
 orange ASCII texture. The first impression is brand-first: Cerno, a short value
 statement, and an action into the workspace.
 
-### Workspace Dashboard
+### Workspaces
 
-The workspace dashboard is the home for creating and resuming sessions. It
-contains saved session stats, a start-session input, and a saved workspace list.
-This page is next in line for redesign.
+Workspaces is the home for creating and resuming analysis spaces. It contains
+aggregate workspace stats, a large start-workspace CTA, and richer saved
+workspace rows with file, row, and activity metadata.
 
 ### Session Workspace
 
@@ -115,11 +115,11 @@ orange variant. Keep most surfaces white, paper, neutral gray, and ink.
 
 ## Redesign Notes
 
-The next redesign target is the Workspace Dashboard / Session Page UI.
+The current redesign target is the Workspaces page.
 
 Goals for that pass:
 
-- Make session status easier to scan.
+- Make workspace status easier to scan.
 - Separate "start new work" from "resume old work."
 - Make stats useful, not decorative.
 - Improve hierarchy without adding clutter.
