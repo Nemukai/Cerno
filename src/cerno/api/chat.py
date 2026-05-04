@@ -9,11 +9,11 @@ from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.models import ChatMessage, ChatTurn, Widget
 from cerno.repositories import (
     ChatRepository,
-    DataDocRepository,
+    DashboardCellRepository,
     DashboardRepository,
+    DataDocRepository,
     FileRepository,
     LLMUsageRepository,
-    NotebookRepository,
     SchemaRepository,
     SessionRepository,
 )
@@ -68,7 +68,7 @@ async def post_chat(
             files_repo=FileRepository(conn),
             schemas_repo=SchemaRepository(conn),
             dashboards_repo=DashboardRepository(conn),
-            notebook_repo=NotebookRepository(conn),
+            dashboard_cells_repo=DashboardCellRepository(conn),
             chat_repo=ChatRepository(conn),
             data_docs_repo=DataDocRepository(conn),
         )

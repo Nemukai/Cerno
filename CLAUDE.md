@@ -2,7 +2,7 @@
 
 ## Scope
 
-Cerno is a **link-aware data analysis tool**: upload files → agent discovers links → dashboard generated → chat spawns per-question dashboard pages backed by a model-run notebook → export. Link discovery + dashboards are the hero; anomalies are one engine feeding the dashboard. See `~/.gstack/projects/Cerno/priyanshsingh-main-plan-reframe-20260424-000000.md` for the canonical plan.
+Cerno is a **link-aware data analysis tool**: landing page → workspace dashboard → upload files → agent discovers links and schema → user approves the data map → dashboard generated → chat spawns per-question dashboard views → export. Link discovery + dashboards are the hero; anomalies are one engine feeding the dashboard. The schema surface also contains the generated data guide.
 
 ## Layout
 
@@ -14,7 +14,7 @@ Cerno is a **link-aware data analysis tool**: upload files → agent discovers l
 
 - Python **3.12** (pinned in `.python-version`). No 3.13/3.14 without a PyInstaller smoke test.
 - `uv` for Python deps. `bun` for frontend deps. Never mix in npm/pip.
-- **Notebook model:** model-writes / user-reads. The agent writes Python + SQL cells; the user sees output on the dashboard or in chat but does not edit cells. Tools: `run_python`, `run_sql`, `list_tables`, `describe_table`, `read_cells`, `render_widget`.
+- **Analysis model:** model-runs / user-reviews. The agent can use Python-backed tools to inspect approved session data and render dashboard widgets. The user-facing product is dashboard views plus schema guidance.
 - Tables in `run_python` are exposed as pandas DataFrames, one per ingested file, named by a slugified filename.
 - Excel + CSV only for ingest in v1. PDF export allowed (reportlab for 1-pager brief).
 - ECharts is in scope for dashboard widgets. Tree-shake imports.

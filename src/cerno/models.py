@@ -218,7 +218,7 @@ class DashboardPage(BaseModel):
     created_at: datetime
 
 
-class NotebookCell(BaseModel):
+class DashboardCell(BaseModel):
     id: str
     page_id: str
     order_index: int

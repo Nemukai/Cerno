@@ -1,4 +1,4 @@
-import type { NotebookCell, Widget } from "./types";
+import type { DashboardCell, Widget } from "./types";
 
 type WidgetEnvelope = {
   widget?: unknown;
@@ -15,7 +15,7 @@ function isWidget(value: unknown): value is Widget {
   );
 }
 
-export function widgetFromCell(cell: NotebookCell): Widget | null {
+export function widgetFromCell(cell: DashboardCell): Widget | null {
   if (cell.kind !== "widget") return null;
   const output = cell.output;
   if (!output) return null;

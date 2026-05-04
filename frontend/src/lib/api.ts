@@ -159,7 +159,7 @@ export function getDashboard(sessionId: string): Promise<DashboardResponse> {
   return request<DashboardResponse>(`/sessions/${sessionId}/dashboard`);
 }
 
-export function getDataDocs(sessionId: string): Promise<DataDoc> {
+export function getSchemaGuide(sessionId: string): Promise<DataDoc> {
   return request<DataDoc>(`/sessions/${sessionId}/docs`);
 }
 

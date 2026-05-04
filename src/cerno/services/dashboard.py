@@ -6,12 +6,12 @@ from typing import Any
 
 from cerno.config import Settings
 from cerno.llm import LLMClient
-from cerno.models import DashboardPage, NotebookCell, Widget
+from cerno.models import DashboardCell, DashboardPage, Widget
 from cerno.repositories import (
+    DashboardCellRepository,
     DashboardRepository,
     FileRepository,
     LinkRepository,
-    NotebookRepository,
     SchemaRepository,
     SessionRepository,
     new_id,
@@ -61,15 +61,15 @@ DASHBOARD_RESPONSE_SCHEMA: dict[str, Any] = {
 
 def _add_widget_cell(
     *,
-    notebook_repo: NotebookRepository,
+    dashboard_cells_repo: DashboardCellRepository,
     page_id: str,
     order_index: int,
     widget: Widget,
     code: str,
     bound_file_ids: list[str],
     bound_schema_versions: dict[str, int],
-) -> NotebookCell:
-    cell = NotebookCell(
+) -> DashboardCell:
+    cell = DashboardCell(
         id=new_id(),
         page_id=page_id,
         order_index=order_index,
@@ -80,7 +80,7 @@ def _add_widget_cell(
         bound_schema_versions=bound_schema_versions,
         created_at=datetime.now(UTC),
     )
-    return notebook_repo.add_cell(cell)
+    return dashboard_cells_repo.add_cell(cell)
 
 
 async def generate_overview(
@@ -92,7 +92,7 @@ async def generate_overview(
     schemas_repo: SchemaRepository,
     links_repo: LinkRepository,
     dashboards_repo: DashboardRepository,
-    notebook_repo: NotebookRepository,
+    dashboard_cells_repo: DashboardCellRepository,
     llm_client: LLMClient | None = None,
 ) -> DashboardPage:
     dashboard = dashboards_repo.get_for_session(session_id)
@@ -135,7 +135,7 @@ async def generate_overview(
 
     for order, candidate in enumerate(selected):
         _add_widget_cell(
-            notebook_repo=notebook_repo,
+            dashboard_cells_repo=dashboard_cells_repo,
             page_id=page.id,
             order_index=order,
             widget=candidate.widget,

@@ -164,7 +164,7 @@ export type DashboardPage = {
   created_at: string;
 };
 
-export type NotebookCell = {
+export type DashboardCell = {
   id: string;
   page_id: string;
   order_index: number;
@@ -210,7 +210,7 @@ export type Widget = {
 
 export type DashboardResponse = {
   pages: DashboardPage[];
-  cells_by_page: Record<string, NotebookCell[]>;
+  cells_by_page: Record<string, DashboardCell[]>;
 };
 
 export type DataDocColumn = {

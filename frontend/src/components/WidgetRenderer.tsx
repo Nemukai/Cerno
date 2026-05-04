@@ -6,6 +6,7 @@ import { KpiCard } from "./KpiCard";
 
 type Props = {
   widget: Widget;
+  height?: number;
 };
 
 type CategoryData = {
@@ -174,7 +175,15 @@ function ChartFilter({
   );
 }
 
-function FilterableBar({ data, options }: { data: CategoryData; options: WidgetOptions }) {
+function FilterableBar({
+  data,
+  options,
+  height,
+}: {
+  data: CategoryData;
+  options: WidgetOptions;
+  height?: number;
+}) {
   const [limit, setLimit] = useState(10);
   const items = useMemo(() => chartItems(data), [data]);
   const visible = useMemo(() => limitItems(items, limit), [items, limit]);
@@ -190,14 +199,20 @@ function FilterableBar({ data, options }: { data: CategoryData; options: WidgetO
         </div>
       ) : null}
       <EChart
-        height={options.horizontal ? 300 : 240}
+        height={height ?? (options.horizontal ? 300 : 240)}
         option={buildBarOption(chartData, options)}
       />
     </>
   );
 }
 
-function FilterablePie({ data }: { data: PieData & CategoryData }) {
+function FilterablePie({
+  data,
+  height,
+}: {
+  data: PieData & CategoryData;
+  height?: number;
+}) {
   const [limit, setLimit] = useState(8);
   const items = useMemo(() => chartItems(data), [data]);
   const visible = useMemo(() => limitItems(items, limit), [items, limit]);
@@ -206,7 +221,7 @@ function FilterablePie({ data }: { data: PieData & CategoryData }) {
       <div className="mb-2 flex justify-end">
         <ChartFilter count={items.length} limit={limit} onChange={setLimit} />
       </div>
-      <EChart option={buildPieOption({ items: visible })} />
+      <EChart height={height} option={buildPieOption({ items: visible })} />
     </>
   );
 }
@@ -266,17 +281,61 @@ function TableWidget({ data, searchable }: { data: TableData; searchable?: boole
 }
 
 function MarkdownWidget({ text }: { text: string }) {
-  const paras = text.split(/\n{2,}/);
+  const [expanded, setExpanded] = useState(false);
+  const normalized = text.trim();
+  const preview = summarizeText(normalized, 220);
+  const shouldCollapse = normalized.length > preview.length;
+  const visibleText = expanded || !shouldCollapse ? normalized : preview;
+  const paras = visibleText.split(/\n{2,}/).filter(Boolean);
+
   return (
     <div className="space-y-2 text-sm leading-relaxed text-ink">
       {paras.map((p, i) => (
         <p key={i}>{p}</p>
       ))}
+      {shouldCollapse ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="small-caps text-[10px] text-ember hover:text-ember-hover"
+        >
+          {expanded ? "show less" : "show note"}
+        </button>
+      ) : null}
     </div>
   );
 }
 
-export function WidgetRenderer({ widget }: Props) {
+function summarizeText(text: string, maxLength: number) {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= maxLength) return singleLine;
+  const sentenceEnd = singleLine.slice(0, maxLength).lastIndexOf(".");
+  const cut = sentenceEnd > 80 ? sentenceEnd + 1 : maxLength;
+  return `${singleLine.slice(0, cut).trim()}...`;
+}
+
+function Caption({ caption }: { caption: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = summarizeText(caption, 110);
+  const shouldCollapse = caption.trim().length > preview.length;
+
+  return (
+    <div className="mt-2 text-xs leading-5 text-neutral-500">
+      {expanded || !shouldCollapse ? caption : preview}
+      {shouldCollapse ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="small-caps ml-2 text-[10px] text-ember hover:text-ember-hover"
+        >
+          {expanded ? "less" : "more"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export function WidgetRenderer({ widget, height }: Props) {
   const { kind, title, data, caption, options } = widget;
   const widgetOptions = options as WidgetOptions;
 
@@ -290,15 +349,17 @@ export function WidgetRenderer({ widget }: Props) {
     </div>
   );
 
-  const footer = caption ? (
-    <div className="mt-2 text-xs text-neutral-500">{caption}</div>
-  ) : null;
+  const footer = caption ? <Caption caption={caption} /> : null;
 
   if (kind === "bar") {
     return (
       <div className="py-4">
         {header}
-        <FilterableBar data={data as CategoryData} options={widgetOptions} />
+        <FilterableBar
+          data={data as CategoryData}
+          options={widgetOptions}
+          height={height}
+        />
         {footer}
       </div>
     );
@@ -308,7 +369,7 @@ export function WidgetRenderer({ widget }: Props) {
     return (
       <div className="py-4">
         {header}
-        <EChart option={buildLineOption(data as CategoryData)} />
+        <EChart height={height} option={buildLineOption(data as CategoryData)} />
         {footer}
       </div>
     );
@@ -318,7 +379,7 @@ export function WidgetRenderer({ widget }: Props) {
     return (
       <div className="py-4">
         {header}
-        <FilterablePie data={data as PieData & CategoryData} />
+        <FilterablePie data={data as PieData & CategoryData} height={height} />
         {footer}
       </div>
     );

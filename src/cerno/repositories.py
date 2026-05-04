@@ -14,16 +14,16 @@ from cerno.models import (
     BetaCode,
     ChatMessage,
     ChatTurn,
-    DataDoc,
     Dashboard,
+    DashboardCell,
     DashboardPage,
+    DataDoc,
     DiscoveryStatus,
     File,
     FileSchema,
     Link,
     LinkReview,
     MessageRole,
-    NotebookCell,
     ProcessingEvent,
     ProcessingEventKind,
     ReviewStatus,
@@ -514,11 +514,11 @@ class DashboardRepository:
         self.conn.execute("DELETE FROM dashboard_pages WHERE id = ?", (page_id,))
 
 
-class NotebookRepository:
+class DashboardCellRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
-    def add_cell(self, cell: NotebookCell) -> NotebookCell:
+    def add_cell(self, cell: DashboardCell) -> DashboardCell:
         self.conn.execute(
             """INSERT INTO notebook_cells
                (id, page_id, order_index, kind, code, output, bound_file_ids,
@@ -541,7 +541,7 @@ class NotebookRepository:
         )
         return cell
 
-    def list_for_page(self, page_id: str) -> list[NotebookCell]:
+    def list_for_page(self, page_id: str) -> list[DashboardCell]:
         rows = self.conn.execute(
             "SELECT * FROM notebook_cells WHERE page_id = ? ORDER BY order_index",
             (page_id,),
@@ -1110,8 +1110,8 @@ def _row_to_page(row: sqlite3.Row) -> DashboardPage:
     )
 
 
-def _row_to_cell(row: sqlite3.Row) -> NotebookCell:
-    return NotebookCell(
+def _row_to_cell(row: sqlite3.Row) -> DashboardCell:
+    return DashboardCell(
         id=row["id"],
         page_id=row["page_id"],
         order_index=row["order_index"],

@@ -23,3 +23,8 @@ body {
 .hairline {
   border-color: #E5E5E5;
 }
+
+.text-\[10px\],
+.text-\[11px\] {
+  font-size: 0.75rem;
+}

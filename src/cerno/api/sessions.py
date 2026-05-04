@@ -10,9 +10,16 @@ from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.config import Settings
-from cerno.models import DataDoc, DataDocColumn, DataDocFile, DataDocRelationship
+from cerno.models import (
+    DataDoc,
+    DataDocColumn,
+    DataDocFile,
+    DataDocRelationship,
+    Link,
+    ProcessingEvent,
+    Session,
+)
 from cerno.models import File as FileModel
-from cerno.models import Link, ProcessingEvent, Session
 from cerno.repositories import (
     DataDocRepository,
     FileRepository,

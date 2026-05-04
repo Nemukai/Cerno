@@ -9,13 +9,13 @@ import pandas as pd
 
 from cerno.config import Settings
 from cerno.llm import LLMClient, run_tool_loop
-from cerno.models import ChatTurn, NotebookCell, Widget
+from cerno.models import ChatTurn, DashboardCell, Widget
 from cerno.repositories import (
     ChatRepository,
-    DataDocRepository,
+    DashboardCellRepository,
     DashboardRepository,
+    DataDocRepository,
     FileRepository,
-    NotebookRepository,
     SchemaRepository,
     new_id,
 )
@@ -28,7 +28,7 @@ SYSTEM_PROMPT = (
     "user about data they just uploaded. Every ingested file is available as a table "
     "(DuckDB view + pandas DataFrame named after the slugified filename). "
     "Back every numeric claim by calling run_python — never guess numbers. "
-    "Use read_data_docs when you need to understand what the data contains, where "
+    "Use read_schema_guide when you need to understand what the data contains, where "
     "fields live, caveats, relationships, or good ways to answer the user's question. "
     "Use list_tables and describe_table when you need exact dataframe columns. "
     "When the answer benefits from a chart, KPI, or table, call render_widget — those "
@@ -56,7 +56,7 @@ async def run_chat_turn(
     files_repo: FileRepository,
     schemas_repo: SchemaRepository,
     dashboards_repo: DashboardRepository,
-    notebook_repo: NotebookRepository,
+    dashboard_cells_repo: DashboardCellRepository,
     chat_repo: ChatRepository,
     data_docs_repo: DataDocRepository,
 ) -> ChatTurnResult:
@@ -81,7 +81,7 @@ async def run_chat_turn(
             session_id=session_id,
             engine=engine,
             tables=tables,
-            notebook_repo=notebook_repo,
+            dashboard_cells_repo=dashboard_cells_repo,
             data_doc=data_docs_repo.get(session_id),
         )
         registry = build_tool_registry(ctx)
@@ -108,7 +108,7 @@ async def run_chat_turn(
         if ctx.rendered_widgets:
             spawned_page_id = _spawn_dashboard_page(
                 dashboards_repo=dashboards_repo,
-                notebook_repo=notebook_repo,
+                dashboard_cells_repo=dashboard_cells_repo,
                 session_id=session_id,
                 turn_id=turn.id,
                 user_message=user_message,
@@ -172,7 +172,7 @@ def _persist_loop_message(chat_repo: ChatRepository, turn_id: str, message: dict
 def _spawn_dashboard_page(
     *,
     dashboards_repo: DashboardRepository,
-    notebook_repo: NotebookRepository,
+    dashboard_cells_repo: DashboardCellRepository,
     session_id: str,
     turn_id: str,
     user_message: str,
@@ -193,7 +193,7 @@ def _spawn_dashboard_page(
     )
 
     for idx, widget in enumerate(widgets):
-        cell = NotebookCell(
+        cell = DashboardCell(
             id=new_id(),
             page_id=page.id,
             order_index=idx,
@@ -202,5 +202,5 @@ def _spawn_dashboard_page(
             output={"widget": widget.model_dump()},
             created_at=datetime.now(UTC),
         )
-        notebook_repo.add_cell(cell)
+        dashboard_cells_repo.add_cell(cell)
     return page.id

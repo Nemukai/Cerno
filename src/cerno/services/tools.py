@@ -7,7 +7,7 @@ import pandas as pd
 
 from cerno.llm import Tool, ToolRegistry
 from cerno.models import DataDoc, Widget
-from cerno.repositories import NotebookRepository
+from cerno.repositories import DashboardCellRepository
 from cerno.services.engine import DuckDBEngine
 from cerno.services.sandbox import run_python
 
@@ -17,7 +17,7 @@ class ToolContext:
     session_id: str
     engine: DuckDBEngine
     tables: dict[str, pd.DataFrame]
-    notebook_repo: NotebookRepository
+    dashboard_cells_repo: DashboardCellRepository
     data_doc: DataDoc | None = None
     rendered_widgets: list[Widget] = field(default_factory=list)
 
@@ -65,13 +65,13 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
 
     async def read_cells(args: dict[str, Any]) -> dict[str, Any]:
         page_id = str(args["page_id"])
-        cells = ctx.notebook_repo.list_for_page(page_id)
+        cells = ctx.dashboard_cells_repo.list_for_page(page_id)
         return {"cells": [c.model_dump(mode="json") for c in cells]}
 
-    async def read_data_docs(_args: dict[str, Any]) -> dict[str, Any]:
+    async def read_schema_guide(_args: dict[str, Any]) -> dict[str, Any]:
         if ctx.data_doc is None:
-            return {"docs": None}
-        return {"docs": ctx.data_doc.model_dump(mode="json")}
+            return {"schema_guide": None}
+        return {"schema_guide": ctx.data_doc.model_dump(mode="json")}
 
     registry.register(
         Tool(
@@ -139,7 +139,7 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
     registry.register(
         Tool(
             name="read_cells",
-            description="Read all notebook cells on a dashboard page (read-only).",
+            description="Read the stored widget records on a dashboard page (read-only).",
             parameters={
                 "type": "object",
                 "properties": {"page_id": {"type": "string"}},
@@ -151,13 +151,13 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
     )
     registry.register(
         Tool(
-            name="read_data_docs",
+            name="read_schema_guide",
             description=(
-                "Read Cerno's internal documentation for this session: file meanings, "
+                "Read Cerno's schema guide for this session: file meanings, "
                 "grain, key fields, relationships, caveats, glossary, and starter questions."
             ),
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
-            handler=read_data_docs,
+            handler=read_schema_guide,
         )
     )
 

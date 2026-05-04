@@ -1,19 +1,49 @@
 # Cerno
 
-Ranked anomaly triage for bulk tabular data. A Nemukai project.
+Cerno turns messy Excel and CSV uploads into an approved data map, a working
+dashboard, and chat-driven analysis pages. It is a Nemukai project.
 
-Cerno ingests Excel and CSV files, runs a canned anomaly sweep (robust-z outliers, rare categoricals, duplicate keys across files, broken joins), and surfaces a top-20 queue of rows worth investigating. Chat is a supplement: an LLM tool-use loop with a single `run_sql` tool over DuckDB views.
+The product flow is:
+
+1. Start or resume a session.
+2. Upload spreadsheets or CSV files.
+3. Process the files so Cerno can infer headers, friendly names, column meaning,
+   and relationships between files.
+4. Review and approve the data map.
+5. Use the generated dashboard and chat to inspect the data.
+
+Schema review is the source of truth. The schema surface includes the internal
+data guide: file descriptions, grains, relationships, caveats, glossary terms,
+and starter questions. Chat and dashboard generation use that approved
+understanding instead of guessing from raw columns alone.
 
 ## Status
 
-v1 scaffold in progress. See the design doc at `~/.gstack/projects/Cerno/` for the full spec.
+Prototype in active development. Current implementation includes:
+
+- Google sign-in with private beta access codes.
+- Session creation, resume, and delete.
+- Excel/CSV ingest with raw parquet preservation and content-hash deduplication.
+- LLM-backed discovery using full-file Python profiling plus structured schema output.
+- Review/edit/approve flow for files, columns, and relationships.
+- Generated schema guidance merged into the schema review surface.
+- Dashboard generation with editable widget layout.
+- Chat that can answer from the approved data map and spawn dashboard views.
+
+Still pending before a serious MVP:
+
+- A polished landing page and session dashboard.
+- Stronger demo-data validation against real office-style workbooks.
+- Export flows.
+- Desktop shell, packaging, signing, and updater work.
 
 ## Stack
 
-- **Backend:** Python 3.12, FastAPI, Polars, DuckDB, SQLite (sessions), python-calamine (reads), openpyxl (exports), pywebview (desktop shell).
-- **Frontend:** Vite, React, TypeScript, Tailwind.
+- **Backend:** Python 3.12, FastAPI, SQLite, Polars, pandas, DuckDB,
+  python-calamine, pyarrow, Authlib, OpenAI Responses API.
+- **Frontend:** Vite, React, TypeScript, Tailwind, ECharts.
 - **Package managers:** `uv` for Python, `bun` for the frontend.
-- **Distribution:** PyInstaller bundles per OS (macOS + Windows), hand-rolled updater.
+- **Storage:** `~/.cerno` by default for SQLite metadata and session parquet files.
 
 ## Development
 
@@ -22,25 +52,30 @@ v1 scaffold in progress. See the design doc at `~/.gstack/projects/Cerno/` for t
 uv sync --extra dev
 cd frontend && bun install
 
-# Run backend (from repo root)
+# Run backend from repo root
 uv run cerno-server
 
-# Run frontend dev server (separate shell)
+# Run frontend dev server in another shell
 cd frontend && bun run dev
 ```
 
-Copy `.env.example` to `.env.local` and fill in your LLM API key.
+Copy `.env.example` to `.env.local` and fill in the Google OAuth and OpenAI
+settings for your environment.
 
-## Verification
+## Useful Commands
 
 ```bash
-cd frontend && bun run build   # smoke: build must succeed
+cd frontend && bun run typecheck
+cd frontend && bun run build
+uv run ruff check src
 ```
 
 ## Layout
 
-- `src/cerno/` — Python backend package.
-- `frontend/` — Vite + React app.
+- `src/cerno/` — FastAPI backend, repositories, LLM client, ingest, discovery,
+  dashboard, and chat services.
+- `frontend/` — Vite/React app.
+- `~/.gstack/projects/Cerno/` — planning notes and prior product reviews.
 
 ## License
 
