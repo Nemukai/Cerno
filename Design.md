@@ -27,6 +27,14 @@ hairline structure, compact monospace labels, and mostly white working surfaces.
 The interface should feel precise, analytical, and calm. The orange accent gives
 energy and identity, but it should not turn the whole app into a one-color theme.
 
+## Brand Assets
+
+The canonical app mark lives at `frontend/public/brand/cerno-mark.svg`. Browser
+favicon metadata uses the same mark through `frontend/public/favicon.svg`.
+
+The Cerno wordmark uses Inter Bold with `-0.02em` letter spacing. Use the shared
+frontend brand components instead of retyping the wordmark in product surfaces.
+
 ## Layout Principles
 
 - Landing page is the brand entrance.

@@ -1,4 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from "react";
+import { CernoLockup } from "./Brand";
 import {
   RedeemError,
   logout,
@@ -60,7 +61,11 @@ function RedeemForm({
   return (
     <div className="flex h-screen items-center justify-center bg-neutral-950 text-neutral-100">
       <div className="w-full max-w-md rounded-lg border border-neutral-800 bg-neutral-900 px-8 py-10 shadow-xl">
-        <h1 className="text-xl font-semibold">Beta access</h1>
+        <CernoLockup
+          markClassName="h-7 w-7"
+          wordmarkClassName="text-xl text-neutral-100"
+        />
+        <h1 className="mt-6 text-xl font-semibold">Beta access</h1>
         <p className="mt-2 text-sm text-neutral-400">
           Cerno is in private beta. Enter the access code you were given to
           continue.
@@ -114,7 +119,11 @@ function RevokedScreen({ email }: { email: string }) {
   return (
     <div className="flex h-screen items-center justify-center bg-neutral-950 text-neutral-100">
       <div className="w-full max-w-md rounded-lg border border-red-900/40 bg-neutral-900 px-8 py-10 shadow-xl">
-        <h1 className="text-xl font-semibold text-red-400">Access revoked</h1>
+        <CernoLockup
+          markClassName="h-7 w-7"
+          wordmarkClassName="text-xl text-neutral-100"
+        />
+        <h1 className="mt-6 text-xl font-semibold text-red-400">Access revoked</h1>
         <p className="mt-2 text-sm text-neutral-400">
           Your access to Cerno has been revoked. If you think this is a
           mistake, contact the operator.

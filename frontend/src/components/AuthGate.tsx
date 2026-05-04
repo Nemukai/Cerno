@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { CernoLockup } from "./Brand";
 import { googleLoginUrl, logout, useUser, type CurrentUser } from "../lib/auth";
 
 type AuthGateProps = {
@@ -48,8 +49,12 @@ function SignInScreen() {
   return (
     <div className="flex h-screen items-center justify-center bg-neutral-950 text-neutral-100">
       <div className="flex flex-col items-center gap-6 rounded-lg border border-neutral-800 bg-neutral-900 px-10 py-12 shadow-xl">
-        <div>
-          <h1 className="text-2xl font-semibold">Cerno</h1>
+        <div className="text-center">
+          <CernoLockup
+            className="justify-center"
+            markClassName="h-8 w-8"
+            wordmarkClassName="text-2xl text-neutral-100"
+          />
           <p className="mt-1 text-sm text-neutral-400">
             Link-aware data analysis. Sign in to begin.
           </p>

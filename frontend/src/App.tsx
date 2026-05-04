@@ -31,6 +31,7 @@ import type {
   Session,
 } from "./lib/types";
 import { ChatSidebar } from "./components/ChatSidebar";
+import { CernoLockup, CernoMark, CernoWordmark } from "./components/Brand";
 import { DashboardTab } from "./components/DashboardTab";
 import { SchemaTab } from "./components/SchemaTab";
 import { SessionHeader } from "./components/SessionHeader";
@@ -626,7 +627,7 @@ function LandingPage({
 
       <main className="relative z-10 flex min-h-full flex-col">
         <header className="flex items-center justify-between px-6 py-5 sm:px-10">
-          <div className="font-mono text-sm text-ink">Cerno</div>
+          <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base text-ink" />
           <button
             type="button"
             onClick={onEnter}
@@ -639,8 +640,9 @@ function LandingPage({
         <section className="flex flex-1 items-center px-6 pb-16 pt-8 sm:px-10">
           <div className="max-w-5xl">
             <div className="small-caps text-xs text-ember">private data workspace</div>
-            <h1 className="mt-4 max-w-4xl font-mono text-5xl leading-[1.02] text-ink sm:text-7xl lg:text-8xl">
-              Cerno
+            <h1 className="mt-5 flex max-w-4xl items-center gap-5 text-5xl leading-[1.02] text-ink sm:text-7xl lg:text-8xl">
+              <CernoMark className="h-14 w-14 shrink-0 sm:h-20 sm:w-20 lg:h-24 lg:w-24" />
+              <CernoWordmark />
             </h1>
             <p className="mt-5 max-w-2xl text-lg leading-8 text-neutral-600">
               Upload spreadsheets, approve the data map, then work from a dashboard
@@ -781,9 +783,9 @@ function WorkspacesPage({
           <button
             type="button"
             onClick={onBackToLanding}
-            className="small-caps text-sm text-neutral-500 hover:text-ember"
+            className="text-neutral-500 transition hover:text-ember"
           >
-            cerno
+            <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base" />
           </button>
           <div className="small-caps text-sm text-neutral-500">workspaces</div>
         </header>

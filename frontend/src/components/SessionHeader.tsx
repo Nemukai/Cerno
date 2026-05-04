@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { CernoLockup } from "./Brand";
 import type { Session } from "../lib/types";
 
 type Props = {
@@ -44,10 +45,10 @@ export function SessionHeader({
         <button
           type="button"
           onClick={onHome}
-          className="small-caps shrink-0 text-xs text-neutral-500 hover:text-ink"
-          title="Back to home"
+          className="shrink-0 text-neutral-500 transition hover:text-ink"
+          title="Back to workspaces"
         >
-          {"\u2190"}
+          <CernoLockup markClassName="h-5 w-5" wordmarkClassName="text-sm" />
         </button>
         <StatusDot status={session?.status ?? "new"} />
         <div className="small-caps min-w-0 truncate text-sm">
