@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getFilePreview } from "../lib/api";
 import type {
+  DataDoc,
+  DataDocFile,
   DiscoveredColumn,
   DiscoveredFile,
   DiscoveredLink,
@@ -18,6 +20,7 @@ type Props = {
   files: FileRecord[];
   links: Link[];
   discovery: DiscoveryResponse | null;
+  doc: DataDoc | null;
   events: ProcessingEvent[];
   processing: boolean;
   approving: boolean;
@@ -48,19 +51,19 @@ const DIRECTIONS: LinkDirection[] = [
 
 const PHASES: { label: string; kinds: ProcessingEventKind[]; note: string }[] = [
   {
-    label: "Reading files",
+    label: "Reading documents",
     kinds: ["started", "reading_files"],
-    note: "Detecting sheets and sample rows.",
+    note: "Finding sheets, headers, and usable rows.",
   },
   {
-    label: "Understanding the model",
+    label: "Finding meaning",
     kinds: ["calling_llm", "parsing_response"],
-    note: "Identifying headers, meanings, and likely relationships.",
+    note: "Naming files, explaining columns, and checking how documents relate.",
   },
   {
     label: "Preparing review",
     kinds: ["saving_schema", "done"],
-    note: "Saving the draft so you can inspect it.",
+    note: "Saving a draft map so you can inspect it.",
   },
 ];
 
@@ -68,6 +71,7 @@ export function SchemaTab({
   files,
   links: storedLinks,
   discovery,
+  doc,
   events,
   processing,
   approving,
@@ -89,12 +93,16 @@ export function SchemaTab({
       setDraftFiles(discovery.files);
       setDraftLinks(discovery.links);
       setDraftOverview(discovery.overview);
-      setActiveFileId((current) => current ?? discovery.files[0]?.file_id ?? null);
     }
   }, [discovery, editing]);
 
   useEffect(() => {
-    if (!activeFileId) return;
+    if (!activeFileId) {
+      setPreview(null);
+      setPreviewError(null);
+      setPreviewLoading(false);
+      return;
+    }
     setPreview(null);
     setPreviewError(null);
     setPreviewLoading(true);
@@ -104,9 +112,15 @@ export function SchemaTab({
       .finally(() => setPreviewLoading(false));
   }, [activeFileId]);
 
+  const fileById = useMemo(() => {
+    const m = new Map<string, FileRecord>();
+    for (const file of files) m.set(file.id, file);
+    return m;
+  }, [files]);
+
   const fileNameMap = useMemo(() => {
     const m = new Map<string, string>();
-    for (const f of files) m.set(f.id, f.friendly_name || f.filename);
+    for (const f of files) m.set(f.id, f.friendly_name || cleanFilename(f.filename));
     for (const df of draftFiles) {
       const friendly = df.friendly_name?.trim();
       if (friendly) m.set(df.file_id, friendly);
@@ -115,15 +129,14 @@ export function SchemaTab({
   }, [files, draftFiles]);
 
   const status = discovery?.status ?? "empty";
-  const activeFile =
-    draftFiles.find((file) => file.file_id === activeFileId) ??
-    draftFiles[0] ??
-    null;
-  const activeFileIdx = activeFile
-    ? draftFiles.findIndex((file) => file.file_id === activeFile.file_id)
-    : -1;
-
-  const columnCount = draftFiles.reduce((sum, file) => sum + file.columns.length, 0);
+  const summary = useMemo(
+    () => buildSummary(files, draftFiles, draftLinks, status),
+    [files, draftFiles, draftLinks, status],
+  );
+  const warnings = useMemo(
+    () => buildWarnings(draftFiles, draftLinks, fileNameMap),
+    [draftFiles, draftLinks, fileNameMap],
+  );
   const linkStats = useMemo(() => {
     const stats = new Map<string, LinkStat>();
     for (const link of storedLinks) {
@@ -135,6 +148,12 @@ export function SchemaTab({
     }
     return stats;
   }, [storedLinks]);
+
+  const activeFile =
+    draftFiles.find((file) => file.file_id === activeFileId) ?? null;
+  const activeFileIdx = activeFile
+    ? draftFiles.findIndex((file) => file.file_id === activeFile.file_id)
+    : -1;
 
   const handleCancelEdit = () => {
     if (discovery) {
@@ -212,9 +231,11 @@ export function SchemaTab({
     );
   };
 
-  const addLink = () => {
-    const a = draftFiles[0];
-    const b = draftFiles[1];
+  const addLink = (preferredFileId?: string) => {
+    const a = preferredFileId
+      ? draftFiles.find((file) => file.file_id === preferredFileId)
+      : draftFiles[0];
+    const b = draftFiles.find((file) => file.file_id !== a?.file_id);
     if (!a || !b) return;
     setDraftLinks((prev) => [
       ...prev,
@@ -227,6 +248,7 @@ export function SchemaTab({
         summary: "",
       },
     ]);
+    setActiveFileId(a.file_id);
   };
 
   const removeLink = (idx: number) => {
@@ -235,10 +257,15 @@ export function SchemaTab({
 
   return (
     <div className="px-8 py-6">
-      <header className="hairline mb-5 flex flex-wrap items-center justify-between gap-3 border-b pb-4">
-        <div>
+      <header className="hairline mb-5 flex flex-wrap items-start justify-between gap-4 border-b pb-5">
+        <div className="max-w-3xl">
           <div className="small-caps text-xs text-neutral-500">schema</div>
-          <h2 className="font-mono text-2xl text-ink">{schemaTitle(status, processing)}</h2>
+          <h2 className="mt-1 font-mono text-2xl text-ink">
+            {schemaTitle(status, processing)}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-neutral-600">
+            {headerDescription(status, processing, files.length)}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {status === "empty" || status === "failed" ? (
@@ -268,7 +295,7 @@ export function SchemaTab({
                   disabled={approving}
                   className="small-caps border border-ink bg-ember px-3 py-1.5 text-xs text-white hover:bg-ember-hover disabled:opacity-40"
                 >
-                  {approving ? "applying" : "save and apply"}
+                  {approving ? "saving" : "save and apply"}
                 </button>
               </>
             ) : (
@@ -315,8 +342,8 @@ export function SchemaTab({
 
       {discovery && (status === "pending_review" || status === "approved") ? (
         <div className="space-y-6">
-          <section className="hairline border bg-white p-4">
-            <div className="small-caps text-xs text-neutral-500">generated overview</div>
+          <section className="hairline border-b pb-5">
+            <div className="small-caps text-xs text-neutral-500">what Cerno found</div>
             {editing ? (
               <textarea
                 value={draftOverview}
@@ -331,33 +358,54 @@ export function SchemaTab({
             )}
           </section>
 
-          <section className="grid gap-3 md:grid-cols-4">
-            <Metric label="files" value={draftFiles.length} />
-            <Metric label="columns" value={columnCount} />
-            <Metric label="relationships" value={draftLinks.length} />
-            <Metric
-              label="state"
-              value={status === "approved" ? "approved" : "draft"}
-              text
-            />
+          <DataHealthSummary summary={summary} warnings={warnings} />
+
+          <section className="hairline border-b pb-5">
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <div className="small-caps text-xs text-neutral-500">files</div>
+                <h3 className="mt-1 font-mono text-lg text-ink">Uploaded documents</h3>
+                <p className="mt-1 text-sm leading-5 text-neutral-600">
+                  Each tile is one file, sheet, or table Cerno can use. Open a tile
+                  only when you need column-level detail.
+                </p>
+              </div>
+              <div className="text-xs text-neutral-500">
+                Click a document to inspect it.
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {draftFiles.map((file) => (
+                <FileTile
+                  key={file.file_id}
+                  file={file}
+                  record={fileById.get(file.file_id)}
+                  displayName={fileNameMap.get(file.file_id) ?? file.friendly_name}
+                  warnings={warnings.byFile.get(file.file_id) ?? []}
+                  onClick={() => setActiveFileId(file.file_id)}
+                />
+              ))}
+            </div>
           </section>
 
-          <section className="hairline border bg-white">
-            <div className="hairline flex items-center justify-between border-b px-4 py-3">
+          <section className="hairline border-b pb-5">
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h3 className="font-mono text-base text-ink">Relationships</h3>
-                <p className="mt-0.5 text-xs text-neutral-500">
-                  A readable map of which columns Cerno thinks connect your files.
+                <div className="small-caps text-xs text-neutral-500">connections</div>
+                <h3 className="mt-1 font-mono text-lg text-ink">How the documents connect</h3>
+                <p className="mt-1 text-sm leading-5 text-neutral-600">
+                  These are the shared fields Cerno will use to move between files.
+                  Review weak or missing connections before approving complex uploads.
                 </p>
               </div>
               {editing ? (
                 <button
                   type="button"
-                  onClick={addLink}
+                  onClick={() => addLink()}
                   disabled={draftFiles.length < 2}
                   className="small-caps border border-ink px-2 py-1 text-[11px] hover:bg-neutral-100 disabled:opacity-40"
                 >
-                  add link
+                  add connection
                 </button>
               ) : null}
             </div>
@@ -370,56 +418,76 @@ export function SchemaTab({
             />
           </section>
 
-          <section className="grid gap-6 xl:grid-cols-[22rem_minmax(0,1fr)]">
-            <FileRail
-              files={draftFiles}
-              activeFileId={activeFile?.file_id ?? null}
-              fileNameMap={fileNameMap}
-              onSelectFile={setActiveFileId}
-            />
-            {activeFile && activeFileIdx >= 0 ? (
-              <FileDetailPanel
-                file={activeFile}
-                fileIdx={activeFileIdx}
-                editing={editing}
-                preview={preview}
-                previewLoading={previewLoading}
-                previewError={previewError}
-                links={draftLinks}
-                draftFiles={draftFiles}
-                fileNameMap={fileNameMap}
-                onUpdateFile={updateFile}
-                onUpdateColumn={updateColumn}
-                onAddColumn={addColumn}
-                onRemoveColumn={removeColumn}
-                onUpdateLink={updateLink}
-                onRemoveLink={removeLink}
-              />
-            ) : null}
-          </section>
-
+          <DataGuideSection doc={doc} files={draftFiles} />
         </div>
       ) : null}
+
+      <FileSchemaDrawer
+        open={Boolean(activeFile)}
+        file={activeFile}
+        fileIdx={activeFileIdx}
+        record={activeFile ? fileById.get(activeFile.file_id) : undefined}
+        editing={editing}
+        preview={preview}
+        previewLoading={previewLoading}
+        previewError={previewError}
+        links={draftLinks}
+        linkStats={linkStats}
+        draftFiles={draftFiles}
+        fileNameMap={fileNameMap}
+        warnings={activeFile ? warnings.byFile.get(activeFile.file_id) ?? [] : []}
+        onClose={() => setActiveFileId(null)}
+        onUpdateFile={updateFile}
+        onUpdateColumn={updateColumn}
+        onAddColumn={addColumn}
+        onRemoveColumn={removeColumn}
+        onAddLink={addLink}
+        onUpdateLink={updateLink}
+        onRemoveLink={removeLink}
+      />
     </div>
   );
 }
 
 function schemaTitle(status: string, processing: boolean): string {
-  if (processing || status === "discovering") return "Building data model";
-  if (status === "pending_review") return "Review data model";
-  if (status === "approved") return "Approved data model";
+  if (processing || status === "discovering") return "Understanding your files";
+  if (status === "pending_review") return "Review the data map";
+  if (status === "approved") return "Approved data map";
   if (status === "failed") return "Processing needs attention";
-  return "No data model yet";
+  return "No data map yet";
+}
+
+function headerDescription(
+  status: string,
+  processing: boolean,
+  fileCount: number,
+): string {
+  if (processing || status === "discovering") {
+    return "Cerno is reading the uploads, finding the real headers, and looking for connections across documents.";
+  }
+  if (status === "pending_review") {
+    return "Check the plain-language map before Cerno builds dashboards or answers questions from these files.";
+  }
+  if (status === "approved") {
+    return "This map is the shared understanding Cerno uses for dashboards, code view, and chat.";
+  }
+  if (status === "failed") {
+    return "Processing stopped before Cerno could finish the map. Fix the issue, then process the files again.";
+  }
+  if (fileCount > 0) {
+    return "Process the uploaded files to find headers, meanings, and connections between documents.";
+  }
+  return "Upload one or more files, then Cerno can build a plain-language map of the dataset.";
 }
 
 function EmptyState({ canProcess }: { canProcess: boolean }) {
   return (
     <div className="mt-10 max-w-xl border border-neutral-200 bg-white p-5">
-      <h3 className="font-mono text-base text-ink">Start with your uploaded files</h3>
+      <h3 className="font-mono text-base text-ink">Start with uploaded documents</h3>
       <p className="mt-2 text-sm leading-6 text-neutral-600">
         {canProcess
-          ? "Cerno will identify headers, column meanings, data types, and likely relationships between your files."
-          : "Upload one or more files first, then Cerno can build the data model."}
+          ? "Cerno will identify headers, explain fields, and look for connections between files."
+          : "Upload one or more files first, then Cerno can build the data map."}
       </p>
     </div>
   );
@@ -452,9 +520,7 @@ function ProcessingCheckpoints({
             {latestError ? "Processing stopped" : current.label}
           </h3>
           <p className="mt-1 text-xs text-neutral-500">
-            {latestError
-              ? "Review the message below and try again."
-              : current.note}
+            {latestError ? "Review the message below and try again." : current.note}
           </p>
         </div>
         <div className="small-caps text-xs text-neutral-500">
@@ -470,46 +536,291 @@ function ProcessingCheckpoints({
           <div className="absolute inset-y-0 left-0 w-1/3 animate-pulse bg-ember/40" />
         ) : null}
       </div>
-      <ol className="mt-4 grid gap-2 md:grid-cols-3">
-        {PHASES.map((phase, idx) => {
-          const complete = phase.kinds.some((kind) => completedKinds.has(kind));
-          const active = idx === currentPhase && processing && !latestError;
-          return (
-            <li
-              key={phase.label}
-              className={`border px-3 py-2 ${
-                complete && idx < currentPhase
-                  ? "border-ember/40 bg-ember/5"
-                  : active
-                    ? "border-ink bg-neutral-50"
-                    : "border-neutral-200 bg-white"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    complete && idx < currentPhase
-                      ? "bg-ember"
-                      : active
-                        ? "bg-ink"
-                        : "bg-neutral-300"
-                  }`}
-                />
-                <span className="small-caps text-[11px] text-neutral-500">
-                  {String(idx + 1).padStart(2, "0")}
-                </span>
-              </div>
-              <div className="mt-2 text-xs text-ink">{phase.label}</div>
-              <div className="mt-1 text-[11px] text-neutral-500">{phase.note}</div>
-            </li>
-          );
-        })}
-      </ol>
       {latestError ? (
         <div className="mt-4 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
           {friendlyEventMessage(latestError)}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+type SummaryStats = {
+  size: string;
+  rows: string;
+  files: string;
+  columns: string;
+  relationships: string;
+  state: string;
+};
+
+type WarningState = {
+  total: number;
+  byFile: Map<string, string[]>;
+};
+
+function DataHealthSummary({
+  summary,
+  warnings,
+}: {
+  summary: SummaryStats;
+  warnings: WarningState;
+}) {
+  return (
+    <section className="hairline border-b pb-5">
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+        <div>
+          <div className="small-caps text-xs text-neutral-500">review strip</div>
+          <h3 className="mt-1 font-mono text-xl text-ink">Check before approving</h3>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-600">
+            Start here for the shape of the upload. Open individual documents only
+            when a warning or connection needs a closer look.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
+          <Stat label="size" value={summary.size} />
+          <Stat label="rows" value={summary.rows} />
+          <Stat label="files" value={summary.files} />
+          <Stat label="columns" value={summary.columns} />
+          <Stat label="connections" value={summary.relationships} />
+          <Stat label="state" value={summary.state} />
+        </div>
+      </div>
+      {warnings.total > 0 ? (
+        <div className="mt-4 border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {warnings.total} item{warnings.total === 1 ? "" : "s"} need a look. Open the
+          marked documents before approving.
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="small-caps text-[11px] text-neutral-500">{label}</div>
+      <div className="mt-1 font-mono text-lg text-ink">{value}</div>
+    </div>
+  );
+}
+
+function FileTile({
+  file,
+  record,
+  displayName,
+  warnings,
+  onClick,
+}: {
+  file: DiscoveredFile;
+  record?: FileRecord;
+  displayName: string;
+  warnings: string[];
+  onClick: () => void;
+}) {
+  const badges = fileBadges(file, warnings);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={fileHoverTitle(file, record)}
+      className="group min-h-[8rem] border border-neutral-200 bg-white p-4 text-left transition hover:border-ink hover:bg-neutral-50"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate font-mono text-base text-ink">{displayName}</div>
+          <div className="mt-1 truncate text-xs text-neutral-500">
+            {record?.filename ?? "Original file unknown"}
+          </div>
+        </div>
+        <span
+          className={`small-caps shrink-0 border px-1.5 py-0.5 text-[10px] ${
+            warnings.length > 0
+              ? "border-amber-200 bg-amber-50 text-amber-800"
+              : "border-neutral-200 bg-neutral-50 text-neutral-500"
+          }`}
+        >
+          {warnings.length > 0 ? "check" : "ready"}
+        </span>
+      </div>
+      <p className="mt-3 max-h-10 overflow-hidden text-sm leading-5 text-neutral-600">
+        {file.description || "No description yet."}
+      </p>
+      <div className="mt-4 flex flex-wrap gap-3 text-xs text-neutral-500">
+        <span>{formatNumber(record?.row_count ?? 0)} rows</span>
+        <span>{file.columns.length} columns</span>
+        <span>{formatSize(record?.original_size_bytes)}</span>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {badges.map((badge) => (
+          <span
+            key={badge}
+            className="small-caps border border-neutral-200 bg-neutral-50 px-1.5 py-0.5 text-[10px] text-neutral-600"
+          >
+            {badge}
+          </span>
+        ))}
+      </div>
+    </button>
+  );
+}
+
+function DataGuideSection({
+  doc,
+  files,
+}: {
+  doc: DataDoc | null;
+  files: DiscoveredFile[];
+}) {
+  if (!doc) {
+    return (
+      <section className="pb-5">
+        <div className="small-caps text-xs text-neutral-500">guidance</div>
+        <div className="mt-3 border border-neutral-200 bg-white p-4">
+          <h3 className="font-mono text-base text-ink">Usage notes will appear here</h3>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-600">
+            Once the map is saved, Cerno will keep the plain-language notes,
+            questions, and glossary on this Schema page.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const documentedIds = new Set(doc.files.map((file) => file.file_id));
+  const missingDocs = files.filter((file) => !documentedIds.has(file.file_id));
+  const caveatFiles = doc.files.filter((file) => file.caveats.length > 0);
+
+  return (
+    <section className="pb-5">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="small-caps text-xs text-neutral-500">guidance</div>
+          <h3 className="mt-1 font-mono text-lg text-ink">How to use this data</h3>
+          <p className="mt-1 max-w-3xl text-sm leading-5 text-neutral-600">
+            These notes travel with the map, so the dashboard, code view, and chat
+            share the same understanding of the uploaded documents.
+          </p>
+        </div>
+        <div className="small-caps text-xs text-neutral-500">
+          {doc.files.length} documented
+        </div>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.8fr)]">
+        <div className="space-y-4">
+          <section className="border-y border-neutral-200">
+            {doc.files.map((file) => (
+              <DocumentNote key={file.file_id} file={file} />
+            ))}
+            {missingDocs.map((file) => (
+              <div key={file.file_id} className="hairline border-b py-4 last:border-b-0">
+                <div className="font-mono text-sm text-ink">{file.friendly_name}</div>
+                <p className="mt-1 text-sm leading-5 text-neutral-600">
+                  No usage note has been written for this document yet.
+                </p>
+              </div>
+            ))}
+          </section>
+
+          <GuideList
+            title="Questions to try"
+            items={doc.starter_questions}
+            empty="No starter questions yet."
+          />
+        </div>
+
+        <aside className="space-y-6">
+          <GuideList
+            title="Watch-outs"
+            items={[
+              ...doc.usage_notes,
+              ...caveatFiles.flatMap((file) =>
+                file.caveats.map((caveat) => `${file.name}: ${caveat}`),
+              ),
+            ]}
+            empty="No caveats yet."
+          />
+
+          <section>
+            <div className="small-caps text-xs text-neutral-500">glossary</div>
+            {doc.glossary.length === 0 ? (
+              <p className="mt-3 text-sm text-neutral-500">No glossary terms yet.</p>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {doc.glossary.map((item) => (
+                  <div key={item.term}>
+                    <div className="font-mono text-sm text-ink">{item.term}</div>
+                    <p className="mt-1 text-sm leading-5 text-neutral-600">
+                      {item.meaning}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function DocumentNote({ file }: { file: DataDocFile }) {
+  return (
+    <article className="hairline border-b py-4 last:border-b-0">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h4 className="font-mono text-base text-ink">{file.name}</h4>
+          <p className="mt-1 max-w-3xl text-sm leading-6 text-neutral-700">
+            {file.description || "No description yet."}
+          </p>
+        </div>
+        <div className="small-caps shrink-0 text-xs text-neutral-500">
+          {formatNumber(file.row_count)} rows
+        </div>
+      </div>
+      <div className="mt-3 grid gap-3 text-sm text-neutral-600 md:grid-cols-2 xl:grid-cols-4">
+        <GuideFact label="One row means" value={file.grain || "Not documented"} />
+        <GuideFact label="Key fields" value={joinItems(file.key_columns)} />
+        <GuideFact label="Dates" value={joinItems(file.date_columns)} />
+        <GuideFact label="Amounts" value={joinItems(file.measure_columns)} />
+      </div>
+    </article>
+  );
+}
+
+function GuideFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="small-caps text-[11px] text-neutral-500">{label}</div>
+      <div className="mt-1 leading-5">{value}</div>
+    </div>
+  );
+}
+
+function GuideList({
+  title,
+  items,
+  empty,
+}: {
+  title: string;
+  items: string[];
+  empty: string;
+}) {
+  return (
+    <section>
+      <div className="small-caps text-xs text-neutral-500">{title}</div>
+      {items.length === 0 ? (
+        <p className="mt-3 text-sm text-neutral-500">{empty}</p>
+      ) : (
+        <ul className="mt-3 divide-y divide-neutral-100 border-y border-neutral-200 text-sm leading-5 text-neutral-700">
+          {items.map((item, idx) => (
+            <li key={`${idx}-${item}`} className="py-3">
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -542,191 +853,107 @@ function RelationshipMap({
 }) {
   const groups = useMemo(() => groupRelationships(files, links), [files, links]);
 
-  return (
-    <div className="p-4">
-      {groups.length === 0 ? (
-        <div className="border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-600">
-          Cerno did not find strong cross-file relationships yet. You can still edit
-          the model and add one manually.
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {groups.map((group) => (
-            <div key={group.key} className="border border-neutral-200">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 bg-neutral-50 px-3 py-2">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onSelectFile(group.leftId)}
-                    className="truncate font-mono text-sm text-ink hover:text-ember"
-                  >
-                    {fileNameMap.get(group.leftId) ?? group.leftId}
-                  </button>
-                  <span className="text-neutral-400">{"->"}</span>
-                  <button
-                    type="button"
-                    onClick={() => onSelectFile(group.rightId)}
-                    className="truncate font-mono text-sm text-ink hover:text-ember"
-                  >
-                    {fileNameMap.get(group.rightId) ?? group.rightId}
-                  </button>
-                </div>
-                <div className="small-caps text-[11px] text-neutral-500">
-                  {group.links.length} link{group.links.length === 1 ? "" : "s"}
-                </div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[44rem] border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-neutral-100">
-                      <Th>source</Th>
-                      <Th>target</Th>
-                      <Th>type</Th>
-                      <Th>evidence</Th>
-                      <Th>why it matters</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {group.links.map((link, idx) => {
-                      const stat = linkStats.get(
-                        linkLookupKey(link.file_a_id, link.col_a, link.file_b_id, link.col_b),
-                      );
-                      return (
-                        <tr
-                          key={`${link.file_a_id}-${link.col_a}-${idx}`}
-                          className="border-b border-neutral-100 last:border-b-0"
-                        >
-                          <Td mono>
-                            <button
-                              type="button"
-                              onClick={() => onSelectFile(link.file_a_id)}
-                              className="hover:text-ember"
-                            >
-                              {fileNameMap.get(link.file_a_id) ?? link.file_a_id}.
-                              {link.col_a}
-                            </button>
-                          </Td>
-                          <Td mono>
-                            <button
-                              type="button"
-                              onClick={() => onSelectFile(link.file_b_id)}
-                              className="hover:text-ember"
-                            >
-                              {fileNameMap.get(link.file_b_id) ?? link.file_b_id}.
-                              {link.col_b}
-                            </button>
-                          </Td>
-                          <Td>
-                            <span className="small-caps text-xs text-neutral-500">
-                              {link.direction.replace(/_/g, " ")}
-                            </span>
-                          </Td>
-                          <Td>
-                            <EvidenceBar stat={stat} />
-                          </Td>
-                          <Td>
-                            <span className="text-xs leading-5 text-neutral-600">
-                              {link.summary || "Potential matching identifier."}
-                            </span>
-                          </Td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EvidenceBar({ stat }: { stat?: LinkStat }) {
-  const score = stat?.score ?? stat?.overlap;
-  if (score === undefined) {
-    return <span className="small-caps text-[11px] text-neutral-400">semantic</span>;
+  if (groups.length === 0) {
+    return (
+      <div className="border border-neutral-200 bg-white p-4 text-sm text-neutral-600">
+        No strong document-to-document connections yet. You can still approve the
+        map, or add a connection in edit mode if you know how the files relate.
+      </div>
+    );
   }
-  const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
-  const source = stat?.source === "user_added" ? "manual" : "value scan";
+
   return (
-    <div className="min-w-[8rem]">
-      <div className="h-1.5 bg-neutral-100">
-        <div className="h-full bg-ember" style={{ width: `${pct}%` }} />
-      </div>
-      <div className="small-caps mt-1 text-[10px] text-neutral-500">
-        {pct}% {source}
-      </div>
+    <div className="space-y-3">
+      {groups.map((group) => {
+        const weakCount = group.links.filter((link) =>
+          isWeakLink(linkStats.get(linkLookupKey(link.file_a_id, link.col_a, link.file_b_id, link.col_b))),
+        ).length;
+        return (
+          <div
+            key={group.key}
+            className="grid items-center gap-3 border border-neutral-200 bg-white p-3 md:grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)]"
+          >
+            <FileNode
+              label={fileNameMap.get(group.leftId) ?? group.leftId}
+              onClick={() => onSelectFile(group.leftId)}
+            />
+            <button
+              type="button"
+              onClick={() => onSelectFile(group.leftId)}
+              className="group flex items-center justify-center gap-2 text-xs text-neutral-500"
+              title="Open a file to inspect linked columns"
+            >
+              <span className="h-px flex-1 bg-neutral-300 group-hover:bg-ember" />
+              <span className="small-caps whitespace-nowrap border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 group-hover:border-ember group-hover:text-ember">
+                {group.links.length} connection{group.links.length === 1 ? "" : "s"}
+              </span>
+              <span className="h-px flex-1 bg-neutral-300 group-hover:bg-ember" />
+            </button>
+            <FileNode
+              label={fileNameMap.get(group.rightId) ?? group.rightId}
+              onClick={() => onSelectFile(group.rightId)}
+            />
+            {weakCount > 0 ? (
+              <div className="md:col-span-3 text-xs text-amber-700">
+                {weakCount} connection{weakCount === 1 ? "" : "s"} may need review.
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function FileRail({
-  files,
-  activeFileId,
-  fileNameMap,
-  onSelectFile,
-}: {
-  files: DiscoveredFile[];
-  activeFileId: string | null;
-  fileNameMap: Map<string, string>;
-  onSelectFile: (fileId: string) => void;
-}) {
+function FileNode({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <aside className="hairline border bg-white">
-      <div className="hairline border-b px-4 py-3">
-        <div className="small-caps text-xs text-neutral-500">files</div>
-      </div>
-      <div className="divide-y divide-neutral-100">
-        {files.map((file) => (
-          <button
-            key={file.file_id}
-            type="button"
-            onClick={() => onSelectFile(file.file_id)}
-            className={`block w-full px-4 py-3 text-left ${
-              activeFileId === file.file_id ? "bg-neutral-50" : "hover:bg-neutral-50"
-            }`}
-          >
-            <div className="truncate font-mono text-sm text-ink">
-              {fileNameMap.get(file.file_id) ?? file.friendly_name}
-            </div>
-            <div className="mt-1 text-xs text-neutral-500">
-              {file.columns.length} columns, header row {file.header_row}
-            </div>
-          </button>
-        ))}
-      </div>
-    </aside>
+    <button
+      type="button"
+      onClick={onClick}
+      className="min-w-0 border border-neutral-200 bg-neutral-50 px-3 py-2 text-left hover:border-ink hover:bg-white"
+    >
+      <span className="block truncate font-mono text-sm text-ink">{label}</span>
+    </button>
   );
 }
 
-function FileDetailPanel({
+function FileSchemaDrawer({
+  open,
   file,
   fileIdx,
+  record,
   editing,
   preview,
   previewLoading,
   previewError,
   links,
+  linkStats,
   draftFiles,
   fileNameMap,
+  warnings,
+  onClose,
   onUpdateFile,
   onUpdateColumn,
   onAddColumn,
   onRemoveColumn,
+  onAddLink,
   onUpdateLink,
   onRemoveLink,
 }: {
-  file: DiscoveredFile;
+  open: boolean;
+  file: DiscoveredFile | null;
   fileIdx: number;
+  record?: FileRecord;
   editing: boolean;
   preview: FilePreviewResponse | null;
   previewLoading: boolean;
   previewError: string | null;
   links: DiscoveredLink[];
+  linkStats: Map<string, LinkStat>;
   draftFiles: DiscoveredFile[];
   fileNameMap: Map<string, string>;
+  warnings: string[];
+  onClose: () => void;
   onUpdateFile: (idx: number, patch: Partial<DiscoveredFile>) => void;
   onUpdateColumn: (
     fileIdx: number,
@@ -735,32 +962,79 @@ function FileDetailPanel({
   ) => void;
   onAddColumn: (fileIdx: number) => void;
   onRemoveColumn: (fileIdx: number, colIdx: number) => void;
+  onAddLink: (preferredFileId?: string) => void;
   onUpdateLink: (idx: number, patch: Partial<DiscoveredLink>) => void;
   onRemoveLink: (idx: number) => void;
 }) {
+  if (!open || !file || fileIdx < 0) return null;
   const fileLinks = links
     .map((link, idx) => ({ link, idx }))
     .filter(({ link }) => link.file_a_id === file.file_id || link.file_b_id === file.file_id);
 
   return (
-    <section className="min-w-0 space-y-6">
-      <div className="hairline border bg-white">
-        <div className="hairline border-b px-4 py-3">
-          <div className="small-caps text-xs text-neutral-500">file detail</div>
-          {editing ? (
-            <input
-              type="text"
-              value={file.friendly_name}
-              onChange={(e) => onUpdateFile(fileIdx, { friendly_name: e.target.value })}
-              className="mt-1 w-full border border-neutral-300 px-2 py-1 font-mono text-base focus:outline-none focus:ring-1 focus:ring-ink"
-            />
-          ) : (
-            <h3 className="mt-1 font-mono text-lg text-ink">{file.friendly_name}</h3>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-neutral-500">
-            <span>
-              Header row{" "}
-              {editing ? (
+    <div className="fixed inset-0 z-50 bg-black/20" onClick={onClose}>
+      <aside
+        className="absolute inset-y-0 right-0 flex w-full max-w-3xl flex-col border-l border-ink bg-paper shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="hairline flex items-start justify-between gap-4 border-b p-5">
+          <div className="min-w-0">
+            <div className="small-caps text-xs text-neutral-500">document detail</div>
+            {editing ? (
+              <input
+                type="text"
+                value={file.friendly_name}
+                onChange={(e) => onUpdateFile(fileIdx, { friendly_name: e.target.value })}
+                className="mt-2 w-full border border-neutral-300 bg-white px-2 py-1 font-mono text-xl focus:outline-none focus:ring-1 focus:ring-ink"
+              />
+            ) : (
+              <h3 className="mt-1 truncate font-mono text-xl text-ink">
+                {file.friendly_name}
+              </h3>
+            )}
+            <div className="mt-2 flex flex-wrap gap-3 text-xs text-neutral-500">
+              <span>{record?.filename ?? "Original file unknown"}</span>
+              <span>{formatSize(record?.original_size_bytes)}</span>
+              <span>{formatNumber(record?.row_count ?? 0)} rows</span>
+              <span>{file.columns.length} columns</span>
+              <span>header starts on row {file.header_row}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="small-caps shrink-0 border border-ink px-2 py-1 text-xs hover:bg-neutral-100"
+          >
+            close
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
+          {warnings.length > 0 ? (
+            <div className="border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+              {warnings.map((warning) => (
+                <div key={warning}>{warning}</div>
+              ))}
+            </div>
+          ) : null}
+
+          <section>
+            <div className="small-caps text-xs text-neutral-500">what this contains</div>
+            {editing ? (
+              <textarea
+                value={file.description}
+                onChange={(e) => onUpdateFile(fileIdx, { description: e.target.value })}
+                rows={3}
+                className="mt-2 w-full border border-neutral-300 bg-white p-2 text-sm focus:outline-none focus:ring-1 focus:ring-ink"
+              />
+            ) : (
+              <p className="mt-2 text-sm leading-6 text-neutral-700">
+                {file.description || "No description yet."}
+              </p>
+            )}
+            {editing ? (
+              <label className="mt-3 flex items-center gap-2 text-xs text-neutral-600">
+                Header starts on row
                 <input
                   type="number"
                   min={0}
@@ -770,158 +1044,195 @@ function FileDetailPanel({
                       header_row: Math.max(0, Number(e.target.value) || 0),
                     })
                   }
-                  className="ml-1 w-16 border border-neutral-300 px-1 py-0.5"
+                  className="w-20 border border-neutral-300 bg-white px-2 py-1"
                 />
-              ) : (
-                file.header_row
-              )}
-            </span>
-            <span>{file.columns.length} columns</span>
-          </div>
-          {editing ? (
-            <textarea
-              value={file.description}
-              onChange={(e) => onUpdateFile(fileIdx, { description: e.target.value })}
-              rows={2}
-              className="mt-3 w-full border border-neutral-300 p-2 text-sm focus:outline-none focus:ring-1 focus:ring-ink"
-            />
-          ) : file.description ? (
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-neutral-600">
-              {file.description}
-            </p>
-          ) : null}
-        </div>
+              </label>
+            ) : null}
+          </section>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[46rem] border-collapse text-sm">
-            <thead className="bg-neutral-50">
-              <tr>
-                <Th>column</Th>
-                <Th>meaning</Th>
-                <Th>type</Th>
-                {editing ? <Th>{""}</Th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {file.columns.map((col, colIdx) => (
-                <tr key={`${col.column_id}-${colIdx}`} className="hairline border-b">
-                  <Td mono>
-                    {editing ? (
-                      <input
-                        type="text"
-                        value={col.name}
-                        onChange={(e) =>
-                          onUpdateColumn(fileIdx, colIdx, { name: e.target.value })
-                        }
-                        className="w-full border border-neutral-300 px-2 py-1 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ink"
-                      />
-                    ) : (
-                      col.name
-                    )}
-                  </Td>
-                  <Td>
-                    {editing ? (
-                      <input
-                        type="text"
-                        value={col.description}
-                        onChange={(e) =>
-                          onUpdateColumn(fileIdx, colIdx, {
-                            description: e.target.value,
-                          })
-                        }
-                        className="w-full border border-neutral-300 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ink"
-                      />
-                    ) : (
-                      col.description || <span className="text-neutral-400">Not described</span>
-                    )}
-                  </Td>
-                  <Td>
-                    {editing ? (
-                      <select
-                        value={col.dtype}
-                        onChange={(e) =>
-                          onUpdateColumn(fileIdx, colIdx, {
-                            dtype: e.target.value as SimpleDtype,
-                          })
-                        }
-                        className="border border-neutral-300 bg-white px-2 py-1 text-xs"
-                      >
-                        {DTYPES.map((dtype) => (
-                          <option key={dtype} value={dtype}>
-                            {dtype}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span className="small-caps text-xs text-neutral-500">
-                        {col.dtype}
-                      </span>
-                    )}
-                  </Td>
-                  {editing ? (
-                    <Td>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveColumn(fileIdx, colIdx)}
-                        className="small-caps text-xs text-red-600 hover:underline"
-                      >
-                        remove
-                      </button>
-                    </Td>
-                  ) : null}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {editing ? (
-          <div className="px-4 py-3">
-            <button
-              type="button"
-              onClick={() => onAddColumn(fileIdx)}
-              className="small-caps border border-ink px-2 py-1 text-xs hover:bg-neutral-100"
-            >
-              add column
-            </button>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="hairline border bg-white">
-        <div className="hairline flex items-center justify-between border-b px-4 py-3">
-          <div>
-            <div className="small-caps text-xs text-neutral-500">preview</div>
-            <h3 className="mt-1 font-mono text-base text-ink">Rows after detection</h3>
-          </div>
-          {preview ? (
-            <div className="small-caps text-xs text-neutral-500">
-              {preview.total_rows.toLocaleString()} rows
+          <section>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="small-caps text-xs text-neutral-500">columns</div>
+                <h4 className="mt-1 font-mono text-base text-ink">Important fields</h4>
+              </div>
+              {editing ? (
+                <button
+                  type="button"
+                  onClick={() => onAddColumn(fileIdx)}
+                  className="small-caps border border-ink px-2 py-1 text-xs hover:bg-neutral-100"
+                >
+                  add column
+                </button>
+              ) : null}
             </div>
-          ) : null}
-        </div>
-        {previewLoading ? (
-          <div className="p-4 text-sm text-neutral-500">Loading preview...</div>
-        ) : previewError ? (
-          <div className="p-4 text-sm text-red-600">{previewError}</div>
-        ) : preview ? (
-          <PreviewTable preview={preview} />
-        ) : null}
-      </div>
+            <SchemaColumnTable
+              file={file}
+              fileIdx={fileIdx}
+              editing={editing}
+              onUpdateColumn={onUpdateColumn}
+              onRemoveColumn={onRemoveColumn}
+            />
+          </section>
 
-      <RelationshipList
-        links={fileLinks}
-        draftFiles={draftFiles}
-        fileNameMap={fileNameMap}
-        editing={editing}
-        onUpdateLink={onUpdateLink}
-        onRemoveLink={onRemoveLink}
-      />
-    </section>
+          <section>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="small-caps text-xs text-neutral-500">connections</div>
+                <h4 className="mt-1 font-mono text-base text-ink">Related documents</h4>
+              </div>
+              {editing ? (
+                <button
+                  type="button"
+                  onClick={() => onAddLink(file.file_id)}
+                  disabled={draftFiles.length < 2}
+                  className="small-caps border border-ink px-2 py-1 text-xs hover:bg-neutral-100 disabled:opacity-40"
+                >
+              add connection
+                </button>
+              ) : null}
+            </div>
+            <RelationshipList
+              links={fileLinks}
+              linkStats={linkStats}
+              draftFiles={draftFiles}
+              fileNameMap={fileNameMap}
+              editing={editing}
+              onUpdateLink={onUpdateLink}
+              onRemoveLink={onRemoveLink}
+            />
+          </section>
+
+          <section>
+            <div className="hairline flex items-center justify-between border-b pb-3">
+              <div>
+                <div className="small-caps text-xs text-neutral-500">preview</div>
+                <h4 className="mt-1 font-mono text-base text-ink">Sample rows</h4>
+              </div>
+              {preview ? (
+                <div className="small-caps text-xs text-neutral-500">
+                  {formatNumber(preview.total_rows)} rows
+                </div>
+              ) : null}
+            </div>
+            {previewLoading ? (
+              <div className="py-4 text-sm text-neutral-500">Loading preview...</div>
+            ) : previewError ? (
+              <div className="py-4 text-sm text-red-600">{previewError}</div>
+            ) : preview ? (
+              <PreviewTable preview={preview} />
+            ) : null}
+          </section>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function SchemaColumnTable({
+  file,
+  fileIdx,
+  editing,
+  onUpdateColumn,
+  onRemoveColumn,
+}: {
+  file: DiscoveredFile;
+  fileIdx: number;
+  editing: boolean;
+  onUpdateColumn: (
+    fileIdx: number,
+    colIdx: number,
+    patch: Partial<DiscoveredColumn>,
+  ) => void;
+  onRemoveColumn: (fileIdx: number, colIdx: number) => void;
+}) {
+  return (
+    <div className="overflow-x-auto border border-neutral-200 bg-white">
+      <table className="w-full min-w-[42rem] border-collapse text-sm">
+        <thead className="bg-neutral-50">
+          <tr>
+            <Th>field</Th>
+            <Th>meaning</Th>
+            <Th>type</Th>
+            {editing ? <Th>{""}</Th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {file.columns.map((col, colIdx) => (
+            <tr key={`${col.column_id}-${colIdx}`} className="hairline border-b last:border-b-0">
+              <Td mono>
+                {editing ? (
+                  <input
+                    type="text"
+                    value={col.name}
+                    onChange={(e) =>
+                      onUpdateColumn(fileIdx, colIdx, { name: e.target.value })
+                    }
+                    className="w-full border border-neutral-300 px-2 py-1 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ink"
+                  />
+                ) : (
+                  col.name
+                )}
+              </Td>
+              <Td>
+                {editing ? (
+                  <input
+                    type="text"
+                    value={col.description}
+                    onChange={(e) =>
+                      onUpdateColumn(fileIdx, colIdx, {
+                        description: e.target.value,
+                      })
+                    }
+                    className="w-full border border-neutral-300 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ink"
+                  />
+                ) : (
+                  col.description || <span className="text-amber-700">Needs description</span>
+                )}
+              </Td>
+              <Td>
+                {editing ? (
+                  <select
+                    value={col.dtype}
+                    onChange={(e) =>
+                      onUpdateColumn(fileIdx, colIdx, {
+                        dtype: e.target.value as SimpleDtype,
+                      })
+                    }
+                    className="border border-neutral-300 bg-white px-2 py-1 text-xs"
+                  >
+                    {DTYPES.map((dtype) => (
+                      <option key={dtype} value={dtype}>
+                        {dtype}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="small-caps text-xs text-neutral-500">{col.dtype}</span>
+                )}
+              </Td>
+              {editing ? (
+                <Td>
+                  <button
+                    type="button"
+                    onClick={() => onRemoveColumn(fileIdx, colIdx)}
+                    className="small-caps text-xs text-red-600 hover:underline"
+                  >
+                    remove
+                  </button>
+                </Td>
+              ) : null}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function RelationshipList({
   links,
+  linkStats,
   draftFiles,
   fileNameMap,
   editing,
@@ -929,98 +1240,96 @@ function RelationshipList({
   onRemoveLink,
 }: {
   links: { link: DiscoveredLink; idx: number }[];
+  linkStats: Map<string, LinkStat>;
   draftFiles: DiscoveredFile[];
   fileNameMap: Map<string, string>;
   editing: boolean;
   onUpdateLink: (idx: number, patch: Partial<DiscoveredLink>) => void;
   onRemoveLink: (idx: number) => void;
 }) {
-  return (
-    <section className="hairline border bg-white">
-      <div className="hairline border-b px-4 py-3">
-        <div className="small-caps text-xs text-neutral-500">relationships for file</div>
+  if (links.length === 0) {
+    return (
+      <div className="border border-neutral-200 bg-white p-4 text-sm text-neutral-500">
+        No connections for this document.
       </div>
-      {links.length === 0 ? (
-        <div className="p-4 text-sm text-neutral-500">No relationships for this file.</div>
-      ) : (
-        <div className="divide-y divide-neutral-100">
-          {links.map(({ link, idx }) => (
-            <div key={`${idx}-${link.col_a}-${link.col_b}`} className="p-4">
-              {editing ? (
-                <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-                  <ColumnPicker
-                    fileId={link.file_a_id}
-                    col={link.col_a}
-                    draftFiles={draftFiles}
-                    fileNameMap={fileNameMap}
-                    onChange={(fileId, col) =>
-                      onUpdateLink(idx, { file_a_id: fileId, col_a: col })
-                    }
-                  />
-                  <ColumnPicker
-                    fileId={link.file_b_id}
-                    col={link.col_b}
-                    draftFiles={draftFiles}
-                    fileNameMap={fileNameMap}
-                    onChange={(fileId, col) =>
-                      onUpdateLink(idx, { file_b_id: fileId, col_b: col })
-                    }
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onRemoveLink(idx)}
-                    className="small-caps text-xs text-red-600 hover:underline"
-                  >
-                    remove
-                  </button>
-                  <select
-                    value={link.direction}
-                    onChange={(e) =>
-                      onUpdateLink(idx, { direction: e.target.value as LinkDirection })
-                    }
-                    className="border border-neutral-300 bg-white px-2 py-1 text-xs"
-                  >
-                    {DIRECTIONS.map((direction) => (
-                      <option key={direction} value={direction}>
-                        {direction.replace(/_/g, " ")}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="text"
-                    value={link.summary}
-                    onChange={(e) => onUpdateLink(idx, { summary: e.target.value })}
-                    className="md:col-span-2 border border-neutral-300 px-2 py-1 text-xs"
-                  />
+    );
+  }
+
+  return (
+    <div className="divide-y divide-neutral-100 border border-neutral-200 bg-white">
+      {links.map(({ link, idx }) => {
+        const stat = linkStats.get(
+          linkLookupKey(link.file_a_id, link.col_a, link.file_b_id, link.col_b),
+        );
+        return (
+          <div key={`${idx}-${link.col_a}-${link.col_b}`} className="p-4">
+            {editing ? (
+              <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                <ColumnPicker
+                  fileId={link.file_a_id}
+                  col={link.col_a}
+                  draftFiles={draftFiles}
+                  fileNameMap={fileNameMap}
+                  onChange={(fileId, col) =>
+                    onUpdateLink(idx, { file_a_id: fileId, col_a: col })
+                  }
+                />
+                <ColumnPicker
+                  fileId={link.file_b_id}
+                  col={link.col_b}
+                  draftFiles={draftFiles}
+                  fileNameMap={fileNameMap}
+                  onChange={(fileId, col) =>
+                    onUpdateLink(idx, { file_b_id: fileId, col_b: col })
+                  }
+                />
+                <button
+                  type="button"
+                  onClick={() => onRemoveLink(idx)}
+                  className="small-caps text-xs text-red-600 hover:underline"
+                >
+                  remove
+                </button>
+                <select
+                  value={link.direction}
+                  onChange={(e) =>
+                    onUpdateLink(idx, { direction: e.target.value as LinkDirection })
+                  }
+                  className="border border-neutral-300 bg-white px-2 py-1 text-xs"
+                >
+                  {DIRECTIONS.map((direction) => (
+                    <option key={direction} value={direction}>
+                      {direction.replace(/_/g, " ")}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={link.summary}
+                  onChange={(e) => onUpdateLink(idx, { summary: e.target.value })}
+                  className="border border-neutral-300 px-2 py-1 text-xs md:col-span-2"
+                />
+              </div>
+            ) : (
+              <>
+                <div className="text-sm text-ink">
+                  {relationshipSentence(link, fileNameMap)}
                 </div>
-              ) : (
-                <>
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <ColumnLabel
-                      fileId={link.file_a_id}
-                      col={link.col_a}
-                      fileNameMap={fileNameMap}
-                    />
-                    <span className="text-ember">{"->"}</span>
-                    <ColumnLabel
-                      fileId={link.file_b_id}
-                      col={link.col_b}
-                      fileNameMap={fileNameMap}
-                    />
-                    <span className="small-caps border border-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-500">
-                      {link.direction.replace(/_/g, " ")}
-                    </span>
-                  </div>
-                  {link.summary ? (
-                    <p className="mt-2 text-sm text-neutral-600">{link.summary}</p>
-                  ) : null}
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs text-neutral-500">
+                  <span className="small-caps border border-neutral-200 px-1.5 py-0.5 text-[10px]">
+                    {link.direction.replace(/_/g, " ")}
+                  </span>
+                  <EvidenceLabel stat={stat} />
+                </div>
+                {link.summary ? (
+                  <p className="mt-2 text-sm leading-5 text-neutral-600">{link.summary}</p>
+                ) : null}
+              </>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1071,7 +1380,7 @@ function ColumnPicker({
 
 function PreviewTable({ preview }: { preview: FilePreviewResponse }) {
   return (
-    <div className="max-h-[30rem] overflow-auto">
+    <div className="max-h-[22rem] overflow-auto border border-neutral-200 border-t-0 bg-white">
       <table className="w-full min-w-max border-collapse text-xs">
         <thead className="sticky top-0 z-10 bg-neutral-50">
           <tr>
@@ -1102,45 +1411,121 @@ function PreviewTable({ preview }: { preview: FilePreviewResponse }) {
         </tbody>
       </table>
       <div className="small-caps px-4 py-3 text-[10px] text-neutral-500">
-        Showing {preview.rows.length} of {preview.total_rows.toLocaleString()} rows
+        Showing {preview.rows.length} of {formatNumber(preview.total_rows)} rows
       </div>
     </div>
   );
 }
 
-function Metric({
-  label,
-  value,
-  text,
-}: {
-  label: string;
-  value: number | string;
-  text?: boolean;
-}) {
+function EvidenceLabel({ stat }: { stat?: LinkStat }) {
+  const score = stat?.score ?? stat?.overlap;
+  if (score === undefined) {
+    return <span>semantic match</span>;
+  }
+  const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
+  const source = stat?.source === "user_added" ? "manual" : "value scan";
   return (
-    <div className="hairline border bg-white p-4">
-      <div className="small-caps text-xs text-neutral-500">{label}</div>
-      <div className={`mt-2 font-mono text-2xl text-ink ${text ? "text-lg" : ""}`}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function ColumnLabel({
-  fileId,
-  col,
-  fileNameMap,
-}: {
-  fileId: string;
-  col: string;
-  fileNameMap: Map<string, string>;
-}) {
-  return (
-    <span className="font-mono text-sm text-ink">
-      {fileNameMap.get(fileId) ?? fileId}.{col}
+    <span className={pct < 70 ? "text-amber-700" : ""}>
+      {pct}% match from {source}
     </span>
   );
+}
+
+function buildSummary(
+  files: FileRecord[],
+  draftFiles: DiscoveredFile[],
+  draftLinks: DiscoveredLink[],
+  status: string,
+): SummaryStats {
+  const knownSizes = files
+    .map((file) => file.original_size_bytes)
+    .filter((value): value is number => typeof value === "number");
+  const hasUnknownSize = knownSizes.length !== files.length;
+  const totalSize = knownSizes.reduce((sum, value) => sum + value, 0);
+  const totalRows = files.reduce((sum, file) => sum + file.row_count, 0);
+  const columnCount = draftFiles.reduce((sum, file) => sum + file.columns.length, 0);
+  return {
+    size:
+      knownSizes.length === 0
+        ? "Unknown"
+        : `${formatSize(totalSize)}${hasUnknownSize ? " +" : ""}`,
+    rows: formatNumber(totalRows),
+    files: formatNumber(draftFiles.length || files.length),
+    columns: formatNumber(columnCount),
+    relationships: formatNumber(draftLinks.length),
+    state: status === "approved" ? "Approved" : "Draft",
+  };
+}
+
+function buildWarnings(
+  files: DiscoveredFile[],
+  links: DiscoveredLink[],
+  fileNameMap: Map<string, string>,
+): WarningState {
+  const byFile = new Map<string, string[]>();
+  const add = (fileId: string, message: string) => {
+    byFile.set(fileId, [...(byFile.get(fileId) ?? []), message]);
+  };
+
+  for (const file of files) {
+    if (!file.description.trim()) {
+      add(file.file_id, `${fileNameMap.get(file.file_id) ?? file.friendly_name} needs a description.`);
+    }
+    if (file.columns.length === 0) {
+      add(file.file_id, "No columns were detected.");
+    }
+    if (file.columns.some((column) => !column.description.trim())) {
+      add(file.file_id, "Some columns need plain-language meanings.");
+    }
+    if (file.header_row > 5) {
+      add(file.file_id, `Header row ${file.header_row} is unusually deep.`);
+    }
+  }
+
+  const linkedFiles = new Set<string>();
+  for (const link of links) {
+    linkedFiles.add(link.file_a_id);
+    linkedFiles.add(link.file_b_id);
+  }
+  if (files.length > 1) {
+    for (const file of files) {
+      if (!linkedFiles.has(file.file_id)) {
+        add(file.file_id, "No connection found for this document.");
+      }
+    }
+  }
+
+  return {
+    byFile,
+    total: [...byFile.values()].reduce((sum, items) => sum + items.length, 0),
+  };
+}
+
+function fileBadges(file: DiscoveredFile, warnings: string[]): string[] {
+  const badges: string[] = [];
+  const lowerNames = file.columns.map((column) => column.name.toLowerCase());
+  if (file.columns.some((column) => column.dtype === "date" || column.dtype === "datetime")) {
+    badges.push("has dates");
+  }
+  if (
+    file.columns.some((column) => column.dtype === "int" || column.dtype === "float") ||
+    lowerNames.some((name) =>
+      ["amount", "price", "cost", "revenue", "total", "quantity"].some((term) =>
+        name.includes(term),
+      ),
+    )
+  ) {
+    badges.push("has numbers");
+  }
+  if (
+    lowerNames.some((name) =>
+      ["id", "key", "code", "number"].some((term) => name.includes(term)),
+    )
+  ) {
+    badges.push("has ids");
+  }
+  if (warnings.length > 0) badges.push("needs review");
+  return badges.slice(0, 4);
 }
 
 function groupRelationships(
@@ -1164,17 +1549,58 @@ function groupRelationships(
     }
   }
 
-  return [...groups.values()]
-    .map((group) => ({
-      ...group,
-      links: [...group.links].sort((a, b) => a.col_a.localeCompare(b.col_a)),
-    }))
-    .sort((a, b) => {
-      const leftDiff =
-        (fileOrder.get(a.leftId) ?? 0) - (fileOrder.get(b.leftId) ?? 0);
-      if (leftDiff !== 0) return leftDiff;
-      return (fileOrder.get(a.rightId) ?? 0) - (fileOrder.get(b.rightId) ?? 0);
-    });
+  return [...groups.values()].sort((a, b) => {
+    const leftDiff =
+      (fileOrder.get(a.leftId) ?? 0) - (fileOrder.get(b.leftId) ?? 0);
+    if (leftDiff !== 0) return leftDiff;
+    return (fileOrder.get(a.rightId) ?? 0) - (fileOrder.get(b.rightId) ?? 0);
+  });
+}
+
+function relationshipSentence(
+  link: DiscoveredLink,
+  fileNameMap: Map<string, string>,
+): string {
+  const left = fileNameMap.get(link.file_a_id) ?? link.file_a_id;
+  const right = fileNameMap.get(link.file_b_id) ?? link.file_b_id;
+  const direction = link.direction.replace(/_/g, " ");
+  return `${left} connects to ${right} through ${link.col_a} and ${link.col_b}. This looks like ${direction}.`;
+}
+
+function fileHoverTitle(file: DiscoveredFile, record?: FileRecord): string {
+  const original = record?.filename ?? file.friendly_name;
+  return `${original}\n${formatSize(record?.original_size_bytes)}\n${formatNumber(record?.row_count ?? 0)} rows`;
+}
+
+function cleanFilename(filename: string): string {
+  const stem = filename.replace(/\.[^.]+$/, "");
+  return stem.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim() || filename;
+}
+
+function formatSize(bytes: number | null | undefined): string {
+  if (typeof bytes !== "number") return "Unknown size";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = units[0]!;
+  for (let i = 1; i < units.length && value >= 1024; i += 1) {
+    value /= 1024;
+    unit = units[i]!;
+  }
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
+function joinItems(items: string[]): string {
+  return items.length > 0 ? items.join(", ") : "Not documented";
+}
+
+function isWeakLink(stat?: LinkStat): boolean {
+  const score = stat?.score ?? stat?.overlap;
+  return typeof score === "number" && score < 0.7;
 }
 
 function linkLookupKey(fileA: string, colA: string, fileB: string, colB: string): string {
@@ -1197,7 +1623,7 @@ function formatCell(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function Th({ children }: { children: React.ReactNode }) {
+function Th({ children }: { children: ReactNode }) {
   return (
     <th className="small-caps hairline border-b px-3 py-2 text-left text-xs text-neutral-500">
       {children}
@@ -1209,7 +1635,7 @@ function Td({
   children,
   mono,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   mono?: boolean;
 }) {
   return (

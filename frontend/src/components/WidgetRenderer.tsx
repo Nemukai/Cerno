@@ -42,6 +42,23 @@ const baseAxis = {
   splitLine: { lineStyle: { color: HAIRLINE } },
 };
 
+function formatAxisValue(value: number | string): string {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: Math.abs(numeric) < 10 ? 2 : 0,
+  }).format(numeric);
+}
+
+const valueAxis = {
+  type: "value",
+  ...baseAxis,
+  axisLabel: {
+    ...baseAxis.axisLabel,
+    formatter: formatAxisValue,
+  },
+};
+
 function chartItems(data: CategoryData): Array<{ name: string; value: number }> {
   if (data.items) return data.items;
   const categories = data.categories ?? data.labels ?? [];
@@ -64,15 +81,15 @@ function buildBarOption(data: CategoryData, options: WidgetOptions = {}): Record
   const horizontal = options.horizontal === true;
   return {
     grid: horizontal
-      ? { left: 112, right: 18, top: 16, bottom: 28 }
-      : { left: 48, right: 16, top: 16, bottom: 28 },
+      ? { left: 12, right: 18, top: 16, bottom: 28, containLabel: true }
+      : { left: 12, right: 16, top: 16, bottom: 28, containLabel: true },
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
     xAxis: horizontal
-      ? { type: "value", ...baseAxis }
+      ? valueAxis
       : { type: "category", data: categories, ...baseAxis },
     yAxis: horizontal
       ? { type: "category", data: categories, ...baseAxis }
-      : { type: "value", ...baseAxis },
+      : valueAxis,
     series: series.map((s) => ({
       name: s.name ?? "value",
       type: "bar",
@@ -89,10 +106,10 @@ function buildLineOption(data: CategoryData): Record<string, unknown> {
     data.series ??
     (data.values ? [{ name: "value", data: data.values }] : []);
   return {
-    grid: { left: 48, right: 16, top: 16, bottom: 28 },
+    grid: { left: 12, right: 16, top: 16, bottom: 28, containLabel: true },
     tooltip: { trigger: "axis" },
     xAxis: { type: "category", data: categories, ...baseAxis },
-    yAxis: { type: "value", ...baseAxis },
+    yAxis: valueAxis,
     series: series.map((s) => ({
       name: s.name ?? "value",
       type: "line",

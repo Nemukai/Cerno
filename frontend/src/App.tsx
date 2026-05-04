@@ -6,6 +6,7 @@ import {
   deleteFile,
   deleteSession,
   getDashboard,
+  getDataDocs,
   getDiscovery,
   getProcessingEvents,
   listFiles,
@@ -18,6 +19,7 @@ import {
 } from "./lib/api";
 import type {
   ChatTurn,
+  DataDoc,
   DashboardPage,
   DiscoveredFile,
   DiscoveredLink,
@@ -30,7 +32,6 @@ import type {
 } from "./lib/types";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { DashboardTab } from "./components/DashboardTab";
-import { NotebookTab } from "./components/NotebookTab";
 import { SchemaTab } from "./components/SchemaTab";
 import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
@@ -43,10 +44,12 @@ export function App() {
   const [discovery, setDiscovery] = useState<DiscoveryResponse | null>(null);
   const [events, setEvents] = useState<ProcessingEvent[]>([]);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [dataDoc, setDataDoc] = useState<DataDoc | null>(null);
   const [pages, setPages] = useState<DashboardPage[]>([]);
   const [cellsByPage, setCellsByPage] = useState<Record<string, NotebookCell[]>>(
     {},
   );
+  const [dashboardLoadedFor, setDashboardLoadedFor] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
   const [focusPageId, setFocusPageId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -58,6 +61,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const bootstrapped = useRef(false);
   const pollRef = useRef<number | null>(null);
+  const autoBuildSessions = useRef<Set<string>>(new Set());
 
   const refreshSessions = useCallback(async () => {
     const list = await listSessions();
@@ -89,11 +93,21 @@ export function App() {
     const dash = await getDashboard(sessionId);
     setPages(dash.pages);
     setCellsByPage(dash.cells_by_page);
+    setDashboardLoadedFor(sessionId);
   }, []);
 
   const refreshTurns = useCallback(async (sessionId: string) => {
     const ts = await listTurns(sessionId);
     setTurns(ts);
+  }, []);
+
+  const refreshDataDocs = useCallback(async (sessionId: string) => {
+    try {
+      const doc = await getDataDocs(sessionId);
+      setDataDoc(doc);
+    } catch {
+      setDataDoc(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -112,6 +126,7 @@ export function App() {
       refreshEvents(id),
       refreshDashboard(id),
       refreshTurns(id),
+      refreshDataDocs(id),
     ]).catch((err: Error) => setError(err.message));
   }, [
     session,
@@ -121,6 +136,7 @@ export function App() {
     refreshEvents,
     refreshDashboard,
     refreshTurns,
+    refreshDataDocs,
   ]);
 
   useEffect(() => {
@@ -149,8 +165,10 @@ export function App() {
     setDiscovery(null);
     setEvents([]);
     setTurns([]);
+    setDataDoc(null);
     setPages([]);
     setCellsByPage({});
+    setDashboardLoadedFor(null);
     setActiveTab("dashboard");
     setFocusPageId(null);
   }, []);
@@ -219,6 +237,9 @@ export function App() {
       setUploading(true);
       try {
         await uploadFiles(session.id, deduped);
+        setPages([]);
+        setCellsByPage({});
+        setDashboardLoadedFor(session.id);
         await Promise.all([
           refreshFiles(session.id),
           refreshDiscovery(session.id),
@@ -238,6 +259,9 @@ export function App() {
       setError(null);
       try {
         await deleteFile(fileId);
+        setPages([]);
+        setCellsByPage({});
+        setDashboardLoadedFor(session.id);
         await Promise.all([
           refreshFiles(session.id),
           refreshDiscovery(session.id),
@@ -256,6 +280,9 @@ export function App() {
     setProcessing(true);
     setEvents([]);
     setActiveTab("schema");
+    setPages([]);
+    setCellsByPage({});
+    setDashboardLoadedFor(session.id);
     try {
       const result = await processSession(session.id);
       setDiscovery(result);
@@ -263,6 +290,7 @@ export function App() {
         refreshFiles(session.id),
         refreshLinks(session.id),
         refreshEvents(session.id),
+        refreshDataDocs(session.id),
       ]);
     } catch (err) {
       setError((err as Error).message);
@@ -271,7 +299,7 @@ export function App() {
     } finally {
       setProcessing(false);
     }
-  }, [session, refreshFiles, refreshLinks, refreshDiscovery, refreshEvents]);
+  }, [session, refreshFiles, refreshLinks, refreshDiscovery, refreshEvents, refreshDataDocs]);
 
   const handleApprove = useCallback(
     async (
@@ -292,6 +320,7 @@ export function App() {
         await Promise.all([
           refreshFiles(session.id),
           refreshLinks(session.id),
+          refreshDataDocs(session.id),
           refreshSessions(),
         ]);
       } catch (err) {
@@ -300,7 +329,7 @@ export function App() {
         setApproving(false);
       }
     },
-    [session, refreshFiles, refreshLinks, refreshSessions],
+    [session, refreshFiles, refreshLinks, refreshDataDocs, refreshSessions],
   );
 
   const handleSend = useCallback(
@@ -343,6 +372,25 @@ export function App() {
     setFocusPageId(pageId);
   }, []);
 
+  const discoveryStatus = discovery?.status ?? "empty";
+
+  useEffect(() => {
+    if (!session) return;
+    if (discoveryStatus !== "approved") return;
+    if (dashboardLoadedFor !== session.id) return;
+    if (pages.length > 0 || building) return;
+    if (autoBuildSessions.current.has(session.id)) return;
+    autoBuildSessions.current.add(session.id);
+    handleBuildDashboard().catch((err: Error) => setError(err.message));
+  }, [
+    session,
+    discoveryStatus,
+    dashboardLoadedFor,
+    pages.length,
+    building,
+    handleBuildDashboard,
+  ]);
+
   if (!session) {
     return (
       <SessionStart
@@ -357,7 +405,6 @@ export function App() {
     );
   }
 
-  const discoveryStatus = discovery?.status ?? "empty";
   const chatReady = discoveryStatus === "approved";
 
   return (
@@ -376,10 +423,12 @@ export function App() {
         header={
           <SessionHeader
             session={session}
+            sessions={sessions}
             onUpload={handleUpload}
             uploading={uploading}
             onHome={handleHome}
             onDelete={() => handleDeleteSession(session.id)}
+            onResume={handleResumeSession}
           />
         }
         activeTab={activeTab}
@@ -403,18 +452,12 @@ export function App() {
             onReviewSchema={() => setActiveTab("schema")}
           />
         ) : null}
-        {activeTab === "notebook" ? (
-          <NotebookTab
-            pages={pages}
-            cellsByPage={cellsByPage}
-            focusPageId={focusPageId}
-          />
-        ) : null}
         {activeTab === "schema" ? (
           <SchemaTab
             files={files}
             links={links}
             discovery={discovery}
+            doc={dataDoc}
             events={events}
             processing={processing}
             approving={approving}
@@ -460,6 +503,7 @@ function SessionStart({
   onDismissError: () => void;
 }) {
   const [name, setName] = useState("");
+  const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 });
 
   const handleStart = () => {
     const trimmed = name.trim();
@@ -478,90 +522,170 @@ function SessionStart({
     if (ok) onDelete(s.id);
   };
 
-  return (
-    <div className="flex h-full w-full items-center justify-center p-10">
-      <div className="w-full max-w-xl">
-        <div className="small-caps text-xs text-neutral-500">cerno</div>
-        <h1 className="mt-1 font-mono text-3xl tracking-tight text-ink">
-          discern what matters
-        </h1>
-        <p className="mt-4 text-sm text-neutral-600">
-          Start a new session to ingest files, discover links between them, and
-          build a dashboard.
-        </p>
-        <label className="mt-6 block">
-          <span className="small-caps text-xs text-neutral-500">
-            session name
-          </span>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={handleKey}
-            placeholder="e.g. march billings"
-            className="mt-2 block w-full border border-ink px-3 py-2 font-mono text-sm focus:outline-none"
-          />
-        </label>
-        <div className="mt-5">
-          <button
-            type="button"
-            onClick={handleStart}
-            disabled={starting}
-            className="small-caps border border-ink bg-ember px-3 py-2 text-xs text-white hover:bg-ember-hover disabled:opacity-40"
-          >
-            {starting ? "starting\u2026" : "+ start session"}
-          </button>
-        </div>
-        {error ? (
-          <div className="mt-4 flex items-start justify-between gap-3 border border-red-300 px-3 py-2 font-mono text-xs text-red-600">
-            <span>{error}</span>
-            <button
-              type="button"
-              onClick={onDismissError}
-              className="text-neutral-500 hover:text-ink"
-            >
-              {"\u00d7"}
-            </button>
-          </div>
-        ) : null}
+  const handlePointerMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setPointer({
+      x: (e.clientX - rect.left) / rect.width,
+      y: (e.clientY - rect.top) / rect.height,
+    });
+  };
 
-        {sessions.length > 0 ? (
-          <section className="mt-10">
-            <div className="small-caps text-xs text-neutral-500">
-              resume a session
+  const asciiRows = [
+    "CERNO::LINK_GRAPH   +--+--+--+   DISCOVERY_PIPELINE",
+    "      .--.     rows -> joins -> signals      .--.",
+    "  +---|  |---+  [hash] [schema] [rank]  +---|  |---+",
+    "      '--'     outliers / keys / lineage      '--'",
+    ">>> ingest.csv :::::::::::: correlate.xlsx :::::::::",
+    "     SELECT * FROM memory WHERE signal > noise",
+    "  01001011 01000101 01011001 00101101 01010011",
+    "schema_map -> relationship_graph -> dashboard_queue",
+  ];
+
+  return (
+    <div
+      className="relative flex min-h-full w-full overflow-hidden bg-paper px-6 py-10 text-ink"
+      onMouseMove={handlePointerMove}
+    >
+      <div className="pointer-events-none absolute inset-0 opacity-90">
+        <div
+          className="absolute inset-y-0 w-32 bg-ember/10 blur-2xl transition-transform duration-200 ease-out"
+          style={{
+            left: `${pointer.x * 100}%`,
+            transform: "translateX(-50%) skewX(-12deg)",
+          }}
+        />
+        <div
+          className="absolute inset-0 bg-[linear-gradient(115deg,transparent_0%,rgba(232,93,35,0.10)_var(--scan),transparent_calc(var(--scan)_+_18%))]"
+          style={
+            {
+              "--scan": `${pointer.x * 100}%`,
+            } as React.CSSProperties
+          }
+        />
+        <div className="absolute inset-0 flex select-none flex-col justify-around py-8 font-mono text-[10px] uppercase leading-loose text-ember/25 sm:text-xs lg:text-sm">
+          {Array.from({ length: 18 }).map((_, i) => {
+            const direction = i % 2 === 0 ? 1 : -1;
+            const driftX = (pointer.x - 0.5) * direction * (18 + (i % 5) * 4);
+            const driftY = (pointer.y - 0.5) * direction * 10;
+            return (
+              <div
+                key={i}
+                className="whitespace-nowrap transition-transform duration-200 ease-out"
+                style={{
+                  transform: `translate3d(${driftX}px, ${driftY}px, 0)`,
+                  opacity: 0.16 + (i % 4) * 0.06,
+                }}
+              >
+                {asciiRows[i % asciiRows.length]}{" "}
+                {asciiRows[(i + 3) % asciiRows.length]}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <main className="relative z-10 mx-auto flex w-full max-w-5xl flex-col justify-center">
+        <section className="mx-auto flex min-h-[44vh] w-full max-w-3xl flex-col items-center justify-end text-center">
+          <div className="small-caps text-xs text-ember">cerno</div>
+          <h1 className="mt-2 font-mono text-4xl tracking-tight text-ink sm:text-5xl">
+            discern what matters
+          </h1>
+          <p className="mt-4 max-w-xl text-sm text-neutral-600">
+            Start a session, ingest files, discover relationships, and build the
+            working dashboard from the same place.
+          </p>
+
+          <div className="mt-8 w-full border border-ember/50 bg-white/85 p-1 shadow-[0_18px_70px_rgba(232,93,35,0.16)] backdrop-blur">
+            <div className="flex flex-col gap-1 sm:flex-row">
+              <label className="flex min-w-0 flex-1 items-center gap-3 bg-paper px-4 py-3 text-left text-ink">
+                <span className="small-caps shrink-0 text-[11px] text-neutral-500">
+                  session
+                </span>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={handleKey}
+                  placeholder="march billings"
+                  className="min-w-0 flex-1 bg-transparent font-mono text-sm text-ink placeholder:text-neutral-400 focus:outline-none"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={handleStart}
+                disabled={starting}
+                className="small-caps bg-ember px-5 py-3 text-xs text-white transition hover:bg-ember-hover disabled:opacity-40"
+              >
+                {starting ? "starting..." : "+ start session"}
+              </button>
             </div>
-            <ul className="mt-3">
+          </div>
+
+          {error ? (
+            <div className="mt-4 flex w-full items-start justify-between gap-3 border border-red-300 bg-white/90 px-3 py-2 font-mono text-xs text-red-600">
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={onDismissError}
+                className="text-neutral-500 hover:text-ink"
+              >
+                x
+              </button>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="mx-auto mt-12 w-full max-w-4xl">
+          <div className="flex items-end justify-between gap-4 border-b border-ink/10 pb-3">
+            <div>
+              <div className="small-caps text-xs text-ember/80">
+                existing sessions
+              </div>
+              <h2 className="mt-1 font-mono text-xl text-ink">
+                Pick up where the data left off
+              </h2>
+            </div>
+            <span className="font-mono text-xs text-neutral-500">
+              {sessions.length} saved
+            </span>
+          </div>
+
+          {sessions.length > 0 ? (
+            <ul className="mt-4 grid gap-3">
               {sessions.map((s) => (
-                <li
-                  key={s.id}
-                  className="hairline flex items-center justify-between gap-4 border-b py-3"
-                >
-                  <button
-                    type="button"
-                    onClick={() => onResume(s)}
-                    className="flex min-w-0 flex-1 flex-col items-start text-left hover:text-ember"
-                  >
-                    <span className="truncate font-mono text-sm text-ink">
-                      {s.name}
-                    </span>
-                    <span className="small-caps text-[10px] text-neutral-500">
-                      {s.status} {"\u00b7"}{" "}
-                      {new Date(s.created_at).toLocaleString()}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(s)}
-                    className="small-caps border border-red-600 px-2 py-1 text-[11px] text-red-600 hover:bg-red-50"
-                  >
-                    delete
-                  </button>
+                <li key={s.id}>
+                  <div className="group flex items-center gap-4 border border-ink/10 bg-white/80 px-4 py-3 shadow-[0_10px_35px_rgba(14,14,14,0.04)] transition hover:border-ember/70 hover:bg-ember/[0.08]">
+                    <button
+                      type="button"
+                      onClick={() => onResume(s)}
+                      className="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-1 text-left"
+                    >
+                      <span className="row-span-2 h-8 w-1 bg-ember transition group-hover:h-10" />
+                      <span className="truncate font-mono text-sm text-ink">
+                        {s.name}
+                      </span>
+                      <span className="small-caps text-[10px] text-neutral-500">
+                        {s.status} / {new Date(s.created_at).toLocaleString()}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(s)}
+                      className="small-caps border border-red-300/50 px-2 py-1 text-[11px] text-red-200 transition hover:border-red-300 hover:bg-red-400/10"
+                    >
+                      delete
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
-          </section>
-        ) : null}
-      </div>
+          ) : (
+            <div className="mt-4 border border-dashed border-ink/15 bg-white/50 px-4 py-6 font-mono text-sm text-neutral-500">
+              No saved sessions yet.
+            </div>
+          )}
+        </section>
+      </main>
     </div>
   );
 }

@@ -8,7 +8,6 @@ from cerno.config import Settings
 from cerno.llm import LLMClient
 from cerno.models import DashboardPage, NotebookCell, Widget
 from cerno.repositories import (
-    AnomalyRepository,
     DashboardRepository,
     FileRepository,
     LinkRepository,
@@ -33,7 +32,7 @@ Choose the most useful default dashboard widgets from the provided candidate lis
 Rules:
 - Do not invent chart code, SQL, columns, or widget ids.
 - Select widgets that would help a non-technical operator understand the dataset quickly.
-- Prefer business KPIs, time trends, segment mixes, anomaly attention, and file relationships.
+- Prefer business KPIs, time trends, segment mixes, useful comparisons, and file relationships.
 - Avoid redundant widgets that show the same idea in a different shape.
 - Return only valid JSON matching the schema."""
 
@@ -92,7 +91,6 @@ async def generate_overview(
     files_repo: FileRepository,
     schemas_repo: SchemaRepository,
     links_repo: LinkRepository,
-    anomalies_repo: AnomalyRepository,
     dashboards_repo: DashboardRepository,
     notebook_repo: NotebookRepository,
     llm_client: LLMClient | None = None,
@@ -121,19 +119,16 @@ async def generate_overview(
     }
     profiles = load_file_profiles(files, schemas_by_file)
     links = links_repo.list_for_session(session_id)
-    anomalies = anomalies_repo.top_for_session(session_id, limit=10_000)
     session = sessions_repo.get(session_id)
     candidates = build_dashboard_candidates(
         profiles=profiles,
         links=links,
-        anomalies=anomalies,
         session_overview=session.overview if session else None,
     )
     selected = await _select_candidates(
         candidates=candidates,
         profiles=profiles,
         links_count=len(links),
-        anomalies_count=len(anomalies),
         settings=settings,
         llm_client=llm_client,
     )
@@ -157,7 +152,6 @@ async def _select_candidates(
     candidates: list[DashboardCandidate],
     profiles: list[Any],
     links_count: int,
-    anomalies_count: int,
     settings: Settings,
     llm_client: LLMClient | None,
 ) -> list[DashboardCandidate]:
@@ -169,7 +163,6 @@ async def _select_candidates(
     prompt = {
         "files": profile_catalog(profiles),
         "relationship_count": links_count,
-        "anomaly_count": anomalies_count,
         "candidate_widgets": candidate_catalog(candidates[:32]),
         "max_widgets": DASHBOARD_MAX_WIDGETS,
     }

@@ -10,7 +10,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 _MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -249,6 +249,19 @@ _MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_users_access_status ON users(access_status)",
+    ],
+    7: [
+        "ALTER TABLE files ADD COLUMN original_size_bytes INTEGER",
+    ],
+    8: [
+        """
+        CREATE TABLE IF NOT EXISTS data_docs (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
     ],
 }
 

@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import type {
   DashboardPage,
   DiscoveryStatus,
   FileRecord,
   NotebookCell,
+  Widget,
 } from "../lib/types";
 import { widgetFromCell } from "../lib/widgets";
 import { WidgetRenderer } from "./WidgetRenderer";
@@ -64,13 +65,104 @@ export function DashboardTab({
     );
   }
 
+  const totals = buildDashboardTotals(pages, cellsByPage);
+
   return (
     <div className="px-8 py-6">
+      <DashboardHeader
+        totals={totals}
+        building={building}
+        onBuildDashboard={onBuildDashboard}
+      />
+
+      <DashboardView pages={pages} cellsByPage={cellsByPage} pageRefs={pageRefs} />
+    </div>
+  );
+}
+
+type DashboardTotals = {
+  kpis: number;
+  visuals: number;
+};
+
+function buildDashboardTotals(
+  pages: DashboardPage[],
+  cellsByPage: Record<string, NotebookCell[]>,
+): DashboardTotals {
+  let kpis = 0;
+  let visuals = 0;
+  for (const page of pages) {
+    const pageCells = cellsByPage[page.id] ?? [];
+    for (const cell of pageCells) {
+      const widget = widgetFromCell(cell);
+      if (!isDashboardWidget(widget)) continue;
+      if (widget.kind === "kpi") kpis += 1;
+      else visuals += 1;
+    }
+  }
+  return { kpis, visuals };
+}
+
+function DashboardHeader({
+  totals,
+  building,
+  onBuildDashboard,
+}: {
+  totals: DashboardTotals;
+  building: boolean;
+  onBuildDashboard: () => void;
+}) {
+  return (
+    <header className="hairline mb-6 flex flex-wrap items-start justify-between gap-4 border-b pb-5">
+      <div className="max-w-3xl">
+        <div className="small-caps text-xs text-neutral-500">dashboard</div>
+        <h2 className="mt-1 font-mono text-2xl text-ink">Generated analysis</h2>
+        <p className="mt-2 text-sm leading-6 text-neutral-600">
+          Cerno turns the approved data map into KPI graphics and interactive
+          visuals focused on the most useful signals in the files.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-5">
+        <DashboardFact label="kpis" value={totals.kpis} />
+        <DashboardFact label="graphics" value={totals.visuals} />
+        <button
+          type="button"
+          onClick={onBuildDashboard}
+          disabled={building}
+          className="small-caps border border-ink px-3 py-1.5 text-xs hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {building ? "building..." : "regenerate"}
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function DashboardFact({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <div className="small-caps text-[11px] text-neutral-500">{label}</div>
+      <div className="mt-1 font-mono text-lg text-ink">{value.toLocaleString()}</div>
+    </div>
+  );
+}
+
+function DashboardView({
+  pages,
+  cellsByPage,
+  pageRefs,
+}: {
+  pages: DashboardPage[];
+  cellsByPage: Record<string, NotebookCell[]>;
+  pageRefs: MutableRefObject<Record<string, HTMLElement | null>>;
+}) {
+  return (
+    <>
       {pages.map((page) => {
         const cells = cellsByPage[page.id] ?? [];
         const widgets = cells
           .map(widgetFromCell)
-          .filter((w) => w !== null);
+          .filter(isDashboardWidget);
         const kpis = widgets.filter((widget) => widget.kind === "kpi");
         const visuals = widgets.filter((widget) => widget.kind !== "kpi");
         const num = String(page.position + 1).padStart(2, "0");
@@ -112,7 +204,17 @@ export function DashboardTab({
           </section>
         );
       })}
-    </div>
+    </>
+  );
+}
+
+function isDashboardWidget(widget: Widget | null): widget is Widget {
+  if (!widget) return false;
+  const title = widget.title.toLowerCase();
+  return !(
+    title.includes("anomal") ||
+    title.includes("flagged row") ||
+    title.includes("flagged rows")
   );
 }
 
@@ -168,7 +270,7 @@ function EmptyStage({
     discovering: { num: "02", title: "discovering schema\u2026" },
     failed: { num: "02", title: "discovery failed" },
     review: { num: "03", title: "review the schema" },
-    build: { num: "04", title: "build the overview" },
+    build: { num: "04", title: "generate the dashboard" },
   };
 
   const { num, title } = labels[stage];
@@ -314,8 +416,8 @@ function EmptyStage({
       {stage === "build" ? (
         <>
           <p className="mt-4 max-w-lg text-sm text-neutral-600">
-            Schema approved. You can chat with your data, or build an overview
-            dashboard now.
+            Schema approved. Cerno will generate the KPI graphics and chart cells
+            automatically; you can also start it manually if needed.
           </p>
           <div className="mt-6 flex items-center gap-3">
             <button

@@ -15,7 +15,6 @@ from cerno.repositories import (
     SchemaRepository,
     SessionRepository,
 )
-from cerno.services.anomalies import detect_anomalies, persist_anomalies
 from cerno.services.dashboard import generate_overview
 
 router = APIRouter(tags=["dashboard"])
@@ -38,20 +37,9 @@ async def post_build_dashboard(
     files_repo = FileRepository(conn)
     schemas_repo = SchemaRepository(conn)
     links_repo = LinkRepository(conn)
-    anomalies_repo = AnomalyRepository(conn)
     dashboards_repo = DashboardRepository(conn)
     notebook_repo = NotebookRepository(conn)
 
-    drafts = detect_anomalies(
-        session_id=session_id,
-        settings=settings,
-        files_repo=files_repo,
-        schemas_repo=schemas_repo,
-        links_repo=links_repo,
-    )
-    persisted = persist_anomalies(
-        anomalies_repo=anomalies_repo, session_id=session_id, drafts=drafts
-    )
     page = await generate_overview(
         session_id=session_id,
         settings=settings,
@@ -59,7 +47,6 @@ async def post_build_dashboard(
         files_repo=files_repo,
         schemas_repo=schemas_repo,
         links_repo=links_repo,
-        anomalies_repo=anomalies_repo,
         dashboards_repo=dashboards_repo,
         notebook_repo=notebook_repo,
         llm_client=llm_client,
@@ -67,7 +54,6 @@ async def post_build_dashboard(
     widgets = notebook_repo.list_for_page(page.id)
     return {
         "page_id": page.id,
-        "anomaly_count": len(persisted),
         "widget_count": len(widgets),
     }
 

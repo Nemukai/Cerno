@@ -12,6 +12,7 @@ from cerno.llm import LLMClient, run_tool_loop
 from cerno.models import ChatTurn, NotebookCell, Widget
 from cerno.repositories import (
     ChatRepository,
+    DataDocRepository,
     DashboardRepository,
     FileRepository,
     NotebookRepository,
@@ -26,8 +27,10 @@ SYSTEM_PROMPT = (
     "You are Cerno, a plain-English data analyst. You are chatting with a non-technical "
     "user about data they just uploaded. Every ingested file is available as a table "
     "(DuckDB view + pandas DataFrame named after the slugified filename). "
-    "Back every numeric claim by calling run_sql or run_python — never guess numbers. "
-    "Use list_tables and describe_table when you need to remember the schema. "
+    "Back every numeric claim by calling run_python — never guess numbers. "
+    "Use read_data_docs when you need to understand what the data contains, where "
+    "fields live, caveats, relationships, or good ways to answer the user's question. "
+    "Use list_tables and describe_table when you need exact dataframe columns. "
     "When the answer benefits from a chart, KPI, or table, call render_widget — those "
     "widgets become a new dashboard page the user can pin. If the question is purely "
     "conversational and no widget is useful, just reply in text. Keep the final message "
@@ -55,6 +58,7 @@ async def run_chat_turn(
     dashboards_repo: DashboardRepository,
     notebook_repo: NotebookRepository,
     chat_repo: ChatRepository,
+    data_docs_repo: DataDocRepository,
 ) -> ChatTurnResult:
     del schemas_repo  # reserved for future schema-aware prompts
     turn = chat_repo.create_turn(session_id=session_id, user_message=user_message)
@@ -78,6 +82,7 @@ async def run_chat_turn(
             engine=engine,
             tables=tables,
             notebook_repo=notebook_repo,
+            data_doc=data_docs_repo.get(session_id),
         )
         registry = build_tool_registry(ctx)
 

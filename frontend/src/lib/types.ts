@@ -37,6 +37,7 @@ export type FileRecord = {
   filename: string;
   parquet_path: string;
   raw_parquet_path: string | null;
+  original_size_bytes: number | null;
   row_count: number;
   schema_version: number;
   header_row: number | null;
@@ -212,9 +213,54 @@ export type DashboardResponse = {
   cells_by_page: Record<string, NotebookCell[]>;
 };
 
+export type DataDocColumn = {
+  name: string;
+  dtype: string;
+  meaning: string;
+  role: string | null;
+};
+
+export type DataDocFile = {
+  file_id: string;
+  name: string;
+  description: string;
+  grain: string;
+  row_count: number;
+  columns: DataDocColumn[];
+  key_columns: string[];
+  date_columns: string[];
+  measure_columns: string[];
+  category_columns: string[];
+  caveats: string[];
+};
+
+export type DataDocRelationship = {
+  left_file_id: string;
+  left_column: string;
+  right_file_id: string;
+  right_column: string;
+  explanation: string;
+};
+
+export type DataDocGlossaryItem = {
+  term: string;
+  meaning: string;
+};
+
+export type DataDoc = {
+  session_id: string;
+  overview: string;
+  files: DataDocFile[];
+  relationships: DataDocRelationship[];
+  glossary: DataDocGlossaryItem[];
+  usage_notes: string[];
+  starter_questions: string[];
+  created_at: string;
+  updated_at: string;
+};
+
 export type BuildDashboardResponse = {
   page_id: string;
-  anomaly_count: number;
   widget_count: number;
 };
 

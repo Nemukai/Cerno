@@ -9,6 +9,7 @@ from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.models import ChatMessage, ChatTurn, Widget
 from cerno.repositories import (
     ChatRepository,
+    DataDocRepository,
     DashboardRepository,
     FileRepository,
     LLMUsageRepository,
@@ -69,6 +70,7 @@ async def post_chat(
             dashboards_repo=DashboardRepository(conn),
             notebook_repo=NotebookRepository(conn),
             chat_repo=ChatRepository(conn),
+            data_docs_repo=DataDocRepository(conn),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

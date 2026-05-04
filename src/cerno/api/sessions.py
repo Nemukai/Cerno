@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -9,9 +10,11 @@ from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.config import Settings
+from cerno.models import DataDoc, DataDocColumn, DataDocFile, DataDocRelationship
 from cerno.models import File as FileModel
 from cerno.models import Link, ProcessingEvent, Session
 from cerno.repositories import (
+    DataDocRepository,
     FileRepository,
     LinkRepository,
     LLMUsageRepository,
@@ -135,6 +138,7 @@ def upload_files(
             ingested: list[IngestedFile] = ingest_file(
                 source_path=tmp_path,
                 original_filename=original,
+                original_size_bytes=upload_size,
                 user_id=user.id,
                 session_id=session_id,
                 settings=settings,
@@ -323,12 +327,14 @@ async def post_process(
             files_repo=files_repo,
             sessions_repo=sessions_repo,
             links_repo=links_repo,
+            data_docs_repo=DataDocRepository(conn),
             events_repo=events_repo,
             llm_client=llm_client.with_usage(LLMUsageRepository(conn), user.id),
         )
     except DiscoveryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    conn.commit()
     return DiscoveryResponse(
         session_id=session_id,
         status="pending_review",
@@ -368,6 +374,25 @@ async def post_process(
 @router.get("/sessions/{session_id}/discovery", response_model=DiscoveryResponse)
 def get_discovery(session_id: str, conn: ConnDep, user: GrantedUserDep) -> DiscoveryResponse:
     return _build_discovery_response(session_id, conn, user.id)
+
+
+@router.get("/sessions/{session_id}/docs", response_model=DataDoc)
+def get_data_docs(session_id: str, conn: ConnDep, user: GrantedUserDep) -> DataDoc:
+    _require_session(conn, session_id, user.id)
+    data_docs_repo = DataDocRepository(conn)
+    doc = data_docs_repo.get(session_id)
+    if doc is None:
+        _synthesize_docs_from_current_schema(
+            session_id=session_id,
+            user_id=user.id,
+            conn=conn,
+            data_docs_repo=data_docs_repo,
+        )
+        conn.commit()
+        doc = data_docs_repo.get(session_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="data docs not found")
+    return doc
 
 
 class ApprovalBody(BaseModel):
@@ -419,21 +444,150 @@ def post_approve(
         overview=body.overview,
     )
     try:
+        files_repo = FileRepository(conn)
+        data_docs_repo = DataDocRepository(conn)
         apply_approval(
             session_id=session_id,
             user_id=user.id,
             payload=payload,
             settings=settings,
-            files_repo=FileRepository(conn),
+            files_repo=files_repo,
             schemas_repo=SchemaRepository(conn),
             links_repo=LinkRepository(conn),
             sessions_repo=SessionRepository(conn),
             events_repo=ProcessingEventRepository(conn),
         )
+        _refresh_docs_from_approval(
+            session_id=session_id,
+            payload=payload,
+            files_repo=files_repo,
+            data_docs_repo=data_docs_repo,
+        )
+        conn.commit()
     except ReingestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return _build_discovery_response(session_id, conn, user.id)
+
+
+def _synthesize_docs_from_current_schema(
+    *,
+    session_id: str,
+    user_id: str,
+    conn: sqlite3.Connection,
+    data_docs_repo: DataDocRepository,
+) -> None:
+    discovery = _build_discovery_response(session_id, conn, user_id=user_id)
+    if not discovery.files:
+        return
+    payload = ApprovalPayload(
+        files=[
+            FileSpec(
+                file_id=file.file_id,
+                header_row=file.header_row,
+                friendly_name=file.friendly_name,
+                description=file.description,
+                columns=[
+                    ColumnSpec(
+                        column_id=column.column_id,
+                        name=column.name,
+                        dtype=column.dtype,
+                        description=column.description,
+                    )
+                    for column in file.columns
+                ],
+            )
+            for file in discovery.files
+        ],
+        links=[
+            LinkSpec(
+                file_a_id=link.file_a_id,
+                col_a=link.col_a,
+                file_b_id=link.file_b_id,
+                col_b=link.col_b,
+                direction=link.direction,
+                summary=link.summary,
+            )
+            for link in discovery.links
+        ],
+        overview=discovery.overview,
+    )
+    _refresh_docs_from_approval(
+        session_id=session_id,
+        payload=payload,
+        files_repo=FileRepository(conn),
+        data_docs_repo=data_docs_repo,
+    )
+
+
+def _refresh_docs_from_approval(
+    *,
+    session_id: str,
+    payload: ApprovalPayload,
+    files_repo: FileRepository,
+    data_docs_repo: DataDocRepository,
+) -> None:
+    existing = data_docs_repo.get(session_id)
+    existing_files = {file.file_id: file for file in existing.files} if existing else {}
+    existing_relationships = {
+        (rel.left_file_id, rel.left_column, rel.right_file_id, rel.right_column): rel
+        for rel in existing.relationships
+    } if existing else {}
+    file_docs: list[DataDocFile] = []
+    for spec in payload.files:
+        file = files_repo.get(spec.file_id)
+        old = existing_files.get(spec.file_id)
+        old_cols = {col.name: col for col in old.columns} if old else {}
+        file_docs.append(
+            DataDocFile(
+                file_id=spec.file_id,
+                name=spec.friendly_name,
+                description=spec.description,
+                grain=old.grain if old else "One row in this file.",
+                row_count=file.row_count if file else 0,
+                columns=[
+                    DataDocColumn(
+                        name=col.name,
+                        dtype=col.dtype,
+                        meaning=col.description,
+                        role=(old_cols.get(col.name).role if old_cols.get(col.name) else None),
+                    )
+                    for col in spec.columns
+                ],
+                key_columns=old.key_columns if old else [],
+                date_columns=old.date_columns if old else [],
+                measure_columns=old.measure_columns if old else [],
+                category_columns=old.category_columns if old else [],
+                caveats=old.caveats if old else [],
+            )
+        )
+    relationships = []
+    for link in payload.links:
+        key = (link.file_a_id, link.col_a, link.file_b_id, link.col_b)
+        old_rel = existing_relationships.get(key)
+        relationships.append(
+            DataDocRelationship(
+                left_file_id=link.file_a_id,
+                left_column=link.col_a,
+                right_file_id=link.file_b_id,
+                right_column=link.col_b,
+                explanation=link.summary or (old_rel.explanation if old_rel else ""),
+            )
+        )
+    now = existing.updated_at if existing else datetime.now(UTC)
+    data_docs_repo.replace(
+        DataDoc(
+            session_id=session_id,
+            overview=payload.overview or (existing.overview if existing else ""),
+            files=file_docs,
+            relationships=relationships,
+            glossary=existing.glossary if existing else [],
+            usage_notes=existing.usage_notes if existing else [],
+            starter_questions=existing.starter_questions if existing else [],
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        )
+    )
 
 
 @router.get("/sessions/{session_id}/processing", response_model=list[ProcessingEvent])

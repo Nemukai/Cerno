@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import type { ChatTurn, DashboardPage } from "../lib/types";
 import { ViewChip } from "./ViewChip";
 
@@ -36,7 +36,7 @@ export function ChatSidebar({
   };
 
   return (
-    <aside className="hairline flex h-full w-[380px] shrink-0 flex-col border-r bg-paper">
+    <aside className="flex h-full w-full shrink-0 flex-col bg-neutral-100">
       <div className="hairline border-b px-4 py-3">
         <div className="small-caps text-xs text-neutral-500">chat</div>
       </div>
@@ -51,15 +51,19 @@ export function ChatSidebar({
               <div className="small-caps mb-1 text-[10px] text-neutral-500">
                 user
               </div>
-              <div className="mb-4 whitespace-pre-wrap text-sm text-ink">
-                {turn.user_message}
+              <div className="mb-4 text-sm text-ink">
+                <MarkdownText text={turn.user_message} />
               </div>
               <div className="small-caps mb-1 text-[10px] text-ember">
                 cerno
               </div>
-              <div className="whitespace-pre-wrap text-sm text-ink">
-                {turn.assistant_message ??
-                  (turn.state === "failed" ? "(failed)" : "\u2026")}
+              <div className="text-sm text-ink">
+                <MarkdownText
+                  text={
+                    turn.assistant_message ??
+                    (turn.state === "failed" ? "(failed)" : "\u2026")
+                  }
+                />
               </div>
               {turn.spawned_page_id ? (
                 <div className="mt-3">
@@ -73,7 +77,7 @@ export function ChatSidebar({
           ))
         )}
       </div>
-      <div className="hairline border-t px-4 py-3">
+      <div className="hairline border-t bg-neutral-100 px-4 py-3">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -102,4 +106,137 @@ export function ChatSidebar({
       </div>
     </aside>
   );
+}
+
+function MarkdownText({ text }: { text: string }) {
+  const blocks = parseMarkdownBlocks(text);
+  return (
+    <div className="space-y-2 leading-6">
+      {blocks.map((block, index) => {
+        if (block.kind === "code") {
+          return (
+            <pre
+              key={index}
+              className="overflow-x-auto border border-neutral-300 bg-white p-2 font-mono text-xs leading-5 text-ink"
+            >
+              {block.lines.join("\n")}
+            </pre>
+          );
+        }
+        if (block.kind === "list") {
+          return (
+            <ul key={index} className="list-disc space-y-1 pl-5">
+              {block.lines.map((line, lineIndex) => (
+                <li key={lineIndex}>{renderInlineMarkdown(line)}</li>
+              ))}
+            </ul>
+          );
+        }
+        if (block.kind === "ordered-list") {
+          return (
+            <ol key={index} className="list-decimal space-y-1 pl-5">
+              {block.lines.map((line, lineIndex) => (
+                <li key={lineIndex}>{renderInlineMarkdown(line)}</li>
+              ))}
+            </ol>
+          );
+        }
+        if (block.kind === "heading") {
+          return (
+            <div key={index} className="font-mono text-sm text-ink">
+              {renderInlineMarkdown(block.lines[0] ?? "")}
+            </div>
+          );
+        }
+        return (
+          <p key={index} className="whitespace-pre-wrap">
+            {renderInlineMarkdown(block.lines.join("\n"))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+type MarkdownBlock = {
+  kind: "paragraph" | "heading" | "list" | "ordered-list" | "code";
+  lines: string[];
+};
+
+function parseMarkdownBlocks(text: string): MarkdownBlock[] {
+  const blocks: MarkdownBlock[] = [];
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  let paragraph: string[] = [];
+  let code: string[] | null = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    blocks.push({ kind: "paragraph", lines: paragraph });
+    paragraph = [];
+  };
+
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (code) {
+        blocks.push({ kind: "code", lines: code });
+        code = null;
+      } else {
+        flushParagraph();
+        code = [];
+      }
+      continue;
+    }
+    if (code) {
+      code.push(line);
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      continue;
+    }
+    const heading = line.match(/^#{1,4}\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      blocks.push({ kind: "heading", lines: [heading[1] ?? ""] });
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      const previous = blocks[blocks.length - 1];
+      if (previous?.kind === "list") previous.lines.push(bullet[1] ?? "");
+      else blocks.push({ kind: "list", lines: [bullet[1] ?? ""] });
+      continue;
+    }
+    const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (ordered) {
+      flushParagraph();
+      const previous = blocks[blocks.length - 1];
+      if (previous?.kind === "ordered-list") previous.lines.push(ordered[1] ?? "");
+      else blocks.push({ kind: "ordered-list", lines: [ordered[1] ?? ""] });
+      continue;
+    }
+    paragraph.push(line);
+  }
+
+  if (code) blocks.push({ kind: "code", lines: code });
+  flushParagraph();
+  return blocks.length > 0 ? blocks : [{ kind: "paragraph", lines: [""] }];
+}
+
+function renderInlineMarkdown(text: string): ReactNode {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code key={index} className="bg-white px-1 font-mono text-xs">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    return <Fragment key={index}>{part}</Fragment>;
+  });
 }

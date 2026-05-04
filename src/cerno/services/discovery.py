@@ -3,21 +3,26 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import pandas as pd
 import polars as pl
 
 from cerno.config import Settings
-from cerno.llm import LLMClient
-from cerno.models import File, LinkDirection
+from cerno.llm import LLMClient, Tool, ToolRegistry, run_tool_loop
+from cerno.models import DataDoc, DataDocColumn, DataDocFile, DataDocGlossaryItem
+from cerno.models import DataDocRelationship, File, LinkDirection
 from cerno.repositories import (
+    DataDocRepository,
     FileRepository,
     LinkRepository,
     ProcessingEventRepository,
     SessionRepository,
 )
-from cerno.services.ingest import first_n_raw_rows
+from cerno.services.ingest import first_n_raw_rows, slugify_table_name
+from cerno.services.sandbox import run_python
 
 DISCOVERY_MODEL = "gpt-5.5"
 DISCOVERY_REASONING_EFFORT = "high"
@@ -62,6 +67,7 @@ class DiscoveryResult:
     files: list[DiscoveredFile]
     links: list[DiscoveredLink]
     overview: str
+    documentation: dict[str, Any] = field(default_factory=dict)
     raw_response: dict[str, Any] = field(default_factory=dict)
 
 
@@ -82,9 +88,11 @@ Your job is to look at the raw first rows of each file and decide:
 
 1. Which row is the header row (0-indexed). Spreadsheets often have title rows,
    blank rows, or report metadata before the actual column headers.
-2. A short, human-friendly name for the file.
-3. A 1-2 sentence description of what the file contains.
-4. The columns: name (post-header), short description, and one of these data types:
+2. A short, human-friendly name for the file: 2-4 plain business words,
+   no file extension, no raw date stamp unless the date is essential.
+3. A 1-2 sentence description of what the file contains for a non-technical
+   business user.
+4. The columns: name (post-header), plain-language description, and one of these data types:
    string, int, float, date, datetime, bool, category.
 
 Then, looking across all files, identify column-to-column relationships
@@ -96,6 +104,9 @@ link usually has matching values and compatible names such as transaction_id, cu
 vehicle number, order number, account code, toll shift, or other domain identifiers.
 
 Finally, write a 2-4 sentence overview of how all the files relate to each other.
+Also create internal documentation that explains what is in the data, the grain of
+each file, important fields, caveats, relationships, and useful starter questions
+for a chat analyst.
 
 Be precise. Reject coincidental overlaps. Use the file names and the data to ground
 your decisions. Return ONLY strict JSON conforming to the requested schema, no prose,
@@ -105,7 +116,7 @@ no fences."""
 RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["files", "links", "overview"],
+    "required": ["files", "links", "overview", "documentation"],
     "properties": {
         "files": {
             "type": "array",
@@ -179,6 +190,102 @@ RESPONSE_SCHEMA = {
             },
         },
         "overview": {"type": "string"},
+        "documentation": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "overview",
+                "files",
+                "relationships",
+                "glossary",
+                "usage_notes",
+                "starter_questions",
+            ],
+            "properties": {
+                "overview": {"type": "string"},
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "file_id",
+                            "name",
+                            "description",
+                            "grain",
+                            "row_count",
+                            "columns",
+                            "key_columns",
+                            "date_columns",
+                            "measure_columns",
+                            "category_columns",
+                            "caveats",
+                        ],
+                        "properties": {
+                            "file_id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "grain": {"type": "string"},
+                            "row_count": {"type": "integer"},
+                            "columns": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["name", "dtype", "meaning", "role"],
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "dtype": {"type": "string"},
+                                        "meaning": {"type": "string"},
+                                        "role": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "key_columns": {"type": "array", "items": {"type": "string"}},
+                            "date_columns": {"type": "array", "items": {"type": "string"}},
+                            "measure_columns": {"type": "array", "items": {"type": "string"}},
+                            "category_columns": {"type": "array", "items": {"type": "string"}},
+                            "caveats": {"type": "array", "items": {"type": "string"}},
+                        },
+                    },
+                },
+                "relationships": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "left_file_id",
+                            "left_column",
+                            "right_file_id",
+                            "right_column",
+                            "explanation",
+                        ],
+                        "properties": {
+                            "left_file_id": {"type": "string"},
+                            "left_column": {"type": "string"},
+                            "right_file_id": {"type": "string"},
+                            "right_column": {"type": "string"},
+                            "explanation": {"type": "string"},
+                        },
+                    },
+                },
+                "glossary": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["term", "meaning"],
+                        "properties": {
+                            "term": {"type": "string"},
+                            "meaning": {"type": "string"},
+                        },
+                    },
+                },
+                "usage_notes": {"type": "array", "items": {"type": "string"}},
+                "starter_questions": {"type": "array", "items": {"type": "string"}},
+            },
+        },
     },
 }
 
@@ -235,16 +342,201 @@ def _parse_response(payload: dict[str, Any]) -> DiscoveryResult:
         )
         for entry in links_raw
     ]
-    return DiscoveryResult(files=files, links=links, overview=overview, raw_response=payload)
+    documentation = payload.get("documentation")
+    if not isinstance(documentation, dict):
+        documentation = {}
+    return DiscoveryResult(
+        files=files,
+        links=links,
+        overview=overview,
+        documentation=documentation,
+        raw_response=payload,
+    )
 
 
-def _build_prompt(file_payload: list[dict[str, Any]]) -> str:
+def _build_prompt(file_payload: list[dict[str, Any]], analysis: str) -> str:
     return (
-        "For each file below, decide the header row, a friendly name, a description, "
-        "and the columns (post-header) with type and short description. Then identify "
-        "cross-file column links and write a session overview.\n\n"
+        "For each file below, decide the header row, a 2-4 word business-friendly name, "
+        "a concise non-technical description, and the columns (post-header) with type "
+        "and plain-language description. Then identify "
+        "cross-file column links, write a session overview, and create the internal "
+        "documentation used by the chat analyst.\n\n"
+        "Use the Python analysis notes as higher-confidence evidence than the sample "
+        "rows when they conflict.\n\n"
         "Return STRICT JSON matching the provided schema. No prose, no fences.\n\n"
+        f"Python analysis notes:\n{analysis}\n\n"
         f"Files:\n{json.dumps(file_payload, default=str, indent=2)}"
+    )
+
+
+ANALYSIS_PROMPT = """Use the Python tool to inspect the full uploaded dataframes.
+Do not write files. Do not use SQL. Use pandas only through the pre-bound dataframes.
+
+Return concise notes covering:
+- what each file appears to contain
+- likely header row and whether there are title/metadata rows
+- row counts, null-heavy columns, likely IDs, dates, measures, and categories
+- possible relationships between files
+- caveats or data quality issues a non-technical user should know
+"""
+
+
+def _table_name(filename: str, seen: set[str]) -> str:
+    base = slugify_table_name(filename)
+    name = base
+    idx = 2
+    while name in seen:
+        name = f"{base}_{idx}"
+        idx += 1
+    seen.add(name)
+    return name
+
+
+def _load_raw_tables(files: list[File]) -> tuple[dict[str, pd.DataFrame], list[dict[str, Any]]]:
+    tables: dict[str, pd.DataFrame] = {}
+    catalog: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for file in files:
+        if not file.raw_parquet_path:
+            raise DiscoveryError(f"file {file.filename} missing raw parquet")
+        table_name = _table_name(file.filename, seen)
+        frame = pd.read_parquet(file.raw_parquet_path)
+        tables[table_name] = frame
+        catalog.append(
+            {
+                "file_id": file.id,
+                "filename": file.filename,
+                "table_name": table_name,
+                "row_count": file.row_count,
+                "raw_columns": list(map(str, frame.columns)),
+            }
+        )
+    return tables, catalog
+
+
+def _build_analysis_registry(
+    *, raw_tables: dict[str, pd.DataFrame], catalog: list[dict[str, Any]]
+) -> ToolRegistry:
+    registry = ToolRegistry()
+
+    async def list_raw_tables(_args: dict[str, Any]) -> dict[str, Any]:
+        return {"tables": catalog}
+
+    async def run_python_handler(args: dict[str, Any]) -> dict[str, Any]:
+        code = str(args["code"])
+        return run_python(code, tables=raw_tables, timeout_seconds=20.0).to_dict()
+
+    registry.register(
+        Tool(
+            name="list_raw_tables",
+            description="List the raw uploaded dataframes available for Python analysis.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            handler=list_raw_tables,
+        )
+    )
+    registry.register(
+        Tool(
+            name="run_python",
+            description=(
+                "Run Python against the full raw uploaded dataframes. Each dataframe is "
+                "pre-bound by table_name from list_raw_tables. pd and np are available."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"code": {"type": "string"}},
+                "required": ["code"],
+                "additionalProperties": False,
+            },
+            handler=run_python_handler,
+        )
+    )
+    return registry
+
+
+async def _analyze_with_python(
+    *, llm_client: LLMClient, raw_tables: dict[str, pd.DataFrame], catalog: list[dict[str, Any]]
+) -> str:
+    result = await run_tool_loop(
+        client=llm_client,
+        registry=_build_analysis_registry(raw_tables=raw_tables, catalog=catalog),
+        input=[
+            {
+                "role": "user",
+                "content": (
+                    f"{ANALYSIS_PROMPT}\n\nRaw table catalog:\n"
+                    f"{json.dumps(catalog, default=str, indent=2)}"
+                ),
+            }
+        ],
+        instructions=(
+            "You are Cerno's internal data profiler. Use Python to inspect full files "
+            "before writing concise analysis notes. Prefer simple pandas operations."
+        ),
+        reasoning_effort=DISCOVERY_REASONING_EFFORT,
+        reasoning_summary=DISCOVERY_REASONING_SUMMARY,
+        max_calls=8,
+    )
+    return result.final_message
+
+
+def _data_doc_from_result(session_id: str, result: DiscoveryResult) -> DataDoc:
+    now = datetime.now(UTC)
+    raw = result.documentation
+    file_docs = [
+        DataDocFile(
+            file_id=str(item.get("file_id") or ""),
+            name=str(item.get("name") or ""),
+            description=str(item.get("description") or ""),
+            grain=str(item.get("grain") or ""),
+            row_count=int(item.get("row_count") or 0),
+            columns=[
+                DataDocColumn(
+                    name=str(col.get("name") or ""),
+                    dtype=str(col.get("dtype") or "string"),
+                    meaning=str(col.get("meaning") or ""),
+                    role=str(col.get("role") or ""),
+                )
+                for col in item.get("columns", [])
+                if isinstance(col, dict)
+            ],
+            key_columns=[str(v) for v in item.get("key_columns", [])],
+            date_columns=[str(v) for v in item.get("date_columns", [])],
+            measure_columns=[str(v) for v in item.get("measure_columns", [])],
+            category_columns=[str(v) for v in item.get("category_columns", [])],
+            caveats=[str(v) for v in item.get("caveats", [])],
+        )
+        for item in raw.get("files", [])
+        if isinstance(item, dict)
+    ]
+    relationships = [
+        DataDocRelationship(
+            left_file_id=str(item.get("left_file_id") or ""),
+            left_column=str(item.get("left_column") or ""),
+            right_file_id=str(item.get("right_file_id") or ""),
+            right_column=str(item.get("right_column") or ""),
+            explanation=str(item.get("explanation") or ""),
+        )
+        for item in raw.get("relationships", [])
+        if isinstance(item, dict)
+    ]
+    glossary = [
+        DataDocGlossaryItem(
+            term=str(item.get("term") or ""),
+            meaning=str(item.get("meaning") or ""),
+        )
+        for item in raw.get("glossary", [])
+        if isinstance(item, dict)
+    ]
+    return DataDoc(
+        session_id=session_id,
+        overview=str(raw.get("overview") or result.overview),
+        files=file_docs,
+        relationships=relationships,
+        glossary=glossary,
+        usage_notes=[str(v) for v in raw.get("usage_notes", [])],
+        starter_questions=[str(v) for v in raw.get("starter_questions", [])],
+        created_at=now,
+        updated_at=now,
     )
 
 
@@ -420,6 +712,7 @@ async def run_discovery(
     files_repo: FileRepository,
     sessions_repo: SessionRepository,
     links_repo: LinkRepository,
+    data_docs_repo: DataDocRepository,
     events_repo: ProcessingEventRepository,
     llm_client: LLMClient,
 ) -> DiscoveryResult:
@@ -440,6 +733,7 @@ async def run_discovery(
         message=f"reading first {SAMPLE_ROWS} rows of {len(files)} file(s)",
     )
 
+    raw_tables, raw_catalog = _load_raw_tables(files)
     file_payload: list[dict[str, Any]] = []
     for f in files:
         if not f.raw_parquet_path:
@@ -454,7 +748,25 @@ async def run_discovery(
             }
         )
 
-    user_prompt = _build_prompt(file_payload)
+    events_repo.append(
+        session_id=session_id,
+        kind="calling_llm",
+        message="analyzing full files with Python",
+    )
+    try:
+        analysis = await _analyze_with_python(
+            llm_client=llm_client,
+            raw_tables=raw_tables,
+            catalog=raw_catalog,
+        )
+    except Exception as exc:
+        events_repo.append(
+            session_id=session_id, kind="error", message=f"Python analysis failed: {exc}"
+        )
+        sessions_repo.set_discovery_status(session_id, "failed")
+        raise DiscoveryError(f"Python analysis failed: {exc}") from exc
+
+    user_prompt = _build_prompt(file_payload, analysis)
     events_repo.append(
         session_id=session_id,
         kind="calling_llm",
@@ -529,6 +841,7 @@ async def run_discovery(
         )
 
     sessions_repo.set_overview(session_id, result.overview)
+    data_docs_repo.replace(_data_doc_from_result(session_id, result))
     sessions_repo.set_discovery_status(session_id, "pending_review")
     events_repo.append(
         session_id=session_id,

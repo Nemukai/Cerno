@@ -123,6 +123,7 @@ def ingest_file(
     *,
     source_path: Path,
     original_filename: str,
+    original_size_bytes: int | None = None,
     user_id: str,
     session_id: str,
     settings: Settings,
@@ -152,6 +153,7 @@ def ingest_file(
             filename=display_name,
             parquet_path="",
             row_count=len(sheet.rows),
+            original_size_bytes=original_size_bytes,
             content_hash=content_hash,
         )
         raw_frame = _raw_to_frame(sheet.rows)

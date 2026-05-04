@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from cerno.llm import Tool, ToolRegistry
-from cerno.models import Widget
+from cerno.models import DataDoc, Widget
 from cerno.repositories import NotebookRepository
 from cerno.services.engine import DuckDBEngine
 from cerno.services.sandbox import run_python
@@ -18,6 +18,7 @@ class ToolContext:
     engine: DuckDBEngine
     tables: dict[str, pd.DataFrame]
     notebook_repo: NotebookRepository
+    data_doc: DataDoc | None = None
     rendered_widgets: list[Widget] = field(default_factory=list)
 
 
@@ -47,11 +48,6 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
             ]
         }
 
-    async def run_sql(args: dict[str, Any]) -> dict[str, Any]:
-        sql = str(args["sql"])
-        max_rows = int(args.get("max_rows", 500))
-        return ctx.engine.run_sql(sql, max_rows=max_rows).to_dict()
-
     async def run_python_handler(args: dict[str, Any]) -> dict[str, Any]:
         code = str(args["code"])
         return run_python(code, tables=ctx.tables).to_dict()
@@ -72,10 +68,15 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
         cells = ctx.notebook_repo.list_for_page(page_id)
         return {"cells": [c.model_dump(mode="json") for c in cells]}
 
+    async def read_data_docs(_args: dict[str, Any]) -> dict[str, Any]:
+        if ctx.data_doc is None:
+            return {"docs": None}
+        return {"docs": ctx.data_doc.model_dump(mode="json")}
+
     registry.register(
         Tool(
             name="list_tables",
-            description="List every table available for SQL / pandas in this session.",
+            description="List every dataframe available for Python analysis in this session.",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             handler=list_tables,
         )
@@ -91,25 +92,6 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 "additionalProperties": False,
             },
             handler=describe_table,
-        )
-    )
-    registry.register(
-        Tool(
-            name="run_sql",
-            description=(
-                "Execute a read-only DuckDB SQL query against the session tables "
-                "and return up to max_rows rows."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "sql": {"type": "string"},
-                    "max_rows": {"type": "integer", "minimum": 1, "default": 500},
-                },
-                "required": ["sql"],
-                "additionalProperties": False,
-            },
-            handler=run_sql,
         )
     )
     registry.register(
@@ -165,6 +147,17 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 "additionalProperties": False,
             },
             handler=read_cells,
+        )
+    )
+    registry.register(
+        Tool(
+            name="read_data_docs",
+            description=(
+                "Read Cerno's internal documentation for this session: file meanings, "
+                "grain, key fields, relationships, caveats, glossary, and starter questions."
+            ),
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            handler=read_data_docs,
         )
     )
 

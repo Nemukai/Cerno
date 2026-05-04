@@ -78,6 +78,7 @@ class File(BaseModel):
     filename: str
     parquet_path: str
     raw_parquet_path: str | None = None
+    original_size_bytes: int | None = None
     row_count: int
     schema_version: int = 1
     header_row: int | None = None
@@ -103,6 +104,52 @@ class FileSchema(BaseModel):
     file_id: str
     schema_version: int
     columns: list[SchemaColumn]
+
+
+class DataDocColumn(BaseModel):
+    name: str
+    dtype: str
+    meaning: str
+    role: str | None = None
+
+
+class DataDocFile(BaseModel):
+    file_id: str
+    name: str
+    description: str
+    grain: str
+    row_count: int
+    columns: list[DataDocColumn] = Field(default_factory=list)
+    key_columns: list[str] = Field(default_factory=list)
+    date_columns: list[str] = Field(default_factory=list)
+    measure_columns: list[str] = Field(default_factory=list)
+    category_columns: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+
+
+class DataDocRelationship(BaseModel):
+    left_file_id: str
+    left_column: str
+    right_file_id: str
+    right_column: str
+    explanation: str
+
+
+class DataDocGlossaryItem(BaseModel):
+    term: str
+    meaning: str
+
+
+class DataDoc(BaseModel):
+    session_id: str
+    overview: str
+    files: list[DataDocFile] = Field(default_factory=list)
+    relationships: list[DataDocRelationship] = Field(default_factory=list)
+    glossary: list[DataDocGlossaryItem] = Field(default_factory=list)
+    usage_notes: list[str] = Field(default_factory=list)
+    starter_questions: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
 
 
 class ProcessingEvent(BaseModel):

@@ -5,7 +5,7 @@ from typing import Any
 
 import polars as pl
 
-from cerno.models import Anomaly, File, FileSchema, Link, SchemaColumn, Widget
+from cerno.models import File, FileSchema, Link, SchemaColumn, Widget
 
 DASHBOARD_MAX_WIDGETS = 9
 TOP_CATEGORY_LIMIT = 12
@@ -75,7 +75,6 @@ def build_dashboard_candidates(
     *,
     profiles: list[FileProfile],
     links: list[Link],
-    anomalies: list[Anomaly],
     session_overview: str | None,
 ) -> list[DashboardCandidate]:
     candidates: list[DashboardCandidate] = []
@@ -135,48 +134,10 @@ def build_dashboard_candidates(
             code="kpi_widget(title='Relationships', value=len(links))",
         )
     )
-    candidates.append(
-        _candidate(
-            "anomaly_count",
-            priority=82,
-            rationale="Shows how many rows need attention.",
-            widget=kpi_widget(
-                title="Flagged rows",
-                value=len(anomalies),
-                label="possible anomalies",
-            ),
-            code="kpi_widget(title='Flagged rows', value=len(anomalies))",
-        )
-    )
-
     for profile in profiles:
         candidates.extend(_metric_candidates(profile))
         candidates.extend(_category_candidates(profile))
         candidates.extend(_time_series_candidates(profile))
-
-    if anomalies:
-        top = sorted(anomalies, key=lambda item: item.score_normalized, reverse=True)[:10]
-        file_names = {profile.file.id: profile.file.friendly_name or profile.file.filename for profile in profiles}
-        candidates.append(
-            _candidate(
-                "top_anomalies",
-                priority=86,
-                rationale="Highlights the highest-risk rows first.",
-                widget=bar_chart_widget(
-                    title="Top flagged rows",
-                    items=[
-                        {
-                            "name": f"{file_names.get(item.file_id, item.file_id)} row {item.row_id}",
-                            "value": round(item.score_normalized, 2),
-                        }
-                        for item in top
-                    ],
-                    caption="Highest anomaly scores from the default detectors.",
-                    horizontal=True,
-                ),
-                code="bar_chart_widget(title='Top flagged rows', items=top_anomalies)",
-            )
-        )
 
     if links:
         file_names = {profile.file.id: profile.file.friendly_name or profile.file.filename for profile in profiles}

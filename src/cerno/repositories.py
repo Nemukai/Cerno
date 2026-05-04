@@ -14,6 +14,7 @@ from cerno.models import (
     BetaCode,
     ChatMessage,
     ChatTurn,
+    DataDoc,
     Dashboard,
     DashboardPage,
     DiscoveryStatus,
@@ -119,6 +120,7 @@ class FileRepository:
         parquet_path: str,
         row_count: int,
         raw_parquet_path: str | None = None,
+        original_size_bytes: int | None = None,
         content_hash: str | None = None,
         file_id: str | None = None,
     ) -> File:
@@ -127,14 +129,15 @@ class FileRepository:
         self.conn.execute(
             """INSERT INTO files
                (id, session_id, filename, parquet_path, raw_parquet_path,
-                row_count, schema_version, content_hash, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                original_size_bytes, row_count, schema_version, content_hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
             (
                 fid,
                 session_id,
                 filename,
                 parquet_path,
                 raw_parquet_path,
+                original_size_bytes,
                 row_count,
                 content_hash,
                 created_at.isoformat(),
@@ -146,6 +149,7 @@ class FileRepository:
             filename=filename,
             parquet_path=parquet_path,
             raw_parquet_path=raw_parquet_path,
+            original_size_bytes=original_size_bytes,
             row_count=row_count,
             schema_version=1,
             content_hash=content_hash,
@@ -686,6 +690,37 @@ class AuditRepository:
         )
 
 
+class DataDocRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def get(self, session_id: str) -> DataDoc | None:
+        row = self.conn.execute(
+            "SELECT * FROM data_docs WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return _row_to_data_doc(row) if row else None
+
+    def replace(self, doc: DataDoc) -> DataDoc:
+        now = _now()
+        existing = self.get(doc.session_id)
+        created_at = existing.created_at if existing is not None else now
+        saved = doc.model_copy(update={"created_at": created_at, "updated_at": now})
+        self.conn.execute(
+            """INSERT INTO data_docs (session_id, content, created_at, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                   content = excluded.content,
+                   updated_at = excluded.updated_at""",
+            (
+                saved.session_id,
+                dumps_json(saved.model_dump(mode="json")),
+                saved.created_at.isoformat(),
+                saved.updated_at.isoformat(),
+            ),
+        )
+        return saved
+
+
 class ProcessingEventRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
@@ -743,6 +778,9 @@ def _row_to_file(row: sqlite3.Row) -> File:
         filename=row["filename"],
         parquet_path=row["parquet_path"],
         raw_parquet_path=row["raw_parquet_path"] if "raw_parquet_path" in keys else None,
+        original_size_bytes=(
+            row["original_size_bytes"] if "original_size_bytes" in keys else None
+        ),
         row_count=row["row_count"],
         schema_version=row["schema_version"],
         header_row=row["header_row"] if "header_row" in keys else None,
@@ -761,6 +799,16 @@ def _row_to_processing_event(row: sqlite3.Row) -> ProcessingEvent:
         message=row["message"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )
+
+
+def _row_to_data_doc(row: sqlite3.Row) -> DataDoc:
+    content = loads_json(row["content"])
+    if not isinstance(content, dict):
+        content = {}
+    content["session_id"] = row["session_id"]
+    content["created_at"] = row["created_at"]
+    content["updated_at"] = row["updated_at"]
+    return DataDoc.model_validate(content)
 
 
 def _row_to_user(row: sqlite3.Row) -> User:

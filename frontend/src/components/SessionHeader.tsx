@@ -3,18 +3,22 @@ import type { Session } from "../lib/types";
 
 type Props = {
   session: Session | null;
+  sessions: Session[];
   onUpload: (files: File[]) => void;
   uploading: boolean;
   onHome: () => void;
   onDelete: () => void;
+  onResume: (session: Session) => void;
 };
 
 export function SessionHeader({
   session,
+  sessions,
   onUpload,
   uploading,
   onHome,
   onDelete,
+  onResume,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -35,23 +39,39 @@ export function SessionHeader({
   };
 
   return (
-    <div className="hairline flex items-center justify-between border-b px-6 py-3">
-      <div className="flex items-center gap-3">
+    <div className="flex h-full items-center justify-between gap-4 px-5">
+      <div className="flex min-w-0 items-center gap-3">
         <button
           type="button"
           onClick={onHome}
-          className="small-caps text-xs text-neutral-500 hover:text-ink"
+          className="small-caps shrink-0 text-xs text-neutral-500 hover:text-ink"
           title="Back to home"
         >
-          {"\u2190 home"}
+          {"\u2190"}
         </button>
-        <span className="text-neutral-300">|</span>
         <StatusDot status={session?.status ?? "new"} />
-        <div className="small-caps text-sm">
+        <div className="small-caps min-w-0 truncate text-sm">
           {session ? session.name : "no session"}
         </div>
+        {sessions.length > 1 ? (
+          <select
+            value={session?.id ?? ""}
+            onChange={(event) => {
+              const next = sessions.find((item) => item.id === event.target.value);
+              if (next && next.id !== session?.id) onResume(next);
+            }}
+            className="small-caps max-w-44 border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-600 focus:outline-none focus:ring-1 focus:ring-ember"
+            title="Switch session"
+          >
+            {sessions.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <input
           ref={inputRef}
           type="file"
