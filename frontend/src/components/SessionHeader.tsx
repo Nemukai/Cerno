@@ -10,6 +10,7 @@ type Props = {
   onHome: () => void;
   onDelete: () => void;
   onResume: (session: Session) => void;
+  showFileActions?: boolean;
 };
 
 export function SessionHeader({
@@ -20,6 +21,7 @@ export function SessionHeader({
   onHome,
   onDelete,
   onResume,
+  showFileActions = true,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -72,6 +74,7 @@ export function SessionHeader({
           </select>
         ) : null}
       </div>
+      {showFileActions ? (
       <div className="flex shrink-0 items-center gap-2">
         <input
           ref={inputRef}
@@ -99,6 +102,7 @@ export function SessionHeader({
           delete
         </button>
       </div>
+      ) : null}
     </div>
   );
 }

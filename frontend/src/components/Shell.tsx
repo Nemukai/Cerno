@@ -1,6 +1,6 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 
-export type TabKey = "dashboard" | "schema";
+export type TabKey = "ask" | "insights" | "files";
 
 type Tab = {
   key: TabKey;
@@ -9,53 +9,38 @@ type Tab = {
 };
 
 const TABS: Tab[] = [
-  { key: "dashboard", label: "dashboard", index: "01" },
-  { key: "schema", label: "schema", index: "02" },
+  { key: "ask", label: "ask", index: "01" },
+  { key: "insights", label: "insights", index: "02" },
+  { key: "files", label: "files", index: "03" },
 ];
 
 type Props = {
   sidebar: ReactNode;
   header: ReactNode;
+  rightPanel?: ReactNode;
   activeTab: TabKey;
   onTabChange: (tab: TabKey) => void;
   children: ReactNode;
   onDropFile?: (files: File[]) => void;
+  showTabs?: boolean;
 };
 
 export function Shell({
   sidebar,
   header,
+  rightPanel,
   activeTab,
   onTabChange,
   children,
   onDropFile,
+  showTabs = true,
 }: Props) {
-  const [chatWidth, setChatWidth] = useState(380);
-
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     const fs = Array.from(e.dataTransfer.files ?? []);
     if (fs.length > 0 && onDropFile) onDropFile(fs);
   };
   const prevent = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
-  const startResize = useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      const startX = event.clientX;
-      const startWidth = chatWidth;
-      const onMove = (moveEvent: PointerEvent) => {
-        const next = startWidth + moveEvent.clientX - startX;
-        setChatWidth(Math.min(560, Math.max(300, next)));
-      };
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-      };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-    },
-    [chatWidth],
-  );
 
   return (
     <div
@@ -66,42 +51,45 @@ export function Shell({
     >
       <div className="hairline flex min-h-14 items-stretch border-b bg-paper">
         <div className="min-w-0 flex-1">{header}</div>
-        <div className="hairline flex shrink-0 items-end gap-5 border-l px-5">
-          {TABS.map((tab) => {
-            const active = tab.key === activeTab;
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => onTabChange(tab.key)}
-                className={`relative h-full px-1 text-xs ${
-                  active ? "text-ink" : "text-neutral-500 hover:text-ink"
-                }`}
-              >
-                <span className="small-caps">
-                  {tab.index} {tab.label}
-                </span>
-                {active ? (
-                  <span className="absolute inset-x-0 bottom-0 h-[2px] bg-ember" />
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
       </div>
       <div className="min-h-0 flex flex-1">
-        <div className="min-w-[300px] max-w-[560px]" style={{ width: chatWidth }}>
+        <div className="hairline w-[300px] shrink-0 border-r bg-[#fbfaf8]">
           {sidebar}
         </div>
-        <button
-          type="button"
-          aria-label="Resize chat and dashboard panes"
-          onPointerDown={startResize}
-          className="group hairline relative w-2 shrink-0 cursor-col-resize border-x bg-neutral-100 hover:bg-neutral-200"
-        >
-          <span className="absolute left-1/2 top-1/2 h-10 w-px -translate-x-1/2 -translate-y-1/2 bg-neutral-300 group-hover:bg-ember" />
-        </button>
-        <div className="min-w-[560px] flex-1 overflow-y-auto">{children}</div>
+        <div className="min-w-[520px] flex-1 bg-[#fffdf9]">
+          {showTabs ? (
+            <div className="hairline flex h-12 items-end gap-6 border-b bg-paper px-8">
+              {TABS.map((tab) => {
+                const active = tab.key === activeTab;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => onTabChange(tab.key)}
+                    className={`relative h-full px-1 text-xs ${
+                      active ? "text-ink" : "text-neutral-500 hover:text-ink"
+                    }`}
+                  >
+                    <span className="small-caps">
+                      {tab.index} {tab.label}
+                    </span>
+                    {active ? (
+                      <span className="absolute inset-x-0 bottom-0 h-[2px] bg-ember" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          <main className={showTabs ? "h-[calc(100%-3rem)] overflow-y-auto" : "h-full overflow-y-auto"}>
+            {children}
+          </main>
+        </div>
+        {rightPanel ? (
+          <aside className="hairline w-[390px] shrink-0 overflow-y-auto border-l bg-white">
+            {rightPanel}
+          </aside>
+        ) : null}
       </div>
     </div>
   );

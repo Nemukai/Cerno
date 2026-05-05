@@ -1,24 +1,44 @@
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { listTurnMessages } from "../lib/api";
-import type { ChatMessage, ChatTurn, DashboardPage } from "../lib/types";
+import type {
+  ChatMessage,
+  ChatTurn,
+  DashboardPage,
+  DataDoc,
+  DiscoveryResponse,
+  DiscoveryStatus,
+  FileRecord,
+} from "../lib/types";
 import { ViewChip } from "./ViewChip";
 
 type Props = {
   turns: ChatTurn[];
   pages: DashboardPage[];
+  files: FileRecord[];
+  discovery: DiscoveryResponse | null;
+  dataDoc: DataDoc | null;
+  discoveryStatus: DiscoveryStatus;
   disabled: boolean;
   sending: boolean;
   onSend: (message: string) => void;
   onOpenPage: (pageId: string) => void;
+  onOpenInsights: () => void;
+  onOpenFiles: () => void;
 };
 
 export function ChatSidebar({
   turns,
   pages,
+  files,
+  discovery,
+  dataDoc,
+  discoveryStatus,
   disabled,
   sending,
   onSend,
   onOpenPage,
+  onOpenInsights,
+  onOpenFiles,
 }: Props) {
   const [input, setInput] = useState("");
   const [messagesByTurn, setMessagesByTurn] = useState<
@@ -93,14 +113,30 @@ export function ChatSidebar({
   };
 
   return (
-    <aside className="flex h-full w-full shrink-0 flex-col bg-neutral-100">
-      <div className="hairline border-b px-4 py-3">
-        <div className="small-caps text-xs text-neutral-500">chat</div>
+    <section className="flex h-full w-full flex-col bg-[#fffdf9]">
+      <div className="hairline border-b bg-white/70 px-8 py-6">
+        <div className="small-caps text-sm text-ember">ask</div>
+        <h2 className="mt-2 font-mono text-3xl text-ink">
+          Here&apos;s what Cerno found.
+        </h2>
+        <p className="mt-2 max-w-2xl text-base leading-7 text-neutral-600">
+          Ask follow-ups, turn answers into visuals, or save the useful insights
+          Cerno finds while reading this workspace.
+        </p>
       </div>
-      <div className="flex-1 overflow-y-auto px-4 py-2">
+      <div className="flex-1 overflow-y-auto px-8 py-6">
+        <InlineFindings
+          files={files}
+          discovery={discovery}
+          dataDoc={dataDoc}
+          discoveryStatus={discoveryStatus}
+          onOpenInsights={onOpenInsights}
+          onOpenFiles={onOpenFiles}
+        />
         {turns.length === 0 ? (
-          <div className="mt-6 text-xs text-neutral-500">
-            Ask Cerno a question about your data.
+          <div className="mt-8 border border-dashed border-neutral-200 bg-white/70 px-5 py-8 text-base text-neutral-500">
+            Ask Cerno what changed, what looks unusual, or which chart would be
+            useful next.
           </div>
         ) : (
           turns.map((turn) => {
@@ -117,11 +153,11 @@ export function ChatSidebar({
             return (
               <div key={turn.id} className="hairline border-b py-4">
                 <div className="mb-4 flex justify-end">
-                  <div className="max-w-[92%] border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
+                  <div className="max-w-[78%] border border-orange-200 bg-orange-50 px-4 py-3 text-base text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
                     <MarkdownText text={turn.user_message} compact />
                   </div>
                 </div>
-                <div className="small-caps mb-1 text-[10px] text-ember">
+                <div className="small-caps mb-2 text-sm text-ember">
                   cerno
                 </div>
                 {traceItems.length > 0 ? (
@@ -131,7 +167,7 @@ export function ChatSidebar({
                     onToggle={() => toggleTrace(turn.id)}
                   />
                 ) : null}
-                <div className="text-sm text-ink">
+                <div className="max-w-3xl text-base text-ink">
                   <MarkdownText
                     text={
                       turn.assistant_message ??
@@ -152,7 +188,7 @@ export function ChatSidebar({
           })
         )}
       </div>
-      <div className="hairline border-t bg-neutral-100 px-4 py-3">
+      <div className="hairline border-t bg-white/90 px-8 py-4">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -165,7 +201,7 @@ export function ChatSidebar({
           placeholder={disabled ? "upload a file to start" : "ask\u2026"}
           disabled={disabled}
           rows={3}
-          className="hairline w-full resize-none border bg-white p-2 font-sans text-sm text-ink focus:outline-none focus:ring-1 focus:ring-ember disabled:opacity-40"
+          className="hairline w-full resize-none border bg-white p-3 font-sans text-base text-ink focus:outline-none focus:ring-1 focus:ring-ember disabled:opacity-40"
         />
         <div className="mt-2 flex items-center justify-between">
           <div className="text-[10px] text-neutral-400">{"\u2318 + enter"}</div>
@@ -179,7 +215,90 @@ export function ChatSidebar({
           </button>
         </div>
       </div>
-    </aside>
+    </section>
+  );
+}
+
+function InlineFindings({
+  files,
+  discovery,
+  dataDoc,
+  discoveryStatus,
+  onOpenInsights,
+  onOpenFiles,
+}: {
+  files: FileRecord[];
+  discovery: DiscoveryResponse | null;
+  dataDoc: DataDoc | null;
+  discoveryStatus: DiscoveryStatus;
+  onOpenInsights: () => void;
+  onOpenFiles: () => void;
+}) {
+  if (files.length === 0) {
+    return (
+      <div className="border border-orange-200 bg-orange-50/80 px-5 py-4">
+        <div className="small-caps text-sm text-ember">start here</div>
+        <p className="mt-2 text-base text-neutral-700">
+          Add files first. Cerno will read them, generate insights, then make
+          the chat useful.
+        </p>
+        <button
+          type="button"
+          onClick={onOpenFiles}
+          className="small-caps mt-4 border border-ink bg-white px-3 py-2 text-sm text-ink hover:border-ember hover:text-ember"
+        >
+          open files
+        </button>
+      </div>
+    );
+  }
+
+  const overview = dataDoc?.overview || discovery?.overview;
+  const notes = dataDoc?.usage_notes ?? [];
+  const starterQuestions = dataDoc?.starter_questions ?? [];
+
+  return (
+    <div className="mb-6 border border-orange-200 bg-white px-5 py-4 shadow-[0_14px_40px_rgba(80,45,20,0.05)]">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="small-caps text-sm text-ember">found during processing</div>
+          <p className="mt-2 max-w-3xl text-base leading-7 text-neutral-700">
+            {overview ||
+              (discoveryStatus === "approved"
+                ? "Cerno has approved data context for this workspace."
+                : "Cerno is still building the workspace understanding.")}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onOpenInsights}
+          className="small-caps border border-ink px-3 py-2 text-sm text-ink hover:border-ember hover:text-ember"
+        >
+          view insights
+        </button>
+      </div>
+      {notes.length > 0 ? (
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {notes.slice(0, 2).map((note) => (
+            <div key={note} className="border-l-2 border-orange-200 pl-3 text-sm leading-6 text-neutral-600">
+              {note}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {starterQuestions.length > 0 ? (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {starterQuestions.slice(0, 3).map((question) => (
+            <span
+              key={question}
+              className="border border-neutral-200 bg-[#fff8f1] px-3 py-1.5 text-sm text-neutral-700"
+            >
+              {question}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -320,7 +439,7 @@ function formatPreviewValue(value: unknown) {
   return text.length > 64 ? `${text.slice(0, 61)}...` : text;
 }
 
-function MarkdownText({
+export function MarkdownText({
   text,
   compact = false,
 }: {

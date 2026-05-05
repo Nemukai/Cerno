@@ -32,8 +32,12 @@ import type {
 } from "./lib/types";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { CernoLockup, CernoMark, CernoWordmark } from "./components/Brand";
-import { DashboardTab } from "./components/DashboardTab";
-import { SchemaTab } from "./components/SchemaTab";
+import {
+  FilesPanel,
+  InsightsPanel,
+  VisualPanel,
+  WorkspaceSidebar,
+} from "./components/SessionPanels";
 import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
 
@@ -62,7 +66,7 @@ export function App() {
     {},
   );
   const [dashboardLoadedFor, setDashboardLoadedFor] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
+  const [activeTab, setActiveTab] = useState<TabKey>("ask");
   const [focusPageId, setFocusPageId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -224,7 +228,7 @@ export function App() {
     setPages([]);
     setCellsByPage({});
     setDashboardLoadedFor(null);
-    setActiveTab("dashboard");
+    setActiveTab("ask");
     setFocusPageId(null);
   }, []);
 
@@ -300,43 +304,64 @@ export function App() {
       if (deduped.length === 0) return;
       setError(null);
       setUploading(true);
+      setActiveTab("files");
       try {
         await uploadFiles(session.id, deduped);
         setPages([]);
         setCellsByPage({});
         setDashboardLoadedFor(session.id);
+        setDiscovery(null);
+        setLinks([]);
+        setDataDoc(null);
+        setEvents([]);
         await Promise.all([
           refreshFiles(session.id),
-          refreshDiscovery(session.id),
+          refreshSessions(),
         ]);
       } catch (err) {
         setError((err as Error).message);
+        await refreshDiscovery(session.id).catch(() => undefined);
       } finally {
         setUploading(false);
       }
     },
-    [session, refreshFiles, refreshDiscovery],
+    [
+      session,
+      refreshFiles,
+      refreshSessions,
+      refreshDiscovery,
+    ],
   );
 
   const handleDeleteFile = useCallback(
     async (fileId: string) => {
       if (!session) return;
       setError(null);
+      setActiveTab("files");
       try {
         await deleteFile(fileId);
         setPages([]);
         setCellsByPage({});
         setDashboardLoadedFor(session.id);
-        await Promise.all([
-          refreshFiles(session.id),
-          refreshDiscovery(session.id),
-          refreshLinks(session.id),
-        ]);
+        const nextFiles = await listFiles(session.id);
+        setFiles(nextFiles);
+        setDiscovery(null);
+        setLinks([]);
+        setDataDoc(null);
+        setEvents([]);
+        await refreshSessions();
       } catch (err) {
         setError((err as Error).message);
+        await refreshDiscovery(session.id).catch(() => undefined);
+        await refreshEvents(session.id).catch(() => undefined);
       }
     },
-    [session, refreshFiles, refreshDiscovery, refreshLinks],
+    [
+      session,
+      refreshEvents,
+      refreshSessions,
+      refreshDiscovery,
+    ],
   );
 
   const handleProcess = useCallback(async () => {
@@ -344,7 +369,7 @@ export function App() {
     setError(null);
     setProcessing(true);
     setEvents([]);
-    setActiveTab("schema");
+    setActiveTab("insights");
     setPages([]);
     setCellsByPage({});
     setDashboardLoadedFor(session.id);
@@ -364,7 +389,14 @@ export function App() {
     } finally {
       setProcessing(false);
     }
-  }, [session, refreshFiles, refreshLinks, refreshDiscovery, refreshEvents, refreshSchemaGuide]);
+  }, [
+    session,
+    refreshFiles,
+    refreshLinks,
+    refreshDiscovery,
+    refreshEvents,
+    refreshSchemaGuide,
+  ]);
 
   const handleApprove = useCallback(
     async (
@@ -388,6 +420,7 @@ export function App() {
           refreshSchemaGuide(session.id),
           refreshSessions(),
         ]);
+        setActiveTab("ask");
       } catch (err) {
         setError((err as Error).message);
       } finally {
@@ -424,7 +457,6 @@ export function App() {
     try {
       await buildDashboard(session.id);
       await refreshDashboard(session.id);
-      setActiveTab("dashboard");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -433,7 +465,7 @@ export function App() {
   }, [session, refreshDashboard]);
 
   const handleOpenPage = useCallback((pageId: string) => {
-    setActiveTab("dashboard");
+    setActiveTab("ask");
     setFocusPageId(pageId);
   }, []);
 
@@ -486,13 +518,11 @@ export function App() {
     <>
       <Shell
         sidebar={
-          <ChatSidebar
+          <WorkspaceSidebar
+            session={session}
+            files={files}
             turns={turns}
-            pages={pages}
-            disabled={!chatReady}
-            sending={sending}
-            onSend={handleSend}
-            onOpenPage={handleOpenPage}
+            onSelectTab={setActiveTab}
           />
         }
         header={
@@ -504,41 +534,77 @@ export function App() {
             onHome={handleHome}
             onDelete={() => handleDeleteSession(session.id)}
             onResume={handleResumeSession}
+            showFileActions={files.length > 0}
           />
         }
+        rightPanel={focusPageId ? (
+          <VisualPanel
+            pages={pages}
+            cellsByPage={cellsByPage}
+            selectedPageId={focusPageId}
+            canBuild={discoveryStatus === "approved"}
+            building={building}
+            onSelectPage={setFocusPageId}
+            onBuildDashboard={handleBuildDashboard}
+          />
+        ) : null}
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onDropFile={handleUpload}
+        showTabs={files.length > 0}
       >
-        {activeTab === "dashboard" ? (
-          <DashboardTab
-            pages={pages}
-            cellsByPage={cellsByPage}
-            focusPageId={focusPageId}
+        {files.length === 0 ? (
+          <FilesPanel
             files={files}
             discoveryStatus={discoveryStatus}
-            onUpload={handleUpload}
             uploading={uploading}
+            processing={processing}
+            onUpload={handleUpload}
             onDeleteFile={handleDeleteFile}
             onProcess={handleProcess}
-            processing={processing}
-            onBuildDashboard={handleBuildDashboard}
-            building={building}
-            onReviewSchema={() => setActiveTab("schema")}
           />
         ) : null}
-        {activeTab === "schema" ? (
-          <SchemaTab
+        {files.length > 0 && activeTab === "ask" ? (
+          <ChatSidebar
+            turns={turns}
+            pages={pages}
+            files={files}
+            discovery={discovery}
+            dataDoc={dataDoc}
+            discoveryStatus={discoveryStatus}
+            disabled={!chatReady}
+            sending={sending}
+            onSend={handleSend}
+            onOpenPage={handleOpenPage}
+            onOpenInsights={() => setActiveTab("insights")}
+            onOpenFiles={() => setActiveTab("files")}
+          />
+        ) : null}
+        {files.length > 0 && activeTab === "insights" ? (
+          <InsightsPanel
             files={files}
             links={links}
             discovery={discovery}
-            doc={dataDoc}
+            dataDoc={dataDoc}
             events={events}
             processing={processing}
             approving={approving}
+            building={building}
             onProcess={handleProcess}
             onApprove={handleApprove}
-            canProcess={files.length >= 1}
+            onBuildDashboard={handleBuildDashboard}
+            onOpenFiles={() => setActiveTab("files")}
+          />
+        ) : null}
+        {files.length > 0 && activeTab === "files" ? (
+          <FilesPanel
+            files={files}
+            discoveryStatus={discoveryStatus}
+            uploading={uploading}
+            processing={processing}
+            onUpload={handleUpload}
+            onDeleteFile={handleDeleteFile}
+            onProcess={handleProcess}
           />
         ) : null}
       </Shell>

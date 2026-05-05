@@ -39,9 +39,10 @@ frontend brand components instead of retyping the wordmark in product surfaces.
 
 - Landing page is the brand entrance.
 - Workspaces is the workspace control room.
-- Session workspace keeps chat persistent on the left.
-- Main work happens through top tabs, currently Dashboard and Schema.
-- Schema guidance is merged into the Schema surface.
+- Session workspace is chat-first.
+- Main work happens through top tabs: Ask, Insights, and Files.
+- Files and chats live in the left sidebar for workspace navigation.
+- Generated visuals live in the right inspector, not as the primary surface.
 - Do not add a separate Notebook or Docs page.
 - Avoid nested cards. Use panels, dividers, rows, and full-width surfaces.
 - Keep detail behind clicks or drawers when it would overload non-technical users.
@@ -62,31 +63,36 @@ workspace rows with file, row, and activity metadata.
 
 ### Session Workspace
 
-The session workspace uses a persistent left chat sidebar and a main pane with
-top tabs. The current tabs are Dashboard and Schema.
+The session workspace uses a three-column chat-first layout:
+
+- Left: files and chats in the current workspace.
+- Center: Ask, Insights, and Files tabs.
+- Right: selected visuals expanded for inspection.
+
+The main product feeling should be "Here's what Cerno found. Ask follow-ups or
+save insights." It should not feel like a draggable-widget dashboard builder.
 
 Chat is disabled until the data map is approved. This is intentional because the
 approved schema guide is the shared understanding for downstream analysis.
 
-### Dashboard
+### Ask
 
-Dashboard views contain generated widgets. Current widgets can be repositioned,
-resized, and lightly formatted in the inspector.
+Ask is the primary session surface. It contains Cerno chat and an inline summary
+of generated insights from the processing step. Responses can spawn visuals,
+which appear in the right inspector.
 
-The dashboard should prioritize useful business views, but it should not hide
-the core Cerno idea: files become a reviewed map before they become analysis.
+### Insights
 
-### Schema
+Insights is the generated understanding layer: overview, usage notes,
+relationships, glossary, starter questions, file descriptions, and processing
+log. Approval happens here.
 
-Schema is the review and guidance surface. It contains:
+### Files
 
-- Upload shape and review summary
-- File tiles
-- Relationship map
-- File detail drawer
-- Column review and editing
-- Preview rows
-- Generated schema guidance, caveats, glossary, and starter questions
+Files is the data management surface. It lists uploaded files, row counts,
+schema versions, header status, and upload dates. Adding or deleting a file
+starts a fresh processing pass while the backend keeps content-hash dedup and
+reuses unchanged uploaded data where possible.
 
 This surface should stay summary-first. Detailed schema belongs in the drawer,
 not as one giant inline table.
@@ -117,18 +123,20 @@ orange variant. Keep most surfaces white, paper, neutral gray, and ink.
 
 - Pointer-reactive ASCII is part of the home identity.
 - Buttons and tabs should be simple, sharp, and predictable.
-- Dashboard widgets can be dragged and resized.
-- Schema detail opens through a drawer.
+- Ask should be the default active session tab.
+- Visuals are selected from the right inspector.
+- File add/delete actions should make the user aware that Cerno is refreshing
+  workspace understanding.
 - Destructive actions need explicit confirmation.
 
 ## Redesign Notes
 
-The current redesign target is the Workspaces page.
+The current redesign target is the session workspace.
 
 Goals for that pass:
 
-- Make workspace status easier to scan.
-- Separate "start new work" from "resume old work."
-- Make stats useful, not decorative.
-- Improve hierarchy without adding clutter.
-- Keep the light mode and orange signal identity.
+- Shift from dashboard-first to chat-first.
+- Make generated insights visible inline with chat.
+- Make Files the place for upload, delete, and refresh lifecycle.
+- Keep visuals useful but secondary.
+- Preserve light mode, sharp structure, and orange signal identity.
