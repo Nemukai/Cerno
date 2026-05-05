@@ -10,7 +10,15 @@ from python_calamine import CalamineWorkbook
 
 from cerno.config import Settings
 from cerno.models import File
-from cerno.repositories import FileRepository
+from cerno.repositories import (
+    AssetArtifactRepository,
+    FileRepository,
+    SourceAssetRepository,
+    WorkspaceAssetRepository,
+    WorkspaceTableRepository,
+    new_id,
+)
+from cerno.storage import ObjectStore, raw_artifact_key, source_object_key
 
 CSV_SUFFIXES = {".csv", ".tsv"}
 EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xlsb", ".xls", ".ods"}
@@ -123,11 +131,17 @@ def ingest_file(
     *,
     source_path: Path,
     original_filename: str,
+    original_content_type: str | None = None,
     original_size_bytes: int | None = None,
     user_id: str,
     session_id: str,
     settings: Settings,
     files_repo: FileRepository,
+    source_assets_repo: SourceAssetRepository | None = None,
+    workspace_assets_repo: WorkspaceAssetRepository | None = None,
+    artifacts_repo: AssetArtifactRepository | None = None,
+    tables_repo: WorkspaceTableRepository | None = None,
+    object_store: ObjectStore | None = None,
 ) -> list[IngestedFile]:
     if not source_path.exists():
         raise IngestError(f"source not found: {source_path}")
@@ -140,9 +154,49 @@ def ingest_file(
     session_dir = settings.session_dir(user_id, session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
 
+    source_asset = None
+    workspace_asset = None
+    if source_assets_repo and workspace_assets_repo and artifacts_repo and object_store:
+        source_asset = source_assets_repo.get_by_hash(user_id, content_hash)
+        if source_asset is None:
+            asset_id = new_id()
+            object_key = source_object_key(user_id, asset_id, content_hash, original_filename)
+            stored = object_store.put_path(
+                source_path,
+                object_key,
+                content_type=original_content_type or "application/octet-stream",
+            )
+            source_asset = source_assets_repo.create(
+                user_id=user_id,
+                sha256=content_hash,
+                original_filename=original_filename,
+                mime_type=original_content_type,
+                size_bytes=stored.size_bytes,
+                storage_backend=stored.backend,
+                object_key=stored.object_key,
+                asset_id=asset_id,
+            )
+            artifacts_repo.create(
+                user_id=user_id,
+                source_asset_id=source_asset.id,
+                artifact_type="source",
+                storage_backend=stored.backend,
+                object_key=stored.object_key,
+                content_hash=content_hash,
+                size_bytes=stored.size_bytes,
+                mime_type=original_content_type,
+            )
+        workspace_asset = workspace_assets_repo.get(session_id, source_asset.id)
+        if workspace_asset is None:
+            workspace_asset = workspace_assets_repo.create(
+                session_id=session_id,
+                source_asset_id=source_asset.id,
+                display_name=original_filename,
+            )
+
     sheets = read_raw_sheets(source_path)
     results: list[IngestedFile] = []
-    for sheet in sheets:
+    for index, sheet in enumerate(sheets):
         display_name = (
             f"{original_filename}#{sheet.sheet_name}"
             if sheet.sheet_name is not None and len(sheets) > 1
@@ -159,11 +213,36 @@ def ingest_file(
         raw_frame = _raw_to_frame(sheet.rows)
         raw_path = settings.raw_parquet_path(user_id, session_id, file.id)
         raw_frame.write_parquet(raw_path)
+        if artifacts_repo and object_store and source_asset is not None:
+            key = raw_artifact_key(user_id, source_asset.id, file.id)
+            stored = object_store.put_path(raw_path, key, content_type="application/vnd.apache.parquet")
+            artifacts_repo.create(
+                user_id=user_id,
+                session_id=session_id,
+                source_asset_id=source_asset.id,
+                file_id=file.id,
+                artifact_type="raw_parquet",
+                storage_backend=stored.backend,
+                object_key=stored.object_key,
+                content_hash=content_hash,
+                size_bytes=stored.size_bytes,
+                mime_type="application/vnd.apache.parquet",
+            )
         files_repo.conn.execute(
             "UPDATE files SET raw_parquet_path = ? WHERE id = ?",
             (str(raw_path), file.id),
         )
         file.raw_parquet_path = str(raw_path)
+        if tables_repo:
+            tables_repo.create(
+                session_id=session_id,
+                workspace_asset_id=workspace_asset.id if workspace_asset else None,
+                legacy_file_id=file.id,
+                sheet_name=sheet.sheet_name,
+                table_index=index,
+                display_name=display_name,
+                row_count=len(sheet.rows),
+            )
         results.append(IngestedFile(file=file))
     return results
 

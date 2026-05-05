@@ -10,12 +10,16 @@ import polars as pl
 from cerno.config import Settings
 from cerno.models import FileSchema, InferredKind, SchemaColumn
 from cerno.repositories import (
+    AssetArtifactRepository,
     FileRepository,
     LinkRepository,
     ProcessingEventRepository,
     SchemaRepository,
     SessionRepository,
+    WorkspaceTableRepository,
 )
+from cerno.services.artifact_cache import ensure_file_artifact_cached
+from cerno.storage import ObjectStore, processed_artifact_key
 
 logger = logging.getLogger(__name__)
 
@@ -136,12 +140,31 @@ def reingest_file(
     settings: Settings,
     files_repo: FileRepository,
     schemas_repo: SchemaRepository,
+    artifacts_repo: AssetArtifactRepository | None = None,
+    tables_repo: WorkspaceTableRepository | None = None,
+    object_store: ObjectStore | None = None,
 ) -> None:
     file = files_repo.get(file_id)
     if file is None or not file.raw_parquet_path:
         raise ReingestError(f"file {file_id} missing raw parquet")
 
-    raw = pl.read_parquet(file.raw_parquet_path)
+    if not spec.columns:
+        logger.warning("skipping reingest for %s: no columns in spec", file_id)
+        return
+
+    raw_path = file.raw_parquet_path
+    if artifacts_repo and object_store:
+        raw_path = ensure_file_artifact_cached(
+            file=file,
+            artifact_type="raw_parquet",
+            local_path=file.raw_parquet_path,
+            settings=settings,
+            artifacts_repo=artifacts_repo,
+            object_store=object_store,
+        )
+    if not raw_path:
+        raise ReingestError(f"file {file_id} missing raw parquet")
+    raw = pl.read_parquet(raw_path)
     raw_rows = raw.to_numpy().tolist()
     if spec.header_row >= len(raw_rows):
         raise ReingestError(f"header_row {spec.header_row} beyond file length {len(raw_rows)}")
@@ -178,6 +201,25 @@ def reingest_file(
 
     processed_path = settings.parquet_path(user_id, file.session_id, file.id)
     frame.write_parquet(processed_path)
+    processed_artifact_id: str | None = None
+    if artifacts_repo and tables_repo and object_store:
+        key = processed_artifact_key(user_id, file.session_id, file.id, file.schema_version)
+        stored = object_store.put_path(
+            processed_path,
+            key,
+            content_type="application/vnd.apache.parquet",
+        )
+        artifact = artifacts_repo.create(
+            user_id=user_id,
+            session_id=file.session_id,
+            file_id=file.id,
+            artifact_type="processed_parquet",
+            storage_backend=stored.backend,
+            object_key=stored.object_key,
+            size_bytes=stored.size_bytes,
+            mime_type="application/vnd.apache.parquet",
+        )
+        processed_artifact_id = artifact.id
 
     files_repo.update_processed(
         file_id=file.id,
@@ -187,6 +229,13 @@ def reingest_file(
         friendly_name=spec.friendly_name,
         description=spec.description,
     )
+    if processed_artifact_id is not None:
+        tables_repo.set_processed_artifact(
+            legacy_file_id=file.id,
+            artifact_id=processed_artifact_id,
+            schema_version=file.schema_version,
+            row_count=frame.height,
+        )
 
     schema = FileSchema(
         file_id=file.id,
@@ -220,6 +269,9 @@ def apply_approval(
     links_repo: LinkRepository,
     sessions_repo: SessionRepository,
     events_repo: ProcessingEventRepository,
+    artifacts_repo: AssetArtifactRepository | None = None,
+    tables_repo: WorkspaceTableRepository | None = None,
+    object_store: ObjectStore | None = None,
 ) -> None:
     files = files_repo.list_for_session(session_id)
     file_ids = {f.id for f in files}
@@ -239,6 +291,9 @@ def apply_approval(
             settings=settings,
             files_repo=files_repo,
             schemas_repo=schemas_repo,
+            artifacts_repo=artifacts_repo,
+            tables_repo=tables_repo,
+            object_store=object_store,
         )
 
     links_repo.delete_for_session(session_id)

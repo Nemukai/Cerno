@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import type {
   ChatTurn,
   DashboardCell,
@@ -21,6 +21,8 @@ type WorkspaceSidebarProps = {
   files: FileRecord[];
   turns: ChatTurn[];
   onSelectTab: (tab: "ask" | "insights" | "files") => void;
+  onNewChat: () => void;
+  onDeleteTurn: (turnId: string) => void;
 };
 
 export function WorkspaceSidebar({
@@ -28,9 +30,35 @@ export function WorkspaceSidebar({
   files,
   turns,
   onSelectTab,
+  onNewChat,
+  onDeleteTurn,
 }: WorkspaceSidebarProps) {
+  const [menu, setMenu] = useState<{
+    turn: ChatTurn;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [titles, setTitles] = useStoredChatTitles(session.id);
+
+  const renameTurn = (turn: ChatTurn) => {
+    const current = titles[turn.id] ?? defaultTurnTitle(turn);
+    const next = window.prompt("Rename chat", current);
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (!trimmed) return;
+    setTitles((currentTitles) => ({ ...currentTitles, [turn.id]: trimmed }));
+    setMenu(null);
+  };
+
+  const deleteTurn = (turn: ChatTurn) => {
+    const ok = window.confirm(`Delete "${titles[turn.id] ?? defaultTurnTitle(turn)}"?`);
+    if (!ok) return;
+    setMenu(null);
+    onDeleteTurn(turn.id);
+  };
+
   return (
-    <aside className="flex h-full flex-col">
+    <aside className="relative flex h-full flex-col" onClick={() => setMenu(null)}>
       <div className="hairline border-b px-5 py-4">
         <div className="min-w-0">
           <div className="small-caps text-sm text-neutral-400">workspace</div>
@@ -39,58 +67,80 @@ export function WorkspaceSidebar({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {files.length > 0 ? (
-          <>
-            <div className="small-caps text-sm text-neutral-500">files</div>
-            <div className="mt-3 grid gap-2">
-              {files.slice(0, 8).map((file) => (
-              <button
-                key={file.id}
-                type="button"
-                onClick={() => onSelectTab("files")}
-                className="min-w-0 border border-neutral-200 bg-white px-3 py-2 text-left transition hover:border-ember"
-              >
-                <div className="truncate text-sm text-ink">
-                  {file.friendly_name || file.filename}
-                </div>
-                <div className="mt-1 text-xs text-neutral-500">
-                  {formatCompactNumber(file.row_count)} rows
-                </div>
-              </button>
-              ))}
-            </div>
-          </>
-        ) : null}
+        <button
+          type="button"
+          onClick={() => onSelectTab("files")}
+          className="flex w-full items-center justify-between rounded-lg bg-neutral-50 px-3 py-2 text-left transition hover:bg-neutral-100"
+        >
+          <span className="text-sm font-medium text-ink">Files</span>
+          <span className="font-mono text-sm text-neutral-500">
+            {files.length}
+          </span>
+        </button>
 
-        {turns.length > 0 ? (
-          <>
-            <div
-              className={
-                files.length > 0
-                  ? "mt-6 small-caps text-sm text-neutral-500"
-                  : "small-caps text-sm text-neutral-500"
-              }
-            >
-              chats
-            </div>
-            <div className="mt-3 grid gap-2">
-              {turns.slice(0, 10).map((turn) => (
+        <div className="mt-6 flex items-center justify-between gap-3 px-1">
+          <div className="small-caps text-xs text-neutral-500">chats</div>
+          <button
+            type="button"
+            onClick={onNewChat}
+            className="text-xs text-neutral-500 hover:text-ember transition"
+          >
+            + new
+          </button>
+        </div>
+        <div className="mt-2 grid gap-1">
+          {turns.length > 0 ? (
+            turns.slice(0, 24).map((turn) => (
               <button
                 key={turn.id}
                 type="button"
                 onClick={() => onSelectTab("ask")}
-                className="min-w-0 border border-neutral-200 bg-white px-3 py-2 text-left transition hover:border-ember"
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setMenu({ turn, x: event.clientX, y: event.clientY });
+                }}
+                className="min-w-0 rounded-lg px-3 py-2 text-left transition hover:bg-orange-50"
               >
-                <div className="line-clamp-2 text-sm leading-5 text-ink">
-                  {turn.user_message}
+                <div className="truncate text-sm font-medium text-ink">
+                  {titles[turn.id] ?? defaultTurnTitle(turn)}
                 </div>
-                <div className="mt-1 small-caps text-xs text-neutral-400">
-                  {turn.state}
+                <div className="mt-0.5 flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-wider text-neutral-400">
+                    {turn.state}
+                  </span>
+                  <span className="text-[10px] text-neutral-400">
+                    {formatDate(turn.created_at)}
+                  </span>
                 </div>
               </button>
-              ))}
+            ))
+          ) : (
+            <div className="px-3 py-3 text-sm text-neutral-500">
+              No chats yet.
             </div>
-          </>
+          )}
+        </div>
+        {menu ? (
+          <div
+            className="fixed z-50 w-36 rounded-md border border-neutral-200 bg-white p-1 shadow-lg"
+            style={{ left: menu.x, top: menu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => renameTurn(menu.turn)}
+              className="block w-full rounded px-2 py-1.5 text-left text-sm text-ink hover:bg-neutral-50"
+            >
+              Edit name
+            </button>
+            <button
+              type="button"
+              onClick={() => deleteTurn(menu.turn)}
+              className="block w-full rounded px-2 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
+            >
+              Delete
+            </button>
+          </div>
         ) : null}
       </div>
     </aside>
@@ -133,59 +183,87 @@ export function InsightsPanel({
   const status = discovery?.status ?? "empty";
   const canApprove = discovery?.status === "pending_review";
   const overview = dataDoc?.overview || discovery?.overview;
+  const relationshipCards = useMemo(() => {
+    if (dataDoc?.relationships.length) {
+      return dataDoc.relationships.map((rel) => ({
+        leftFileId: rel.left_file_id,
+        leftColumn: rel.left_column,
+        rightFileId: rel.right_file_id,
+        rightColumn: rel.right_column,
+        explanation: rel.explanation,
+      }));
+    }
+    if (discovery?.links.length) {
+      return discovery.links.map((link) => ({
+        leftFileId: link.file_a_id,
+        leftColumn: link.col_a,
+        rightFileId: link.file_b_id,
+        rightColumn: link.col_b,
+        explanation: link.summary,
+      }));
+    }
+    return links.map((link) => ({
+      leftFileId: link.file_a,
+      leftColumn: link.col_a,
+      rightFileId: link.file_b,
+      rightColumn: link.col_b,
+      explanation: link.summary ?? "",
+    }));
+  }, [dataDoc, discovery, links]);
 
   return (
     <section className="px-8 py-7">
-      <div className="flex flex-wrap items-start justify-between gap-5 border-b border-ink/10 pb-5">
+      <div className="flex flex-wrap items-center justify-between gap-5 border-b border-ink/10 pb-4">
         <div>
-          <div className="small-caps text-sm text-ember">insights</div>
-          <h2 className="mt-2 font-mono text-3xl text-ink">
-            What Cerno found while processing.
+          <h2 className="font-mono text-2xl text-ink">
+            Workspace Insights
           </h2>
-          <p className="mt-2 max-w-3xl text-base leading-7 text-neutral-600">
-            These are generated from the file understanding step. Approve them,
-            ask follow-ups, or generate visuals from the right panel.
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <StatusPill label={statusLabel(status, processing)} />
-          <button
-            type="button"
-            onClick={onOpenFiles}
-            className="small-caps border border-neutral-300 px-3 py-2 text-sm hover:border-ink"
-          >
-            files
-          </button>
-          <button
-            type="button"
-            onClick={onProcess}
-            disabled={processing || files.length === 0}
-            className="small-caps border border-ink px-3 py-2 text-sm hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {processing ? "processing..." : "refresh insights"}
-          </button>
           {canApprove ? (
             <button
               type="button"
               onClick={() => onApprove(discovery.files, discovery.links, discovery.overview)}
               disabled={approving}
-              className="small-caps bg-ember px-3 py-2 text-sm text-white hover:bg-ember-hover disabled:opacity-40"
+              className="small-caps bg-ember px-4 py-2 text-sm text-white hover:bg-ember-hover disabled:opacity-40 transition"
             >
-              {approving ? "approving..." : "approve insights"}
+              {approving ? "approving..." : "approve workspace"}
             </button>
-          ) : null}
-          {status === "approved" ? (
+          ) : status === "approved" ? (
             <button
               type="button"
               onClick={onBuildDashboard}
               disabled={building}
-              className="small-caps border border-ink bg-white px-3 py-2 text-sm hover:border-ember hover:text-ember disabled:opacity-40"
+              className="small-caps border border-ink bg-white px-4 py-2 text-sm hover:border-ember hover:text-ember disabled:opacity-40 transition"
             >
-              {building ? "building..." : "generate visuals"}
+              {building ? "building visuals..." : "generate visuals"}
             </button>
-          ) : null}
+          ) : (
+             <button
+              type="button"
+              onClick={onProcess}
+              disabled={processing || files.length === 0}
+              className="small-caps border border-neutral-300 px-4 py-2 text-sm hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 transition"
+            >
+              {processing ? "analyzing..." : "analyze files"}
+            </button>
+          )}
         </div>
       </div>
+
+      {processing ? (
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <div className="mb-6 h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-ember"></div>
+          <h3 className="font-mono text-lg text-ink">Analyzing your workspace...</h3>
+          {events.length > 0 && (
+             <p className="mt-2 text-sm text-neutral-500 animate-pulse">
+               {events.at(-1)?.message}
+             </p>
+          )}
+        </div>
+      ) : (
+        <>
+
 
       {files.length === 0 ? (
         <EmptyBlock
@@ -205,24 +283,55 @@ export function InsightsPanel({
         </section>
       ) : null}
 
-      {dataDoc ? (
+      {dataDoc || relationshipCards.length > 0 ? (
         <div className="mt-7 grid gap-5 xl:grid-cols-2">
-          <InsightGroup title="usage notes" items={dataDoc.usage_notes} />
-          <InsightGroup title="starter questions" items={dataDoc.starter_questions} />
-          <InsightGroup
-            title="relationships"
-            items={dataDoc.relationships.map(
-              (rel) =>
-                `${nameForFile(rel.left_file_id, files)}.${rel.left_column} links to ${nameForFile(
-                  rel.right_file_id,
-                  files,
-                )}.${rel.right_column}: ${rel.explanation}`,
+          {dataDoc?.usage_notes && dataDoc.usage_notes.length > 0 && (
+             <InsightGroup title="usage notes" items={dataDoc.usage_notes} />
+          )}
+
+          <section className="border border-neutral-200 bg-white px-5 py-4">
+            <div className="small-caps text-sm text-neutral-500">relationships</div>
+            {relationshipCards.length > 0 ? (
+              <div className="mt-3 flex flex-col gap-3">
+                {relationshipCards.map((rel, idx) => (
+                  <div key={idx} className="rounded-md border border-neutral-100 bg-neutral-50 p-3">
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="font-mono text-ink bg-white px-1 border border-neutral-200 rounded">{nameForFile(rel.leftFileId, files)}</span>
+                      <span className="text-neutral-500">.{rel.leftColumn}</span>
+                      <span className="text-ember px-1">→</span>
+                      <span className="font-mono text-ink bg-white px-1 border border-neutral-200 rounded">{nameForFile(rel.rightFileId, files)}</span>
+                      <span className="text-neutral-500">.{rel.rightColumn}</span>
+                    </div>
+                    {rel.explanation && (
+                      <div className="mt-1.5 text-xs text-neutral-600 pl-1 border-l-2 border-orange-200">
+                        {rel.explanation}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 text-sm text-neutral-500">No relationships generated.</p>
             )}
-          />
-          <InsightGroup
-            title="glossary"
-            items={dataDoc.glossary.map((item) => `${item.term}: ${item.meaning}`)}
-          />
+          </section>
+
+          {dataDoc ? (
+            <section className="border border-neutral-200 bg-white px-5 py-4">
+              <div className="small-caps text-sm text-neutral-500">glossary</div>
+              {dataDoc.glossary.length > 0 ? (
+                <div className="mt-3 flex flex-col gap-2">
+                  {dataDoc.glossary.map((item, idx) => (
+                    <div key={idx} className="flex flex-col gap-0.5 border-b border-neutral-100 pb-2 last:border-0">
+                      <div className="font-medium text-sm text-ink">{item.term}</div>
+                      <div className="text-xs text-neutral-600">{item.meaning}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-neutral-500">No glossary terms generated.</p>
+              )}
+            </section>
+          ) : null}
         </div>
       ) : null}
 
@@ -244,13 +353,15 @@ export function InsightsPanel({
                   </div>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {file.columns.slice(0, 10).map((column) => (
-                    <span
+                  {file.columns.map((column) => (
+                    <div
                       key={`${file.file_id}:${column.column_id}`}
-                      className="border border-neutral-200 bg-[#fff8f1] px-2 py-1 text-sm text-neutral-700"
+                      className="flex items-center gap-1.5 border border-neutral-200 bg-[#fff8f1] px-2 py-1"
+                      title={column.description}
                     >
-                      {column.name}
-                    </span>
+                      <span className="text-sm font-medium text-neutral-700">{column.name}</span>
+                      <span className="text-[10px] text-neutral-400 font-mono">{column.dtype}</span>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -259,29 +370,8 @@ export function InsightsPanel({
         </section>
       ) : null}
 
-      <section className="mt-7 border-t border-ink/10 pt-5">
-        <div className="small-caps text-sm text-neutral-500">processing log</div>
-        <div className="mt-3 grid gap-2">
-          {events.length > 0 ? (
-            events.slice(-8).reverse().map((event) => (
-              <div key={event.id} className="flex gap-3 border border-neutral-200 bg-white px-3 py-2 text-sm">
-                <span className="small-caps shrink-0 text-neutral-400">{event.kind}</span>
-                <span className="text-neutral-700">{event.message}</span>
-              </div>
-            ))
-          ) : (
-            <div className="text-sm text-neutral-500">
-              No processing events yet.
-            </div>
-          )}
-        </div>
-      </section>
-
-      {links.length > 0 ? (
-        <div className="mt-5 text-sm text-neutral-500">
-          {links.length} relationship{links.length === 1 ? "" : "s"} saved in this workspace.
-        </div>
-      ) : null}
+        </>
+      )}
     </section>
   );
 }
@@ -358,16 +448,11 @@ export function FilesPanel({
         className="hidden"
         onChange={handleChange}
       />
-      <div className="flex flex-wrap items-start justify-between gap-5 border-b border-ink/10 pb-5">
+      <div className="flex flex-wrap items-center justify-between gap-5 border-b border-ink/10 pb-4">
         <div>
-          <div className="small-caps text-sm text-ember">files</div>
-          <h2 className="mt-2 font-mono text-3xl text-ink">
-            Manage the data in this workspace.
+          <h2 className="font-mono text-2xl text-ink">
+            Data Files
           </h2>
-          <p className="mt-2 max-w-3xl text-base leading-7 text-neutral-600">
-            Add or remove files here. When the file list changes, run processing
-            again so Cerno refreshes the workspace understanding.
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -490,10 +575,7 @@ export function VisualPanel({
   return (
     <div className="flex min-h-full flex-col">
       <div className="hairline border-b px-5 py-4">
-        <div className="small-caps text-sm text-ember">selected visuals</div>
-        <p className="mt-2 text-sm leading-6 text-neutral-600">
-          Charts generated from Ask or Insights appear here for inspection.
-        </p>
+        <div className="font-mono text-lg text-ink">Visuals</div>
       </div>
 
       {pagesWithWidgets.length > 0 ? (
@@ -614,14 +696,6 @@ function FileFact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function StatusPill({ label }: { label: string }) {
-  return (
-    <span className="small-caps border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-ember">
-      {label}
-    </span>
-  );
-}
-
 function statusLabel(status: DiscoveryStatus, processing: boolean) {
   if (processing || status === "discovering") return "processing";
   if (status === "pending_review") return "needs approval";
@@ -634,6 +708,40 @@ function statusLabel(status: DiscoveryStatus, processing: boolean) {
 function nameForFile(fileId: string, files: FileRecord[]) {
   const file = files.find((item) => item.id === fileId);
   return file?.friendly_name || file?.filename || "file";
+}
+
+function useStoredChatTitles(sessionId: string) {
+  const key = `cerno:chat-titles:${sessionId}`;
+  const [titles, setTitles] = useState<Record<string, string>>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      return JSON.parse(window.localStorage.getItem(key) ?? "{}") as Record<
+        string,
+        string
+      >;
+    } catch {
+      return {};
+    }
+  });
+
+  const setStoredTitles = (
+    updater: (current: Record<string, string>) => Record<string, string>,
+  ) => {
+    setTitles((current) => {
+      const next = updater(current);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(key, JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
+  return [titles, setStoredTitles] as const;
+}
+
+function defaultTurnTitle(turn: ChatTurn): string {
+  const trimmed = turn.user_message.trim();
+  return trimmed.length > 52 ? `${trimmed.slice(0, 49)}...` : trimmed || "Untitled chat";
 }
 
 function formatCompactNumber(value: number): string {

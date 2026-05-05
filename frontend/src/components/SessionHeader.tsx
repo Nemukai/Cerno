@@ -88,7 +88,7 @@ export function SessionHeader({
           type="button"
           onClick={handlePick}
           disabled={!session || uploading}
-          className="small-caps border border-ink px-3 py-1 text-xs hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+          className="small-caps rounded border border-neutral-300 px-3 py-1.5 text-xs text-neutral-600 hover:border-ember hover:text-ember transition-colors disabled:cursor-not-allowed disabled:opacity-40"
         >
           {uploading ? "uploading\u2026" : "+ upload files"}
         </button>
@@ -96,7 +96,7 @@ export function SessionHeader({
           type="button"
           onClick={handleDelete}
           disabled={!session}
-          className="small-caps border border-red-600 px-3 py-1 text-xs text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+          className="small-caps rounded border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
           title="Delete this session"
         >
           delete

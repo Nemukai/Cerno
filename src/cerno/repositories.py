@@ -10,8 +10,10 @@ from cerno.db import dumps_json, loads_json
 from cerno.models import (
     AccessStatus,
     Anomaly,
+    AssetArtifact,
     AuditEvent,
     BetaCode,
+    ChatArtifact,
     ChatMessage,
     ChatTurn,
     Dashboard,
@@ -31,8 +33,11 @@ from cerno.models import (
     SchemaColumn,
     Session,
     SessionStatus,
+    SourceAsset,
     TurnState,
     User,
+    WorkspaceAsset,
+    WorkspaceTable,
 )
 
 logger = logging.getLogger(__name__)
@@ -227,6 +232,221 @@ class FileRepository:
                    description = COALESCE(?, description)
                WHERE id = ?""",
             (header_row, friendly_name, description, file_id),
+        )
+
+
+class SourceAssetRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def get_by_hash(self, user_id: str, sha256: str) -> SourceAsset | None:
+        row = self.conn.execute(
+            "SELECT * FROM source_assets WHERE user_id = ? AND sha256 = ?",
+            (user_id, sha256),
+        ).fetchone()
+        return _row_to_source_asset(row) if row else None
+
+    def create(
+        self,
+        *,
+        user_id: str,
+        sha256: str,
+        original_filename: str,
+        mime_type: str | None,
+        size_bytes: int,
+        storage_backend: str,
+        object_key: str,
+        asset_id: str | None = None,
+    ) -> SourceAsset:
+        aid = asset_id or new_id()
+        created_at = _now()
+        self.conn.execute(
+            """INSERT INTO source_assets
+               (id, user_id, sha256, original_filename, mime_type, size_bytes,
+                storage_backend, object_key, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                aid,
+                user_id,
+                sha256,
+                original_filename,
+                mime_type,
+                size_bytes,
+                storage_backend,
+                object_key,
+                created_at.isoformat(),
+            ),
+        )
+        return SourceAsset(
+            id=aid,
+            user_id=user_id,
+            sha256=sha256,
+            original_filename=original_filename,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            storage_backend=storage_backend,
+            object_key=object_key,
+            created_at=created_at,
+        )
+
+
+class WorkspaceAssetRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def get(self, session_id: str, source_asset_id: str) -> WorkspaceAsset | None:
+        row = self.conn.execute(
+            "SELECT * FROM workspace_assets WHERE session_id = ? AND source_asset_id = ?",
+            (session_id, source_asset_id),
+        ).fetchone()
+        return _row_to_workspace_asset(row) if row else None
+
+    def create(
+        self,
+        *,
+        session_id: str,
+        source_asset_id: str,
+        display_name: str,
+        workspace_asset_id: str | None = None,
+    ) -> WorkspaceAsset:
+        wid = workspace_asset_id or new_id()
+        created_at = _now()
+        self.conn.execute(
+            """INSERT INTO workspace_assets
+               (id, session_id, source_asset_id, display_name, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (wid, session_id, source_asset_id, display_name, created_at.isoformat()),
+        )
+        return WorkspaceAsset(
+            id=wid,
+            session_id=session_id,
+            source_asset_id=source_asset_id,
+            display_name=display_name,
+            created_at=created_at,
+        )
+
+
+class AssetArtifactRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def create(
+        self,
+        *,
+        user_id: str,
+        artifact_type: str,
+        storage_backend: str,
+        object_key: str,
+        size_bytes: int,
+        session_id: str | None = None,
+        source_asset_id: str | None = None,
+        file_id: str | None = None,
+        content_hash: str | None = None,
+        mime_type: str | None = None,
+        artifact_id: str | None = None,
+    ) -> AssetArtifact:
+        aid = artifact_id or new_id()
+        created_at = _now()
+        self.conn.execute(
+            """INSERT INTO asset_artifacts
+               (id, user_id, session_id, source_asset_id, file_id, artifact_type,
+                storage_backend, object_key, content_hash, size_bytes, mime_type, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                aid,
+                user_id,
+                session_id,
+                source_asset_id,
+                file_id,
+                artifact_type,
+                storage_backend,
+                object_key,
+                content_hash,
+                size_bytes,
+                mime_type,
+                created_at.isoformat(),
+            ),
+        )
+        return AssetArtifact(
+            id=aid,
+            user_id=user_id,
+            session_id=session_id,
+            source_asset_id=source_asset_id,
+            file_id=file_id,
+            artifact_type=artifact_type,
+            storage_backend=storage_backend,
+            object_key=object_key,
+            content_hash=content_hash,
+            size_bytes=size_bytes,
+            mime_type=mime_type,
+            created_at=created_at,
+        )
+
+    def latest_for_file(self, file_id: str, artifact_type: str) -> AssetArtifact | None:
+        row = self.conn.execute(
+            """SELECT * FROM asset_artifacts
+               WHERE file_id = ? AND artifact_type = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (file_id, artifact_type),
+        ).fetchone()
+        return _row_to_asset_artifact(row) if row else None
+
+
+class WorkspaceTableRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def create(
+        self,
+        *,
+        session_id: str,
+        display_name: str,
+        workspace_asset_id: str | None,
+        legacy_file_id: str | None,
+        sheet_name: str | None,
+        table_index: int,
+        row_count: int,
+        table_id: str | None = None,
+    ) -> WorkspaceTable:
+        tid = table_id or new_id()
+        created_at = _now()
+        self.conn.execute(
+            """INSERT INTO tables
+               (id, session_id, workspace_asset_id, legacy_file_id, sheet_name,
+                table_index, display_name, row_count, current_schema_version, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                tid,
+                session_id,
+                workspace_asset_id,
+                legacy_file_id,
+                sheet_name,
+                table_index,
+                display_name,
+                row_count,
+                created_at.isoformat(),
+            ),
+        )
+        return WorkspaceTable(
+            id=tid,
+            session_id=session_id,
+            workspace_asset_id=workspace_asset_id,
+            legacy_file_id=legacy_file_id,
+            sheet_name=sheet_name,
+            table_index=table_index,
+            display_name=display_name,
+            row_count=row_count,
+            created_at=created_at,
+        )
+
+    def set_processed_artifact(
+        self, *, legacy_file_id: str, artifact_id: str, schema_version: int, row_count: int
+    ) -> None:
+        self.conn.execute(
+            """UPDATE tables
+               SET processed_artifact_id = ?, current_schema_version = ?, row_count = ?
+               WHERE legacy_file_id = ?""",
+            (artifact_id, schema_version, row_count, legacy_file_id),
         )
 
 
@@ -663,6 +883,77 @@ class ChatRepository:
         ).fetchall()
         return [_row_to_message(r) for r in rows]
 
+    def delete_turn(self, turn_id: str) -> None:
+        self.conn.execute("DELETE FROM chat_turns WHERE id = ?", (turn_id,))
+
+
+class ChatArtifactRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def create(
+        self,
+        *,
+        session_id: str,
+        artifact_type: str,
+        title: str,
+        turn_id: str | None = None,
+        message_id: str | None = None,
+        inline_payload: dict[str, Any] | None = None,
+        storage_backend: str | None = None,
+        object_key: str | None = None,
+        size_bytes: int = 0,
+        mime_type: str | None = None,
+        order_index: int = 0,
+        artifact_id: str | None = None,
+    ) -> ChatArtifact:
+        aid = artifact_id or new_id()
+        created_at = _now()
+        self.conn.execute(
+            """INSERT INTO chat_artifacts
+               (id, session_id, turn_id, message_id, artifact_type, title,
+                inline_payload, storage_backend, object_key, size_bytes,
+                mime_type, order_index, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                aid,
+                session_id,
+                turn_id,
+                message_id,
+                artifact_type,
+                title,
+                dumps_json(inline_payload) if inline_payload is not None else None,
+                storage_backend,
+                object_key,
+                size_bytes,
+                mime_type,
+                order_index,
+                created_at.isoformat(),
+            ),
+        )
+        return ChatArtifact(
+            id=aid,
+            session_id=session_id,
+            turn_id=turn_id,
+            message_id=message_id,
+            artifact_type=artifact_type,
+            title=title,
+            inline_payload=inline_payload,
+            storage_backend=storage_backend,
+            object_key=object_key,
+            size_bytes=size_bytes,
+            mime_type=mime_type,
+            order_index=order_index,
+            created_at=created_at,
+        )
+
+    def list_for_turn(self, turn_id: str) -> list[ChatArtifact]:
+        rows = self.conn.execute(
+            "SELECT * FROM chat_artifacts WHERE turn_id = ? ORDER BY order_index",
+            (turn_id,),
+        ).fetchall()
+        return [_row_to_chat_artifact(r) for r in rows]
+
 
 class AuditRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -787,6 +1078,47 @@ def _row_to_file(row: sqlite3.Row) -> File:
         friendly_name=row["friendly_name"] if "friendly_name" in keys else None,
         description=row["description"] if "description" in keys else None,
         content_hash=row["content_hash"] if "content_hash" in keys else None,
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_source_asset(row: sqlite3.Row) -> SourceAsset:
+    return SourceAsset(
+        id=row["id"],
+        user_id=row["user_id"],
+        sha256=row["sha256"],
+        original_filename=row["original_filename"],
+        mime_type=row["mime_type"],
+        size_bytes=row["size_bytes"],
+        storage_backend=row["storage_backend"],
+        object_key=row["object_key"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_workspace_asset(row: sqlite3.Row) -> WorkspaceAsset:
+    return WorkspaceAsset(
+        id=row["id"],
+        session_id=row["session_id"],
+        source_asset_id=row["source_asset_id"],
+        display_name=row["display_name"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_asset_artifact(row: sqlite3.Row) -> AssetArtifact:
+    return AssetArtifact(
+        id=row["id"],
+        user_id=row["user_id"],
+        session_id=row["session_id"],
+        source_asset_id=row["source_asset_id"],
+        file_id=row["file_id"],
+        artifact_type=row["artifact_type"],
+        storage_backend=row["storage_backend"],
+        object_key=row["object_key"],
+        content_hash=row["content_hash"],
+        size_bytes=row["size_bytes"],
+        mime_type=row["mime_type"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
@@ -1025,8 +1357,9 @@ class BetaCodeRepository:
 
 
 class LLMUsageRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, *, auto_commit: bool = False) -> None:
         self.conn = conn
+        self.auto_commit = auto_commit
 
     def get(self, user_id: str, day: str) -> int:
         row = self.conn.execute(
@@ -1042,6 +1375,8 @@ class LLMUsageRepository:
                SET tokens_used = tokens_used + excluded.tokens_used""",
             (user_id, day, tokens),
         )
+        if self.auto_commit:
+            self.conn.commit()
         return self.get(user_id, day)
 
 
@@ -1148,5 +1483,23 @@ def _row_to_message(row: sqlite3.Row) -> ChatMessage:
         tool_name=row["tool_name"],
         tool_args=loads_json(row["tool_args"]),
         tool_result=loads_json(row["tool_result"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_chat_artifact(row: sqlite3.Row) -> ChatArtifact:
+    return ChatArtifact(
+        id=row["id"],
+        session_id=row["session_id"],
+        turn_id=row["turn_id"],
+        message_id=row["message_id"],
+        artifact_type=row["artifact_type"],
+        title=row["title"],
+        inline_payload=loads_json(row["inline_payload"]) if row["inline_payload"] else None,
+        storage_backend=row["storage_backend"],
+        object_key=row["object_key"],
+        size_bytes=row["size_bytes"],
+        mime_type=row["mime_type"],
+        order_index=row["order_index"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )

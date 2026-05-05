@@ -5,6 +5,7 @@ import {
   createSession,
   deleteFile,
   deleteSession,
+  deleteTurn,
   getDashboard,
   getDiscovery,
   getProcessingEvents,
@@ -75,6 +76,7 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const bootstrapped = useRef(false);
   const pollRef = useRef<number | null>(null);
   const autoBuildSessions = useRef<Set<string>>(new Set());
@@ -199,7 +201,8 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (!session || !processing) {
+    const shouldPollProcessing = processing || discovery?.status === "discovering";
+    if (!session || !shouldPollProcessing) {
       if (pollRef.current !== null) {
         window.clearInterval(pollRef.current);
         pollRef.current = null;
@@ -208,7 +211,19 @@ export function App() {
     }
     const id = session.id;
     pollRef.current = window.setInterval(() => {
-      refreshEvents(id).catch(() => undefined);
+      Promise.all([refreshEvents(id), getDiscovery(id)])
+        .then(([, nextDiscovery]) => {
+          setDiscovery(nextDiscovery);
+          if (nextDiscovery.status === "discovering") return;
+          setProcessing(false);
+          return Promise.all([
+            refreshFiles(id),
+            refreshLinks(id),
+            refreshSchemaGuide(id),
+            refreshSessions(),
+          ]);
+        })
+        .catch(() => undefined);
     }, 1500);
     return () => {
       if (pollRef.current !== null) {
@@ -216,7 +231,16 @@ export function App() {
         pollRef.current = null;
       }
     };
-  }, [session, processing, refreshEvents]);
+  }, [
+    session,
+    processing,
+    discovery?.status,
+    refreshEvents,
+    refreshFiles,
+    refreshLinks,
+    refreshSchemaGuide,
+    refreshSessions,
+  ]);
 
   const clearSessionState = useCallback(() => {
     setFiles([]);
@@ -469,6 +493,24 @@ export function App() {
     setFocusPageId(pageId);
   }, []);
 
+  const handleNewChat = useCallback(() => {
+    setActiveTab("ask");
+  }, []);
+
+  const handleDeleteTurn = useCallback(
+    async (turnId: string) => {
+      if (!session) return;
+      setError(null);
+      try {
+        await deleteTurn(turnId);
+        await refreshTurns(session.id);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [session, refreshTurns],
+  );
+
   const discoveryStatus = discovery?.status ?? "empty";
 
   useEffect(() => {
@@ -523,6 +565,8 @@ export function App() {
             files={files}
             turns={turns}
             onSelectTab={setActiveTab}
+            onNewChat={handleNewChat}
+            onDeleteTurn={handleDeleteTurn}
           />
         }
         header={
@@ -552,6 +596,8 @@ export function App() {
         onTabChange={setActiveTab}
         onDropFile={handleUpload}
         showTabs={files.length > 0}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((current) => !current)}
       >
         {files.length === 0 ? (
           <FilesPanel

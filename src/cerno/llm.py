@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -172,6 +174,23 @@ class LLMClient:
         self._ensure_token_budget()
         response = await self._call_with_retry(url, body)
         parsed = _parse_response(response)
+
+        try:
+            os.makedirs("logs", exist_ok=True)
+            log_data = {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "model": body.get("model"),
+                "input": body.get("input"),
+                "instructions": body.get("instructions"),
+                "tools": [t.get("name") for t in body.get("tools", [])] if body.get("tools") else None,
+                "raw_response": parsed.raw
+            }
+            log_file = f"logs/llm_call_{int(time.time()*1000)}.json"
+            with open(log_file, "w", encoding="utf-8") as f:
+                json.dump(log_data, f, indent=2)
+        except Exception:
+            pass
+
         self._record_token_usage(parsed.usage_total_tokens)
         return parsed
 
@@ -210,7 +229,7 @@ class LLMClient:
         )
 
     async def _call_with_retry(
-        self, url: str, body: dict[str, Any], max_retries: int = 2
+        self, url: str, body: dict[str, Any], max_retries: int = 3
     ) -> dict[str, Any]:
         delay = 1.0
         last_error: Exception | None = None
@@ -219,20 +238,26 @@ class LLMClient:
                 response = await self._transport.post(url, json=body, headers=self._headers())
                 if response.status_code == 429:
                     raise LLMRateLimitError(f"rate limited: {response.text}")
+                if response.status_code >= 500:
+                    raise LLMError(f"llm server error {response.status_code}: {response.text}")
                 if response.status_code >= 400:
-                    raise LLMError(f"llm error {response.status_code}: {response.text}")
+                    raise LLMError(f"llm client error {response.status_code}: {response.text}")
                 parsed: dict[str, Any] = response.json()
                 return parsed
-            except LLMRateLimitError as exc:
+            except LLMError as exc:
+                if "client error" in str(exc):
+                    raise exc
                 last_error = exc
-                if attempt == max_retries:
-                    break
-                await asyncio.sleep(delay)
-                delay *= 2
-            except httpx.HTTPError as exc:
-                raise LLMError(f"http error: {exc}") from exc
+            except Exception as exc:
+                last_error = exc
+
+            if attempt == max_retries:
+                break
+            await asyncio.sleep(delay)
+            delay *= 2
+
         assert last_error is not None
-        raise last_error
+        raise LLMError(f"http error after {max_retries} retries: {last_error}") from last_error
 
     def _usage_day(self) -> str:
         return datetime.now(UTC).date().isoformat()

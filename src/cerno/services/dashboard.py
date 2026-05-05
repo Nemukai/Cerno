@@ -8,6 +8,7 @@ from cerno.config import Settings
 from cerno.llm import LLMClient
 from cerno.models import DashboardCell, DashboardPage, Widget
 from cerno.repositories import (
+    AssetArtifactRepository,
     DashboardCellRepository,
     DashboardRepository,
     FileRepository,
@@ -16,6 +17,7 @@ from cerno.repositories import (
     SessionRepository,
     new_id,
 )
+from cerno.services.artifact_cache import ensure_file_artifact_cached
 from cerno.services.dashboard_visuals import (
     DASHBOARD_MAX_WIDGETS,
     DashboardCandidate,
@@ -25,6 +27,7 @@ from cerno.services.dashboard_visuals import (
     profile_catalog,
     select_fallback_candidates,
 )
+from cerno.storage import ObjectStore
 
 DASHBOARD_SYSTEM_PROMPT = """You are Cerno's dashboard planner.
 Choose the most useful default dashboard widgets from the provided candidate list.
@@ -94,6 +97,8 @@ async def generate_overview(
     dashboards_repo: DashboardRepository,
     dashboard_cells_repo: DashboardCellRepository,
     llm_client: LLMClient | None = None,
+    artifacts_repo: AssetArtifactRepository | None = None,
+    object_store: ObjectStore | None = None,
 ) -> DashboardPage:
     dashboard = dashboards_repo.get_for_session(session_id)
     if dashboard is None:
@@ -112,6 +117,18 @@ async def generate_overview(
     )
 
     files = files_repo.list_for_session(session_id)
+    if artifacts_repo and object_store:
+        for file in files:
+            cached = ensure_file_artifact_cached(
+                file=file,
+                artifact_type="processed_parquet",
+                local_path=file.parquet_path,
+                settings=settings,
+                artifacts_repo=artifacts_repo,
+                object_store=object_store,
+            )
+            if cached:
+                file.parquet_path = cached
     schemas_by_file = {
         file.id: schema
         for file in files

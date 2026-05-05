@@ -23,6 +23,8 @@ type Props = {
   children: ReactNode;
   onDropFile?: (files: File[]) => void;
   showTabs?: boolean;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
 };
 
 export function Shell({
@@ -34,6 +36,8 @@ export function Shell({
   children,
   onDropFile,
   showTabs = true,
+  sidebarOpen,
+  onToggleSidebar,
 }: Props) {
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -53,9 +57,29 @@ export function Shell({
         <div className="min-w-0 flex-1">{header}</div>
       </div>
       <div className="min-h-0 flex flex-1">
-        <div className="hairline w-[300px] shrink-0 border-r bg-[#fbfaf8]">
-          {sidebar}
-        </div>
+        {sidebarOpen ? (
+          <div className="hairline relative w-[270px] shrink-0 border-r bg-[#fbfaf8]">
+            {sidebar}
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              className="small-caps absolute bottom-4 left-5 right-5 border border-neutral-300 bg-white px-3 py-2 text-xs text-neutral-500 hover:border-ember hover:text-ember"
+            >
+              hide sidebar
+            </button>
+          </div>
+        ) : (
+          <div className="relative w-0 shrink-0">
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              className="small-caps absolute bottom-4 left-4 z-20 w-32 border border-neutral-300 bg-white px-3 py-2 text-xs text-neutral-500 shadow-[0_10px_30px_rgba(14,14,14,0.08)] hover:border-ember hover:text-ember"
+              title="Show sidebar"
+            >
+              show sidebar
+            </button>
+          </div>
+        )}
         <div className="min-w-[520px] flex-1 bg-[#fffdf9]">
           {showTabs ? (
             <div className="hairline flex h-12 items-end gap-6 border-b bg-paper px-8">

@@ -28,6 +28,7 @@ def create_app() -> FastAPI:
         title="Cerno",
         version=__version__,
         lifespan=lifespan,
+        root_path=settings.api_root_path,
     )
     app.add_middleware(
         SessionMiddleware,

@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.models import ChatMessage, ChatTurn, Widget
 from cerno.repositories import (
+    AssetArtifactRepository,
+    ChatArtifactRepository,
     ChatRepository,
     DashboardCellRepository,
     DashboardRepository,
@@ -64,12 +66,14 @@ async def post_chat(
             session_id=session_id,
             user_message=message,
             settings=settings,
-            llm_client=llm_client.with_usage(LLMUsageRepository(conn), user.id),
+            llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
             files_repo=FileRepository(conn),
             schemas_repo=SchemaRepository(conn),
             dashboards_repo=DashboardRepository(conn),
             dashboard_cells_repo=DashboardCellRepository(conn),
             chat_repo=ChatRepository(conn),
+            chat_artifacts_repo=ChatArtifactRepository(conn),
+            artifacts_repo=AssetArtifactRepository(conn),
             data_docs_repo=DataDocRepository(conn),
         )
     except Exception as exc:
@@ -92,3 +96,10 @@ def get_session_turns(session_id: str, conn: ConnDep, user: GrantedUserDep) -> l
 def get_turn_messages(turn_id: str, conn: ConnDep, user: GrantedUserDep) -> list[ChatMessage]:
     _require_turn_owned(conn, turn_id, user.id)
     return ChatRepository(conn).list_messages(turn_id)
+
+
+@router.delete("/turns/{turn_id}", status_code=204)
+def delete_turn(turn_id: str, conn: ConnDep, user: GrantedUserDep) -> None:
+    _require_turn_owned(conn, turn_id, user.id)
+    ChatRepository(conn).delete_turn(turn_id)
+    conn.commit()

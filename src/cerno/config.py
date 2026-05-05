@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_host: str = "127.0.0.1"
     api_port: int = 8765
+    api_root_path: str = ""
     frontend_dev_url: str = "http://127.0.0.1:5173"
     frontend_origin: str = "http://127.0.0.1:5173"
 
@@ -57,6 +58,14 @@ class Settings(BaseSettings):
     per_user_quota_gb: int = 5
     daily_token_cap: int = 200_000
 
+    postgres_url: str = ""
+
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = ""
+    r2_endpoint_url: str = ""
+
     def validate_runtime_safety(self) -> None:
         production_like = self.app_env.lower() in {"prod", "production"}
         public_auth = bool(self.google_client_id or self.google_client_secret)
@@ -70,6 +79,22 @@ class Settings(BaseSettings):
 
     def per_user_quota_bytes(self) -> int:
         return self.per_user_quota_gb * 1024 * 1024 * 1024
+
+    def use_postgres(self) -> bool:
+        return bool(self.postgres_url.strip())
+
+    def use_r2(self) -> bool:
+        return bool(
+            self.r2_bucket_name.strip()
+            and self.r2_access_key_id.strip()
+            and self.r2_secret_access_key.strip()
+            and (self.r2_endpoint_url.strip() or self.r2_account_id.strip())
+        )
+
+    def resolved_r2_endpoint_url(self) -> str:
+        if self.r2_endpoint_url.strip():
+            return self.r2_endpoint_url.strip()
+        return f"https://{self.r2_account_id.strip()}.r2.cloudflarestorage.com"
 
     def operator_email_set(self) -> set[str]:
         return {e.strip().lower() for e in self.operator_emails.split(",") if e.strip()}
@@ -90,6 +115,12 @@ class Settings(BaseSettings):
 
     def raw_parquet_path(self, user_id: str, session_id: str, file_id: str) -> Path:
         return self.session_dir(user_id, session_id) / f"{file_id}.raw.parquet"
+
+    def cache_dir(self) -> Path:
+        return self.data_root / "cache"
+
+    def object_cache_path(self, object_key: str) -> Path:
+        return self.cache_dir() / object_key
 
     def db_path(self) -> Path:
         return self.data_root / "cerno.sqlite"

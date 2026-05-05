@@ -21,6 +21,7 @@ from cerno.models import (
 )
 from cerno.models import File as FileModel
 from cerno.repositories import (
+    AssetArtifactRepository,
     DataDocRepository,
     FileRepository,
     LinkRepository,
@@ -28,6 +29,9 @@ from cerno.repositories import (
     ProcessingEventRepository,
     SchemaRepository,
     SessionRepository,
+    SourceAssetRepository,
+    WorkspaceAssetRepository,
+    WorkspaceTableRepository,
 )
 from cerno.services.discovery import DiscoveryError, run_discovery
 from cerno.services.ingest import IngestedFile, IngestError, ingest_file
@@ -40,6 +44,7 @@ from cerno.services.reingest import (
     apply_approval,
     preview_rows,
 )
+from cerno.storage import get_object_store
 
 router = APIRouter(tags=["sessions"])
 
@@ -128,6 +133,11 @@ def upload_files(
     tmp_dir = settings.session_dir(user.id, session_id)
     tmp_dir.mkdir(parents=True, exist_ok=True)
     files_repo = FileRepository(conn)
+    source_assets_repo = SourceAssetRepository(conn)
+    workspace_assets_repo = WorkspaceAssetRepository(conn)
+    artifacts_repo = AssetArtifactRepository(conn)
+    tables_repo = WorkspaceTableRepository(conn)
+    object_store = get_object_store(settings)
 
     files_out: list[FileModel] = []
     any_new = False
@@ -145,11 +155,17 @@ def upload_files(
             ingested: list[IngestedFile] = ingest_file(
                 source_path=tmp_path,
                 original_filename=original,
+                original_content_type=upload.content_type,
                 original_size_bytes=upload_size,
                 user_id=user.id,
                 session_id=session_id,
                 settings=settings,
                 files_repo=files_repo,
+                source_assets_repo=source_assets_repo,
+                workspace_assets_repo=workspace_assets_repo,
+                artifacts_repo=artifacts_repo,
+                tables_repo=tables_repo,
+                object_store=object_store,
             )
         except IngestError as exc:
             raise HTTPException(status_code=400, detail=f"{original}: {exc}") from exc
@@ -336,7 +352,9 @@ async def post_process(
             links_repo=links_repo,
             data_docs_repo=DataDocRepository(conn),
             events_repo=events_repo,
-            llm_client=llm_client.with_usage(LLMUsageRepository(conn), user.id),
+            llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
+            artifacts_repo=AssetArtifactRepository(conn),
+            object_store=get_object_store(settings),
         )
     except DiscoveryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -463,6 +481,9 @@ def post_approve(
             links_repo=LinkRepository(conn),
             sessions_repo=SessionRepository(conn),
             events_repo=ProcessingEventRepository(conn),
+            artifacts_repo=AssetArtifactRepository(conn),
+            tables_repo=WorkspaceTableRepository(conn),
+            object_store=get_object_store(settings),
         )
         _refresh_docs_from_approval(
             session_id=session_id,

@@ -88,6 +88,55 @@ class File(BaseModel):
     created_at: datetime
 
 
+class SourceAsset(BaseModel):
+    id: str
+    user_id: str
+    sha256: str
+    original_filename: str
+    mime_type: str | None = None
+    size_bytes: int
+    storage_backend: str
+    object_key: str
+    created_at: datetime
+
+
+class WorkspaceAsset(BaseModel):
+    id: str
+    session_id: str
+    source_asset_id: str
+    display_name: str
+    created_at: datetime
+
+
+class AssetArtifact(BaseModel):
+    id: str
+    user_id: str
+    session_id: str | None = None
+    source_asset_id: str | None = None
+    file_id: str | None = None
+    artifact_type: str
+    storage_backend: str
+    object_key: str
+    content_hash: str | None = None
+    size_bytes: int = 0
+    mime_type: str | None = None
+    created_at: datetime
+
+
+class WorkspaceTable(BaseModel):
+    id: str
+    session_id: str
+    workspace_asset_id: str | None = None
+    legacy_file_id: str | None = None
+    sheet_name: str | None = None
+    table_index: int = 0
+    display_name: str
+    row_count: int = 0
+    current_schema_version: int = 1
+    processed_artifact_id: str | None = None
+    created_at: datetime
+
+
 class SchemaColumn(BaseModel):
     file_id: str
     schema_version: int
@@ -251,6 +300,22 @@ class ChatMessage(BaseModel):
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
     tool_result: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class ChatArtifact(BaseModel):
+    id: str
+    session_id: str
+    turn_id: str | None = None
+    message_id: str | None = None
+    artifact_type: str
+    title: str
+    inline_payload: dict[str, Any] | None = None
+    storage_backend: str | None = None
+    object_key: str | None = None
+    size_bytes: int = 0
+    mime_type: str | None = None
+    order_index: int = 0
     created_at: datetime
 
 

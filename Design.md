@@ -69,6 +69,10 @@ The session workspace uses a three-column chat-first layout:
 - Center: Ask, Insights, and Files tabs.
 - Right: selected visuals expanded for inspection.
 
+The left sidebar can be hidden from the top header. It should stay narrow and
+scannable: one Files link with an upload count, then compact chat rows. Chat row
+context actions are rename and delete.
+
 The main product feeling should be "Here's what Cerno found. Ask follow-ups or
 save insights." It should not feel like a draggable-widget dashboard builder.
 
@@ -91,8 +95,9 @@ log. Approval happens here.
 
 Files is the data management surface. It lists uploaded files, row counts,
 schema versions, header status, and upload dates. Adding or deleting a file
-starts a fresh processing pass while the backend keeps content-hash dedup and
-reuses unchanged uploaded data where possible.
+resets the generated understanding and asks the user to process files again.
+The backend still keeps content-hash dedup and reuses unchanged uploaded data
+where possible.
 
 This surface should stay summary-first. Detailed schema belongs in the drawer,
 not as one giant inline table.
@@ -124,7 +129,8 @@ orange variant. Keep most surfaces white, paper, neutral gray, and ink.
 - Pointer-reactive ASCII is part of the home identity.
 - Buttons and tabs should be simple, sharp, and predictable.
 - Ask should be the default active session tab.
-- Visuals are selected from the right inspector.
+- Visuals are selected from the right inspector, and the inspector should only
+  appear after a visual is selected.
 - File add/delete actions should make the user aware that Cerno is refreshing
   workspace understanding.
 - Destructive actions need explicit confirmation.

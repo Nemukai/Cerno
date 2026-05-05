@@ -22,14 +22,17 @@ from cerno.models import (
     LinkDirection,
 )
 from cerno.repositories import (
+    AssetArtifactRepository,
     DataDocRepository,
     FileRepository,
     LinkRepository,
     ProcessingEventRepository,
     SessionRepository,
 )
+from cerno.services.artifact_cache import ensure_file_artifact_cached
 from cerno.services.ingest import first_n_raw_rows, slugify_table_name
 from cerno.services.sandbox import run_python
+from cerno.storage import ObjectStore
 
 DISCOVERY_MODEL = "gpt-5.5"
 DISCOVERY_REASONING_EFFORT = "high"
@@ -90,34 +93,25 @@ class LinkCandidate:
     summary: str
 
 
-SYSTEM_PROMPT = """You are Cerno's data discovery engine. Several tabular files have been uploaded.
-Your job is to look at the raw first rows of each file and decide:
+SYSTEM_PROMPT = """You are Cerno's highly capable data discovery engine. Tabular files have been uploaded for analysis.
+Your job is to deeply analyze the raw first rows and the Python analysis notes, then systematically determine:
 
-1. Which row is the header row (0-indexed). Spreadsheets often have title rows,
-   blank rows, or report metadata before the actual column headers.
-2. A short, human-friendly name for the file: 2-4 plain business words,
-   no file extension, no raw date stamp unless the date is essential.
-3. A 1-2 sentence description of what the file contains for a non-technical
-   business user.
-4. The columns: name (post-header), plain-language description, and one of these data types:
-   string, int, float, date, datetime, bool, category.
+1. The exact header row (0-indexed). Account for files with title rows, blank rows, or metadata before actual headers.
+2. A clean, human-friendly business name for each file (e.g., 'Customer Orders', 'Inventory Log'). Omit extensions and raw timestamps.
+3. A concise, non-technical 1-2 sentence description of the file's primary purpose and grain (what one row represents).
+4. The exact schema: column names (post-header), plain-language descriptions, and the correct data type (string, int, float, date, datetime, bool, category).
 
-Then, looking across all files, identify column-to-column relationships
-(shared identifiers, foreign keys, denormalized references). For each link explain it
-in one plain sentence and pick a direction.
+Next, synthesize cross-file relationships. Identify strong identifiers (e.g. transaction_id, user_id, sku) and declare links.
+For each link, write a clear 1-sentence explanation of how they join, and establish the direction (one_to_one, many_to_one, many_to_many).
+Prioritize meaningful business keys over coincidental low-cardinality matches.
 
-Prefer meaningful business identifiers over coincidental low-cardinality matches. A strong
-link usually has matching values and compatible names such as transaction_id, customer_id,
-vehicle number, order number, account code, toll shift, or other domain identifiers.
+Finally, construct the internal DataDoc (documentation):
+- Write a 2-4 sentence cohesive overview of the entire workspace and how the files interconnect.
+- Ensure the 'grain' and 'caveats' for each file are well-documented.
+- Generate a robust glossary of business terms or acronyms found in the headers or data.
+- Supply 3-5 highly relevant, analytical 'starter questions' that a user might want to ask this data.
 
-Finally, write a 2-4 sentence overview of how all the files relate to each other.
-Also create internal documentation that explains what is in the data, the grain of
-each file, important fields, caveats, relationships, and useful starter questions
-for a chat analyst.
-
-Be precise. Reject coincidental overlaps. Use the file names and the data to ground
-your decisions. Return ONLY strict JSON conforming to the requested schema, no prose,
-no fences."""
+Ground all decisions in the data. Return strictly formatted JSON matching the schema. Do not include markdown fences or conversational text."""
 
 
 RESPONSE_SCHEMA = {
@@ -239,12 +233,10 @@ RESPONSE_SCHEMA = {
                                 "items": {
                                     "type": "object",
                                     "additionalProperties": False,
-                                    "required": ["name", "dtype", "meaning", "role"],
+                                    "required": ["name", "meaning"],
                                     "properties": {
                                         "name": {"type": "string"},
-                                        "dtype": {"type": "string"},
-                                        "meaning": {"type": "string"},
-                                        "role": {"type": "string"},
+                                        "meaning": {"type": "string"}
                                     },
                                 },
                             },
@@ -376,15 +368,15 @@ def _build_prompt(file_payload: list[dict[str, Any]], analysis: str) -> str:
     )
 
 
-ANALYSIS_PROMPT = """Use the Python tool to inspect the full uploaded dataframes.
-Do not write files. Do not use SQL. Use pandas only through the pre-bound dataframes.
+ANALYSIS_PROMPT = """You must inspect the full uploaded dataframes using the provided tools (profile_table, find_shared_identifiers).
+If you need highly specific aggregations not covered by the standard tools, use run_python. Do not write files or use SQL.
 
-Return concise notes covering:
-- what each file appears to contain
-- likely header row and whether there are title/metadata rows
-- row counts, null-heavy columns, likely IDs, dates, measures, and categories
-- possible relationships between files
-- caveats or data quality issues a non-technical user should know
+Return concise, structured profiling notes covering:
+- File Purpose & Grain: What does each file represent? What does one row mean?
+- Schema Reality: Likely header row index. Are there title/metadata rows to skip?
+- Column Profiling: Row counts, highly null columns, primary keys/IDs, date columns, key measures, and categoricals.
+- Relationships: Concrete evidence of shared identifiers between files (use find_shared_identifiers).
+- Data Quality & Caveats: Any anomalies, missing data patterns, or gotchas a non-technical user must know.
 """
 
 
@@ -433,6 +425,63 @@ def _build_analysis_registry(
         code = str(args["code"])
         return run_python(code, tables=raw_tables, timeout_seconds=20.0).to_dict()
 
+    async def profile_table_handler(args: dict[str, Any]) -> dict[str, Any]:
+        table_name = str(args.get("table_name", ""))
+        df = raw_tables.get(table_name)
+        if df is None:
+            return {"error": f"Table {table_name} not found"}
+
+        stats = {}
+        for col in df.columns:
+            series = df[col]
+            nulls = int(series.isnull().sum())
+            distinct = int(series.nunique())
+            stats[str(col)] = {
+                "dtype": str(series.dtype),
+                "nulls": nulls,
+                "null_pct": round(nulls / len(df) * 100, 1) if len(df) > 0 else 0,
+                "distinct": distinct,
+                "sample": [str(x) for x in series.dropna().unique()[:3]]
+            }
+        return {"row_count": len(df), "columns": stats}
+
+    async def find_shared_identifiers_handler(args: dict[str, Any]) -> dict[str, Any]:
+        table_a = str(args.get("table_a", ""))
+        table_b = str(args.get("table_b", ""))
+        df_a = raw_tables.get(table_a)
+        df_b = raw_tables.get(table_b)
+        if df_a is None or df_b is None:
+            return {"error": "One or both tables not found"}
+
+        results = []
+        for col_a in df_a.columns:
+            for col_b in df_b.columns:
+                set_a = set(df_a[col_a].dropna().astype(str).unique())
+                if not set_a or len(set_a) < 2:
+                    continue
+                set_b = set(df_b[col_b].dropna().astype(str).unique())
+                if not set_b or len(set_b) < 2:
+                    continue
+
+                intersection = set_a.intersection(set_b)
+                if not intersection:
+                    continue
+
+                overlap_a = len(intersection) / len(set_a)
+                overlap_b = len(intersection) / len(set_b)
+
+                if overlap_a > 0.1 or overlap_b > 0.1:
+                    results.append({
+                        "col_a": col_a,
+                        "col_b": col_b,
+                        "overlap_a": round(overlap_a, 3),
+                        "overlap_b": round(overlap_b, 3),
+                        "distinct_a": len(set_a),
+                        "distinct_b": len(set_b),
+                        "intersection_size": len(intersection)
+                    })
+        return {"potential_links": sorted(results, key=lambda x: max(x["overlap_a"], x["overlap_b"]), reverse=True)[:10]}
+
     registry.register(
         Tool(
             name="list_raw_tables",
@@ -457,6 +506,35 @@ def _build_analysis_registry(
             handler=run_python_handler,
         )
     )
+    registry.register(
+        Tool(
+            name="profile_table",
+            description="Quickly get row counts, null percentages, distinct counts, and sample values for all columns in a table without writing Python code.",
+            parameters={
+                "type": "object",
+                "properties": {"table_name": {"type": "string"}},
+                "required": ["table_name"],
+                "additionalProperties": False,
+            },
+            handler=profile_table_handler,
+        )
+    )
+    registry.register(
+        Tool(
+            name="find_shared_identifiers",
+            description="Automatically compute column value overlaps between two tables to find potential foreign keys or shared identifiers.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "table_a": {"type": "string"},
+                    "table_b": {"type": "string"}
+                },
+                "required": ["table_a", "table_b"],
+                "additionalProperties": False,
+            },
+            handler=find_shared_identifiers_handler,
+        )
+    )
     return registry
 
 
@@ -476,8 +554,9 @@ async def _analyze_with_python(
             }
         ],
         instructions=(
-            "You are Cerno's internal data profiler. Use Python to inspect full files "
-            "before writing concise analysis notes. Prefer simple pandas operations."
+            "You are Cerno's internal data profiler. Use the specialized tools (profile_table, find_shared_identifiers) "
+            "to quickly inspect files. Use run_python only for complex or specific queries not covered by the standard tools. "
+            "Write concise analysis notes about grain, column roles, and relationships."
         ),
         reasoning_effort=DISCOVERY_REASONING_EFFORT,
         reasoning_summary=DISCOVERY_REASONING_SUMMARY,
@@ -499,9 +578,9 @@ def _data_doc_from_result(session_id: str, result: DiscoveryResult) -> DataDoc:
             columns=[
                 DataDocColumn(
                     name=str(col.get("name") or ""),
-                    dtype=str(col.get("dtype") or "string"),
+                    dtype="auto",
                     meaning=str(col.get("meaning") or ""),
-                    role=str(col.get("role") or ""),
+                    role="auto",
                 )
                 for col in item.get("columns", [])
                 if isinstance(col, dict)
@@ -722,6 +801,8 @@ async def run_discovery(
     data_docs_repo: DataDocRepository,
     events_repo: ProcessingEventRepository,
     llm_client: LLMClient,
+    artifacts_repo: AssetArtifactRepository | None = None,
+    object_store: ObjectStore | None = None,
 ) -> DiscoveryResult:
     if not settings.llm_api_key:
         raise DiscoveryError("discovery requires an LLM — set CERNO_LLM_API_KEY")
@@ -733,6 +814,18 @@ async def run_discovery(
     files = files_repo.list_for_session(session_id)
     if not files:
         raise DiscoveryError("no files in session")
+    if artifacts_repo and object_store:
+        for f in files:
+            cached = ensure_file_artifact_cached(
+                file=f,
+                artifact_type="raw_parquet",
+                local_path=f.raw_parquet_path,
+                settings=settings,
+                artifacts_repo=artifacts_repo,
+                object_store=object_store,
+            )
+            if cached:
+                f.raw_parquet_path = cached
 
     events_repo.append(
         session_id=session_id,

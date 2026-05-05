@@ -68,6 +68,14 @@ class DuckDBEngine:
         if not _IDENT_RE.match(table_name):
             raise EngineError(f"invalid table name: {table_name}")
         path_str = str(parquet_path)
+        # Guard: skip empty parquet files that DuckDB can't handle
+        try:
+            import polars as pl
+            schema = pl.read_parquet_schema(path_str)
+            if len(schema) == 0:
+                return  # silently skip empty-schema files
+        except Exception:
+            pass  # let DuckDB handle the error naturally
         escaped = path_str.replace("'", "''")
         self._conn.execute(
             f"CREATE OR REPLACE VIEW \"{table_name}\" AS SELECT * FROM read_parquet('{escaped}')"

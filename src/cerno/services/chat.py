@@ -11,6 +11,8 @@ from cerno.config import Settings
 from cerno.llm import LLMClient, run_tool_loop
 from cerno.models import ChatTurn, DashboardCell, Widget
 from cerno.repositories import (
+    AssetArtifactRepository,
+    ChatArtifactRepository,
     ChatRepository,
     DashboardCellRepository,
     DashboardRepository,
@@ -19,9 +21,11 @@ from cerno.repositories import (
     SchemaRepository,
     new_id,
 )
+from cerno.services.artifact_cache import ensure_file_artifact_cached
 from cerno.services.engine import DuckDBEngine
 from cerno.services.ingest import slugify_table_name
 from cerno.services.tools import ToolContext, build_tool_registry
+from cerno.storage import get_object_store
 
 SYSTEM_PROMPT = (
     "You are Cerno, a plain-English data analyst. You are chatting with a non-technical "
@@ -33,8 +37,9 @@ SYSTEM_PROMPT = (
     "Use list_tables and describe_table when you need exact dataframe columns. "
     "When the answer benefits from a chart, KPI, or table, call render_widget — those "
     "widgets become a new dashboard page the user can pin. If the question is purely "
-    "conversational and no widget is useful, just reply in text. Keep the final message "
-    "short and direct; the widgets carry the detail."
+    "conversational and no widget is useful, just reply in text. "
+    "Format responses in visually clean markdown. Use bullet points or short paragraphs. "
+    "Keep the final message short, grounded, and clean; the widgets carry the detail."
 )
 
 
@@ -58,21 +63,35 @@ async def run_chat_turn(
     dashboards_repo: DashboardRepository,
     dashboard_cells_repo: DashboardCellRepository,
     chat_repo: ChatRepository,
+    chat_artifacts_repo: ChatArtifactRepository,
+    artifacts_repo: AssetArtifactRepository,
     data_docs_repo: DataDocRepository,
 ) -> ChatTurnResult:
     del schemas_repo  # reserved for future schema-aware prompts
     turn = chat_repo.create_turn(session_id=session_id, user_message=user_message)
     chat_repo.append_message(turn_id=turn.id, role="user", content=user_message)
+    chat_repo.conn.commit()
 
     files = files_repo.list_for_session(session_id)
     engine = DuckDBEngine()
+    object_store = get_object_store(settings)
     tables: dict[str, pd.DataFrame] = {}
     try:
         for file in files:
             table_name = slugify_table_name(file.filename)
+            parquet_path = ensure_file_artifact_cached(
+                file=file,
+                artifact_type="processed_parquet",
+                local_path=file.parquet_path,
+                settings=settings,
+                artifacts_repo=artifacts_repo,
+                object_store=object_store,
+            )
+            if not parquet_path:
+                continue
             engine.register_file(
                 table_name=table_name,
-                parquet_path=file.parquet_path,
+                parquet_path=parquet_path,
                 row_count=file.row_count,
             )
             tables[table_name] = engine.to_pandas(table_name)
@@ -88,6 +107,7 @@ async def run_chat_turn(
 
         def on_message(message: dict[str, Any]) -> None:
             _persist_loop_message(chat_repo, turn.id, message)
+            chat_repo.conn.commit()
 
         try:
             result = await run_tool_loop(
@@ -102,6 +122,7 @@ async def run_chat_turn(
             )
         except Exception:
             chat_repo.set_turn_state(turn.id, "failed")
+            chat_repo.conn.commit()
             raise
 
         spawned_page_id: str | None = None
@@ -109,6 +130,7 @@ async def run_chat_turn(
             spawned_page_id = _spawn_dashboard_page(
                 dashboards_repo=dashboards_repo,
                 dashboard_cells_repo=dashboard_cells_repo,
+                chat_artifacts_repo=chat_artifacts_repo,
                 session_id=session_id,
                 turn_id=turn.id,
                 user_message=user_message,
@@ -120,6 +142,7 @@ async def run_chat_turn(
             assistant_message=result.final_message,
             spawned_page_id=spawned_page_id,
         )
+        chat_repo.conn.commit()
 
         return ChatTurnResult(
             turn=turn,
@@ -173,6 +196,7 @@ def _spawn_dashboard_page(
     *,
     dashboards_repo: DashboardRepository,
     dashboard_cells_repo: DashboardCellRepository,
+    chat_artifacts_repo: ChatArtifactRepository,
     session_id: str,
     turn_id: str,
     user_message: str,
@@ -203,4 +227,12 @@ def _spawn_dashboard_page(
             created_at=datetime.now(UTC),
         )
         dashboard_cells_repo.add_cell(cell)
+        chat_artifacts_repo.create(
+            session_id=session_id,
+            turn_id=turn_id,
+            artifact_type=f"widget:{widget.kind}",
+            title=widget.title,
+            inline_payload={"widget": widget.model_dump()},
+            order_index=idx,
+        )
     return page.id

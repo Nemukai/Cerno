@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { listTurnMessages } from "../lib/api";
 import type {
   ChatMessage,
@@ -29,24 +29,21 @@ type Props = {
 export function ChatSidebar({
   turns,
   pages,
-  files,
-  discovery,
   dataDoc,
-  discoveryStatus,
   disabled,
   sending,
   onSend,
   onOpenPage,
-  onOpenInsights,
-  onOpenFiles,
 }: Props) {
   const [input, setInput] = useState("");
+  const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const [messagesByTurn, setMessagesByTurn] = useState<
     Record<string, ChatMessage[]>
   >({});
   const [openTraceByTurn, setOpenTraceByTurn] = useState<Record<string, boolean>>(
     {},
   );
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,9 +91,24 @@ export function ChatSidebar({
   const submit = () => {
     const msg = input.trim();
     if (!msg || disabled || sending) return;
+    setPendingMessage(msg);
     onSend(msg);
     setInput("");
   };
+
+  // Clear pending message when turns update (meaning the server responded)
+  useEffect(() => {
+    if (!sending && pendingMessage) {
+      setPendingMessage(null);
+    }
+  }, [sending, turns]);
+
+  // Auto-scroll to bottom when sending or turns change
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [turns, sending, pendingMessage]);
 
   const pageByIdTitle = (id: string): string => {
     const p = pages.find((x) => x.id === id);
@@ -114,29 +126,30 @@ export function ChatSidebar({
 
   return (
     <section className="flex h-full w-full flex-col bg-[#fffdf9]">
-      <div className="hairline border-b bg-white/70 px-8 py-6">
-        <div className="small-caps text-sm text-ember">ask</div>
-        <h2 className="mt-2 font-mono text-3xl text-ink">
-          Here&apos;s what Cerno found.
-        </h2>
-        <p className="mt-2 max-w-2xl text-base leading-7 text-neutral-600">
-          Ask follow-ups, turn answers into visuals, or save the useful insights
-          Cerno finds while reading this workspace.
-        </p>
-      </div>
-      <div className="flex-1 overflow-y-auto px-8 py-6">
-        <InlineFindings
-          files={files}
-          discovery={discovery}
-          dataDoc={dataDoc}
-          discoveryStatus={discoveryStatus}
-          onOpenInsights={onOpenInsights}
-          onOpenFiles={onOpenFiles}
-        />
-        {turns.length === 0 ? (
-          <div className="mt-8 border border-dashed border-neutral-200 bg-white/70 px-5 py-8 text-base text-neutral-500">
-            Ask Cerno what changed, what looks unusual, or which chart would be
-            useful next.
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-6">
+        {turns.length === 0 && !pendingMessage ? (
+          <div className="mt-4 flex flex-col items-center justify-center text-center">
+            <div className="mb-6 font-mono text-xl text-neutral-400">
+              How can I help you analyze this workspace?
+            </div>
+            {dataDoc?.starter_questions && dataDoc.starter_questions.length > 0 && (
+              <div className="flex flex-col gap-2 w-full max-w-2xl">
+                {dataDoc.starter_questions.map((question) => (
+                  <button
+                    key={question}
+                    type="button"
+                    onClick={() => {
+                      if (disabled || sending) return;
+                      setPendingMessage(question);
+                      onSend(question);
+                    }}
+                    className="border border-neutral-200 bg-white px-4 py-3 text-left text-sm text-neutral-700 hover:border-ember hover:text-ember transition"
+                  >
+                    {question}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           turns.map((turn) => {
@@ -187,117 +200,73 @@ export function ChatSidebar({
             );
           })
         )}
+
+        {/* Optimistic pending message + thinking indicator */}
+        {pendingMessage && sending && (
+          <div className="hairline border-b py-4">
+            <div className="mb-4 flex justify-end">
+              <div className="max-w-[78%] border border-orange-200 bg-orange-50 px-4 py-3 text-base text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
+                <MarkdownText text={pendingMessage} compact />
+              </div>
+            </div>
+            <div className="small-caps mb-2 text-sm text-ember">
+              cerno
+            </div>
+            <ThinkingIndicator />
+          </div>
+        )}
       </div>
       <div className="hairline border-t bg-white/90 px-8 py-4">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          placeholder={disabled ? "upload a file to start" : "ask\u2026"}
-          disabled={disabled}
-          rows={3}
-          className="hairline w-full resize-none border bg-white p-3 font-sans text-base text-ink focus:outline-none focus:ring-1 focus:ring-ember disabled:opacity-40"
-        />
-        <div className="mt-2 flex items-center justify-between">
-          <div className="text-[10px] text-neutral-400">{"\u2318 + enter"}</div>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={disabled || sending || !input.trim()}
-            className="small-caps bg-ember px-3 py-1 text-xs text-white hover:bg-ember-hover disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {sending ? "sending\u2026" : "send"}
-          </button>
+        <div className="flex flex-col border bg-white focus-within:ring-1 focus-within:ring-ember transition-shadow">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder={disabled ? "upload a file to start" : "ask\u2026"}
+            disabled={disabled}
+            rows={2}
+            className="w-full resize-none bg-transparent p-4 font-sans text-base text-ink focus:outline-none disabled:opacity-40"
+          />
+          <div className="flex items-center justify-between bg-neutral-50 px-4 py-2 border-t border-neutral-100">
+            <div className="text-[10px] text-neutral-400">{"enter to send, shift+enter for new line"}</div>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={disabled || sending || !input.trim()}
+              className="small-caps bg-ember px-4 py-1.5 text-xs text-white hover:bg-ember-hover disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
+            >
+              {sending ? "sending\u2026" : "send"}
+            </button>
+          </div>
         </div>
       </div>
     </section>
   );
 }
 
-function InlineFindings({
-  files,
-  discovery,
-  dataDoc,
-  discoveryStatus,
-  onOpenInsights,
-  onOpenFiles,
-}: {
-  files: FileRecord[];
-  discovery: DiscoveryResponse | null;
-  dataDoc: DataDoc | null;
-  discoveryStatus: DiscoveryStatus;
-  onOpenInsights: () => void;
-  onOpenFiles: () => void;
-}) {
-  if (files.length === 0) {
-    return (
-      <div className="border border-orange-200 bg-orange-50/80 px-5 py-4">
-        <div className="small-caps text-sm text-ember">start here</div>
-        <p className="mt-2 text-base text-neutral-700">
-          Add files first. Cerno will read them, generate insights, then make
-          the chat useful.
-        </p>
-        <button
-          type="button"
-          onClick={onOpenFiles}
-          className="small-caps mt-4 border border-ink bg-white px-3 py-2 text-sm text-ink hover:border-ember hover:text-ember"
-        >
-          open files
-        </button>
-      </div>
-    );
-  }
-
-  const overview = dataDoc?.overview || discovery?.overview;
-  const notes = dataDoc?.usage_notes ?? [];
-  const starterQuestions = dataDoc?.starter_questions ?? [];
-
+function ThinkingIndicator() {
   return (
-    <div className="mb-6 border border-orange-200 bg-white px-5 py-4 shadow-[0_14px_40px_rgba(80,45,20,0.05)]">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="small-caps text-sm text-ember">found during processing</div>
-          <p className="mt-2 max-w-3xl text-base leading-7 text-neutral-700">
-            {overview ||
-              (discoveryStatus === "approved"
-                ? "Cerno has approved data context for this workspace."
-                : "Cerno is still building the workspace understanding.")}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onOpenInsights}
-          className="small-caps border border-ink px-3 py-2 text-sm text-ink hover:border-ember hover:text-ember"
-        >
-          view insights
-        </button>
+    <div className="flex items-center gap-3 py-2">
+      <div className="flex items-center gap-1">
+        <span
+          className="inline-block h-1.5 w-1.5 rounded-full bg-ember animate-bounce"
+          style={{ animationDelay: "0ms", animationDuration: "1s" }}
+        />
+        <span
+          className="inline-block h-1.5 w-1.5 rounded-full bg-ember animate-bounce"
+          style={{ animationDelay: "150ms", animationDuration: "1s" }}
+        />
+        <span
+          className="inline-block h-1.5 w-1.5 rounded-full bg-ember animate-bounce"
+          style={{ animationDelay: "300ms", animationDuration: "1s" }}
+        />
       </div>
-      {notes.length > 0 ? (
-        <div className="mt-4 grid gap-2 sm:grid-cols-2">
-          {notes.slice(0, 2).map((note) => (
-            <div key={note} className="border-l-2 border-orange-200 pl-3 text-sm leading-6 text-neutral-600">
-              {note}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {starterQuestions.length > 0 ? (
-        <div className="mt-4 flex flex-wrap gap-2">
-          {starterQuestions.slice(0, 3).map((question) => (
-            <span
-              key={question}
-              className="border border-neutral-200 bg-[#fff8f1] px-3 py-1.5 text-sm text-neutral-700"
-            >
-              {question}
-            </span>
-          ))}
-        </div>
-      ) : null}
+      <span className="text-sm text-neutral-400 animate-pulse">analyzing your data…</span>
     </div>
   );
 }

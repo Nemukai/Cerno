@@ -184,3 +184,11 @@ export function listTurns(sessionId: string): Promise<ChatTurn[]> {
 export function listTurnMessages(turnId: string): Promise<ChatMessage[]> {
   return request<ChatMessage[]>(`/turns/${turnId}/messages`);
 }
+
+export async function deleteTurn(turnId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/turns/${turnId}`, { method: "DELETE" });
+  if (!res.ok && res.status !== 204) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText} ${body}`.trim());
+  }
+}

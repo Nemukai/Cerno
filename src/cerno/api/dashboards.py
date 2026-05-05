@@ -8,6 +8,7 @@ from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.models import Anomaly, DashboardCell, DashboardPage
 from cerno.repositories import (
     AnomalyRepository,
+    AssetArtifactRepository,
     DashboardCellRepository,
     DashboardRepository,
     FileRepository,
@@ -16,6 +17,7 @@ from cerno.repositories import (
     SessionRepository,
 )
 from cerno.services.dashboard import generate_overview
+from cerno.storage import get_object_store
 
 router = APIRouter(tags=["dashboard"])
 
@@ -50,6 +52,8 @@ async def post_build_dashboard(
         dashboards_repo=dashboards_repo,
         dashboard_cells_repo=dashboard_cells_repo,
         llm_client=llm_client,
+        artifacts_repo=AssetArtifactRepository(conn),
+        object_store=get_object_store(settings),
     )
     widgets = dashboard_cells_repo.list_for_page(page.id)
     return {
