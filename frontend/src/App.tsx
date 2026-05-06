@@ -438,10 +438,8 @@ export function App() {
     setHomeView("sessions");
     if (session?.id !== nextSession.id) {
       markWorkspaceOpened(nextSession.id);
-      startNavigationTransition(() => {
-        clearSessionState();
-        setSession(nextSession);
-      });
+      clearSessionState();
+      setSession(nextSession);
     }
     if (activeTab !== route.tab) {
       startNavigationTransition(() => {
@@ -466,12 +464,10 @@ export function App() {
       try {
         const s = await createSession(name);
         markWorkspaceOpened(s.id);
-        startNavigationTransition(() => {
-          clearSessionState();
-          setHomeView("sessions");
-          setSession(s);
-          setActiveTab("files");
-        });
+        clearSessionState();
+        setHomeView("sessions");
+        setSession(s);
+        setActiveTab("files");
         navigateSessionTab(s.id, "files");
         await refreshSessions();
       } catch (err) {
@@ -480,22 +476,20 @@ export function App() {
         setStarting(false);
       }
     },
-    [clearSessionState, navigateSessionTab, refreshSessions, startNavigationTransition],
+    [clearSessionState, navigateSessionTab, refreshSessions],
   );
 
   const handleResumeSession = useCallback(
     (s: Session) => {
       markWorkspaceOpened(s.id);
       prefetchWorkspace(s.id);
-      startNavigationTransition(() => {
-        clearSessionState();
-        setHomeView("sessions");
-        setSession(s);
-        setActiveTab("ask");
-      });
+      clearSessionState();
+      setHomeView("sessions");
+      setSession(s);
+      setActiveTab("ask");
       navigateSessionTab(s.id, "ask");
     },
-    [clearSessionState, navigateSessionTab, prefetchWorkspace, startNavigationTransition],
+    [clearSessionState, navigateSessionTab, prefetchWorkspace],
   );
 
   const handleHome = useCallback(() => {
