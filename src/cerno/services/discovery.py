@@ -11,7 +11,7 @@ from typing import Any, cast
 import pandas as pd
 import polars as pl
 
-from cerno.config import Settings
+from cerno.config import DiscoveryProcessingConfig, Settings
 from cerno.llm import LLMClient, Tool, ToolRegistry, run_tool_loop
 from cerno.models import (
     DataDoc,
@@ -35,9 +35,6 @@ from cerno.services.ingest import first_n_raw_rows, slugify_table_name
 from cerno.services.sandbox import run_python
 from cerno.storage import ObjectStore
 
-DISCOVERY_MODEL = "gpt-5.5"
-DISCOVERY_REASONING_EFFORT = "high"
-DISCOVERY_REASONING_SUMMARY = "auto"
 SAMPLE_ROWS = 10
 LINK_VALUE_SAMPLE_LIMIT = 10_000
 logger = logging.getLogger(__name__)
@@ -541,7 +538,11 @@ def _build_analysis_registry(
 
 
 async def _analyze_with_python(
-    *, llm_client: LLMClient, raw_tables: dict[str, pd.DataFrame], catalog: list[dict[str, Any]]
+    *,
+    llm_client: LLMClient,
+    raw_tables: dict[str, pd.DataFrame],
+    catalog: list[dict[str, Any]],
+    config: DiscoveryProcessingConfig,
 ) -> str:
     result = await run_tool_loop(
         client=llm_client,
@@ -560,8 +561,9 @@ async def _analyze_with_python(
             "to quickly inspect files. Use run_python only for complex or specific queries not covered by the standard tools. "
             "Write concise analysis notes about grain, column roles, and relationships."
         ),
-        reasoning_effort=DISCOVERY_REASONING_EFFORT,
-        reasoning_summary=DISCOVERY_REASONING_SUMMARY,
+        model=config.model,
+        reasoning_effort=config.reasoning_effort,
+        reasoning_summary=config.reasoning_summary,
         max_calls=8,
     )
     return result.final_message
@@ -811,14 +813,15 @@ async def run_discovery(
 ) -> DiscoveryResult:
     if not settings.llm_api_key:
         raise DiscoveryError("discovery requires an LLM — set CERNO_LLM_API_KEY")
+    discovery_config = settings.processing.discovery
 
     logger.info(
         "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=start model=%s reasoning=%s progress=5",
         user_id,
         session_id,
         job_id,
-        DISCOVERY_MODEL,
-        DISCOVERY_REASONING_EFFORT,
+        discovery_config.model,
+        discovery_config.reasoning_effort,
     )
     sessions_repo.set_discovery_status(session_id, "discovering")
     if clear_events:
@@ -928,6 +931,7 @@ async def run_discovery(
             llm_client=llm_client,
             raw_tables=raw_tables,
             catalog=raw_catalog,
+            config=discovery_config,
         )
         logger.info(
             "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=python_analysis_done progress=55",
@@ -962,7 +966,10 @@ async def run_discovery(
         step_key="llm_schema",
         level="info",
         progress=65,
-        message=f"asking {DISCOVERY_MODEL} (reasoning={DISCOVERY_REASONING_EFFORT}). this can take a few minutes.",
+        message=(
+            f"asking {discovery_config.model} "
+            f"(reasoning={discovery_config.reasoning_effort}). this can take a few minutes."
+        ),
     )
 
     try:
@@ -971,14 +978,14 @@ async def run_discovery(
             user_id,
             session_id,
             job_id,
-            DISCOVERY_MODEL,
+            discovery_config.model,
         )
         response = await llm_client.respond(
             input=[{"role": "user", "content": user_prompt}],
             instructions=SYSTEM_PROMPT,
-            model=DISCOVERY_MODEL,
-            reasoning_effort=DISCOVERY_REASONING_EFFORT,
-            reasoning_summary=DISCOVERY_REASONING_SUMMARY,
+            model=discovery_config.model,
+            reasoning_effort=discovery_config.reasoning_effort,
+            reasoning_summary=discovery_config.reasoning_summary,
             response_format={
                 "type": "json_schema",
                 "name": "discovery",

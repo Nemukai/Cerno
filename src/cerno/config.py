@@ -1,9 +1,31 @@
 from __future__ import annotations
 
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class CernoConfigError(ValueError):
+    """Raised when the user-editable Cerno config file is invalid."""
+
+
+@dataclass(frozen=True)
+class DiscoveryProcessingConfig:
+    model: str = "gpt-5.4"
+    reasoning_effort: str = "high"
+    reasoning_summary: str = "auto"
+
+
+@dataclass(frozen=True)
+class ProcessingConfig:
+    discovery: DiscoveryProcessingConfig = DiscoveryProcessingConfig()
+
+
+_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh"}
+_REASONING_SUMMARIES = {"off", "none", "auto", "concise", "detailed"}
 
 
 class Settings(BaseSettings):
@@ -124,11 +146,92 @@ class Settings(BaseSettings):
     def cache_dir(self) -> Path:
         return self.data_root / "cache"
 
+    def config_path(self) -> Path:
+        return self.data_root / "config.toml"
+
+    @property
+    def processing(self) -> ProcessingConfig:
+        return load_processing_config(self.config_path())
+
     def object_cache_path(self, object_key: str) -> Path:
         return self.cache_dir() / object_key
 
     def db_path(self) -> Path:
         return self.data_root / "cerno.sqlite"
+
+
+def load_processing_config(path: Path) -> ProcessingConfig:
+    if not path.exists():
+        return ProcessingConfig()
+
+    try:
+        with path.open("rb") as f:
+            raw = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        raise CernoConfigError(f"Invalid Cerno config at {path}: {exc}") from exc
+
+    if not isinstance(raw, dict):
+        raise CernoConfigError(f"Invalid Cerno config at {path}: expected a TOML table")
+
+    processing = _optional_table(raw, "processing", path)
+    discovery = _optional_table(processing, "discovery", path)
+    defaults = DiscoveryProcessingConfig()
+
+    model = _string_value(discovery, "model", defaults.model, path)
+    reasoning_effort = _string_value(
+        discovery,
+        "reasoning_effort",
+        defaults.reasoning_effort,
+        path,
+    ).lower()
+    reasoning_summary = _string_value(
+        discovery,
+        "reasoning_summary",
+        defaults.reasoning_summary,
+        path,
+    ).lower()
+
+    if reasoning_effort not in _REASONING_EFFORTS:
+        allowed = ", ".join(sorted(_REASONING_EFFORTS))
+        raise CernoConfigError(
+            f"Invalid processing.discovery.reasoning_effort in {path}: "
+            f"{reasoning_effort!r}. Expected one of: {allowed}."
+        )
+    if reasoning_summary not in _REASONING_SUMMARIES:
+        allowed = ", ".join(sorted(_REASONING_SUMMARIES))
+        raise CernoConfigError(
+            f"Invalid processing.discovery.reasoning_summary in {path}: "
+            f"{reasoning_summary!r}. Expected one of: {allowed}."
+        )
+
+    return ProcessingConfig(
+        discovery=DiscoveryProcessingConfig(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+        )
+    )
+
+
+def _optional_table(parent: dict[str, object], key: str, path: Path) -> dict[str, object]:
+    value = parent.get(key, {})
+    if not isinstance(value, dict):
+        raise CernoConfigError(f"Invalid {key} section in {path}: expected a TOML table")
+    return value
+
+
+def _string_value(
+    table: dict[str, object],
+    key: str,
+    default: str,
+    path: Path,
+) -> str:
+    value = table.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise CernoConfigError(
+            f"Invalid processing.discovery.{key} in {path}: expected a non-empty string"
+        )
+    return value.strip()
 
 
 _settings: Settings | None = None

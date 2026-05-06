@@ -1,6 +1,7 @@
 import type {
   Anomaly,
   ChatMessage,
+  ChatStreamEvent,
   ChatFeedTurn,
   ChatResponse,
   ChatTurn,
@@ -221,8 +222,49 @@ export function getAnomalies(
 export function postChat(
   sessionId: string,
   message: string,
+  turnId?: string | null,
 ): Promise<ChatResponse> {
-  return postJson<ChatResponse>(`/sessions/${sessionId}/chat`, { message });
+  return postJson<ChatResponse>(`/sessions/${sessionId}/chat`, {
+    message,
+    turn_id: turnId ?? null,
+  });
+}
+
+export async function streamChat(
+  sessionId: string,
+  body: { message: string; turnId?: string | null },
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/chat/stream`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: body.message, turn_id: body.turnId ?? null }),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText} ${text}`.trim());
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() ?? "";
+    for (const chunk of chunks) {
+      const dataLine = chunk
+        .split("\n")
+        .find((line) => line.startsWith("data: "));
+      if (!dataLine) continue;
+      onEvent(JSON.parse(dataLine.slice(6)) as ChatStreamEvent);
+    }
+  }
 }
 
 export function listTurns(sessionId: string): Promise<ChatTurn[]> {

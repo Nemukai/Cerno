@@ -14,14 +14,15 @@ import {
   listFiles,
   listLinks,
   listSessions,
-  postChat,
   processSession,
+  streamChat,
   updateTurn,
   uploadFiles,
 } from "./lib/api";
 import type {
   ChatArtifact,
   ChatMessage,
+  ChatStreamEvent,
   ChatTurn,
   DataDoc,
   DiscoveredFile,
@@ -50,6 +51,21 @@ type WorkspaceMetric = {
   rowCount: number;
   lastOpenedAt: string | null;
   loaded: boolean;
+};
+
+type LiveChatState = {
+  turnId: string | null;
+  userMessage: string;
+  assistantText: string;
+  reasoningText: string;
+  tools: Array<{
+    callId: string;
+    name: string;
+    argsText: string;
+    args?: Record<string, unknown>;
+    result?: Record<string, unknown>;
+  }>;
+  error: string | null;
 };
 
 type HomeView = "landing" | "sessions";
@@ -134,6 +150,7 @@ export function App() {
   const [processing, setProcessing] = useState(false);
   const [approving, setApproving] = useState(false);
   const [sending, setSending] = useState(false);
+  const [liveChat, setLiveChat] = useState<LiveChatState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const bootstrapped = useRef(false);
@@ -622,23 +639,138 @@ export function App() {
       if (!session) return;
       setError(null);
       setSending(true);
+      setLiveChat({
+        turnId: activeTurnId,
+        userMessage: message,
+        assistantText: "",
+        reasoningText: "",
+        tools: [],
+        error: null,
+      });
       try {
-        const response = await postChat(session.id, message);
-        setActiveTurnId(response.turn_id);
+        await streamChat(
+          session.id,
+          { message, turnId: activeTurnId },
+          (event: ChatStreamEvent) => {
+            if (event.type === "turn_started") {
+              setActiveTurnId(event.turn_id);
+              setLiveChat((current) =>
+                current ? { ...current, turnId: event.turn_id } : current,
+              );
+              return;
+            }
+            if (event.type === "assistant_delta") {
+              setLiveChat((current) =>
+                current
+                  ? { ...current, assistantText: current.assistantText + event.delta }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "reasoning_delta") {
+              setLiveChat((current) =>
+                current
+                  ? { ...current, reasoningText: current.reasoningText + event.delta }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "tool_call_started") {
+              setLiveChat((current) =>
+                current
+                  ? {
+                      ...current,
+                      tools: [
+                        ...current.tools,
+                        { callId: event.call_id, name: event.name, argsText: "" },
+                      ],
+                    }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "tool_call_arguments_delta") {
+              setLiveChat((current) =>
+                current
+                  ? {
+                      ...current,
+                      tools: current.tools.map((tool) =>
+                        tool.callId === event.call_id
+                          ? { ...tool, argsText: tool.argsText + event.delta }
+                          : tool,
+                      ),
+                    }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "tool_call_done") {
+              setLiveChat((current) =>
+                current
+                  ? {
+                      ...current,
+                      tools: current.tools.map((tool) =>
+                        tool.callId === event.call_id
+                          ? { ...tool, name: event.name, args: event.arguments }
+                          : tool,
+                      ),
+                    }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "tool_result") {
+              setLiveChat((current) =>
+                current
+                  ? {
+                      ...current,
+                      tools: current.tools.map((tool) =>
+                        tool.callId === event.call_id
+                          ? { ...tool, name: event.name, result: event.result }
+                          : tool,
+                      ),
+                    }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "done") {
+              setActiveTurnId(event.turn_id);
+              setLiveChat((current) =>
+                current
+                  ? {
+                      ...current,
+                      turnId: event.turn_id,
+                      assistantText: event.assistant_message || current.assistantText,
+                    }
+                  : current,
+              );
+              return;
+            }
+            if (event.type === "error") {
+              setLiveChat((current) =>
+                current ? { ...current, turnId: event.turn_id, error: event.message } : current,
+              );
+              setError(event.message);
+            }
+          },
+        );
         await refreshChatFeed(session.id);
+        setLiveChat(null);
       } catch (err) {
         setError((err as Error).message);
       } finally {
         setSending(false);
       }
     },
-    [session, refreshChatFeed],
+    [activeTurnId, session, refreshChatFeed],
   );
 
   const handleNewChat = useCallback(() => {
     if (session) navigateSessionTab(session.id, "ask");
     setActiveTab("ask");
     setActiveTurnId(null);
+    setLiveChat(null);
   }, [navigateSessionTab, session]);
 
   const handleSelectTurn = useCallback(
@@ -781,6 +913,7 @@ export function App() {
             discoveryStatus={discoveryStatus}
             disabled={!chatReady}
             sending={sending}
+            liveChat={liveChat}
             onSend={handleSend}
             onOpenInsights={() => handleTabChange("insights")}
             onOpenFiles={() => handleTabChange("files")}

@@ -22,9 +22,25 @@ type Props = {
   discoveryStatus: DiscoveryStatus;
   disabled: boolean;
   sending: boolean;
+  liveChat: LiveChatState | null;
   onSend: (message: string) => void;
   onOpenInsights: () => void;
   onOpenFiles: () => void;
+};
+
+type LiveChatState = {
+  turnId: string | null;
+  userMessage: string;
+  assistantText: string;
+  reasoningText: string;
+  tools: Array<{
+    callId: string;
+    name: string;
+    argsText: string;
+    args?: Record<string, unknown>;
+    result?: Record<string, unknown>;
+  }>;
+  error: string | null;
 };
 
 export function ChatSidebar({
@@ -35,6 +51,7 @@ export function ChatSidebar({
   dataDoc,
   disabled,
   sending,
+  liveChat,
   onSend,
 }: Props) {
   const [input, setInput] = useState("");
@@ -46,6 +63,9 @@ export function ChatSidebar({
   const visibleTurns = activeTurnId
     ? turns.filter((turn) => turn.id === activeTurnId)
     : [];
+  const showLiveChat = Boolean(
+    liveChat && (liveChat.turnId === activeTurnId || (!activeTurnId && visibleTurns.length === 0)),
+  );
 
   useEffect(() => {
     const turnIds = new Set(turns.map((turn) => turn.id));
@@ -90,7 +110,7 @@ export function ChatSidebar({
   return (
     <section className="flex h-full w-full flex-col bg-[#fffdf9]">
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-6">
-        {visibleTurns.length === 0 && !pendingMessage ? (
+        {visibleTurns.length === 0 && !pendingMessage && !showLiveChat ? (
           <div className="mt-4 flex flex-col items-center justify-center text-center">
             <div className="mb-6 font-mono text-xl text-neutral-400">
               How can I help you analyze this workspace?
@@ -116,7 +136,11 @@ export function ChatSidebar({
           </div>
         ) : (
           visibleTurns.map((turn) => {
-            const messages = messagesByTurn[turn.id] ?? [];
+            const persistedMessages = messagesByTurn[turn.id] ?? [];
+            const messages =
+              persistedMessages.length > 0
+                ? persistedMessages
+                : fallbackMessages(turn);
             const widgets = widgetsFromArtifacts(artifactsByTurn[turn.id] ?? []);
             const traceItems = messages
               .map((message, index) => ({
@@ -129,14 +153,15 @@ export function ChatSidebar({
 
             return (
               <div key={turn.id} className="hairline border-b py-4">
-                <div className="mb-4 flex justify-end">
-                  <div className="max-w-[78%] border border-orange-200 bg-orange-50 px-4 py-3 text-base text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
-                    <MarkdownText text={turn.user_message} compact />
-                  </div>
-                </div>
-                <div className="small-caps mb-2 text-sm text-ember">
-                  cerno
-                </div>
+                {messages
+                  .filter((message) => message.role !== "tool" && !message.tool_name)
+                  .map((message) =>
+                    message.role === "user" ? (
+                      <UserBubble key={message.id} text={message.content} />
+                    ) : (
+                      <AssistantBubble key={message.id} text={message.content} />
+                    ),
+                  )}
                 {traceItems.length > 0 ? (
                   <TraceDisclosure
                     open={Boolean(openTraceByTurn[turn.id])}
@@ -144,14 +169,7 @@ export function ChatSidebar({
                     onToggle={() => toggleTrace(turn.id)}
                   />
                 ) : null}
-                <div className="max-w-3xl text-base text-ink">
-                  <MarkdownText
-                    text={
-                      turn.assistant_message ??
-                      (turn.state === "failed" ? "(failed)" : "\u2026")
-                    }
-                  />
-                </div>
+                {messages.length === 0 && turn.state !== "complete" ? <ThinkingIndicator /> : null}
                 {widgets.length > 0 ? (
                   <div className="mt-4 grid gap-3">
                     {widgets.map((widget, index) => (
@@ -169,20 +187,19 @@ export function ChatSidebar({
           })
         )}
 
-        {/* Optimistic pending message + thinking indicator */}
-        {pendingMessage && sending && (
-          <div className="hairline border-b py-4">
-            <div className="mb-4 flex justify-end">
-              <div className="max-w-[78%] border border-orange-200 bg-orange-50 px-4 py-3 text-base text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
-                <MarkdownText text={pendingMessage} compact />
-              </div>
-            </div>
-            <div className="small-caps mb-2 text-sm text-ember">
-              cerno
-            </div>
-            <ThinkingIndicator />
-          </div>
-        )}
+        {showLiveChat && liveChat ? <LiveChatBlock liveChat={liveChat} /> : null}
+        {!showLiveChat && pendingMessage && sending ? (
+          <LiveChatBlock
+            liveChat={{
+              turnId: activeTurnId,
+              userMessage: pendingMessage,
+              assistantText: "",
+              reasoningText: "",
+              tools: [],
+              error: null,
+            }}
+          />
+        ) : null}
       </div>
       <div className="hairline border-t bg-white/90 px-8 py-4">
         <div className="flex flex-col border bg-white focus-within:ring-1 focus-within:ring-ember transition-shadow">
@@ -345,6 +362,104 @@ function ToolCallCard({
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function fallbackMessages(turn: ChatTurn): ChatMessage[] {
+  const messages: ChatMessage[] = [
+    {
+      id: `${turn.id}:user`,
+      turn_id: turn.id,
+      role: "user",
+      content: turn.user_message,
+      tool_name: null,
+      tool_args: null,
+      tool_result: null,
+      created_at: turn.created_at,
+    },
+  ];
+  if (turn.assistant_message) {
+    messages.push({
+      id: `${turn.id}:assistant`,
+      turn_id: turn.id,
+      role: "assistant",
+      content: turn.assistant_message,
+      tool_name: null,
+      tool_args: null,
+      tool_result: null,
+      created_at: turn.created_at,
+    });
+  }
+  return messages;
+}
+
+function UserBubble({ text }: { text: string }) {
+  return (
+    <div className="mb-4 flex justify-end">
+      <div className="max-w-[78%] border border-orange-200 bg-orange-50 px-4 py-3 text-base text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
+        <MarkdownText text={text} compact />
+      </div>
+    </div>
+  );
+}
+
+function AssistantBubble({ text }: { text: string }) {
+  return (
+    <div className="mb-4">
+      <div className="small-caps mb-2 text-sm text-ember">cerno</div>
+      <div className="max-w-3xl text-base text-ink">
+        <MarkdownText text={text || "\u2026"} />
+      </div>
+    </div>
+  );
+}
+
+function LiveChatBlock({ liveChat }: { liveChat: LiveChatState }) {
+  return (
+    <div className="hairline border-b py-4">
+      <UserBubble text={liveChat.userMessage} />
+      <div className="small-caps mb-2 text-sm text-ember">cerno</div>
+      {liveChat.reasoningText ? (
+        <div className="mb-3 border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-600">
+          <div className="small-caps mb-1 text-xs text-neutral-500">thinking</div>
+          <MarkdownText text={liveChat.reasoningText} compact />
+        </div>
+      ) : null}
+      {liveChat.tools.length > 0 ? (
+        <div className="mb-3 grid gap-2">
+          {liveChat.tools.map((tool) => (
+            <div key={tool.callId} className="border border-neutral-200 bg-white px-3 py-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-mono text-xs text-ink">{tool.name || "tool"}</span>
+                <span className="small-caps text-xs text-neutral-400">
+                  {tool.result ? "done" : "running"}
+                </span>
+              </div>
+              {tool.args ? (
+                <pre className="mt-2 max-h-28 overflow-auto bg-neutral-50 p-2 text-xs text-neutral-600">
+                  {JSON.stringify(tool.args, null, 2)}
+                </pre>
+              ) : tool.argsText ? (
+                <pre className="mt-2 max-h-28 overflow-auto bg-neutral-50 p-2 text-xs text-neutral-600">
+                  {tool.argsText}
+                </pre>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {liveChat.assistantText ? (
+        <div className="max-w-3xl text-base text-ink">
+          <MarkdownText text={liveChat.assistantText} />
+        </div>
+      ) : liveChat.error ? (
+        <div className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {liveChat.error}
+        </div>
+      ) : (
+        <ThinkingIndicator />
+      )}
     </div>
   );
 }

@@ -146,30 +146,28 @@ class LLMClient:
         reasoning_summary: str | None = None,
         temperature: float | None = None,
         response_format: dict[str, Any] | None = None,
+        conversation: str | None = None,
+        context_management: list[dict[str, Any]] | None = None,
+        prompt_cache_key: str | None = None,
+        prompt_cache_retention: str | None = None,
         store: bool = True,
     ) -> LLMResponse:
-        body: dict[str, Any] = {
-            "model": model or self.settings.llm_model,
-            "input": input,
-            "store": store,
-        }
-        if instructions is not None:
-            body["instructions"] = instructions
-        if previous_response_id is not None:
-            body["previous_response_id"] = previous_response_id
-        if tools:
-            body["tools"] = tools
-        block = _reasoning_block(
-            reasoning_effort or self.settings.llm_reasoning_effort,
-            reasoning_summary or self.settings.llm_reasoning_summary,
+        body = self._response_body(
+            input=input,
+            instructions=instructions,
+            tools=tools,
+            previous_response_id=previous_response_id,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            temperature=temperature,
+            response_format=response_format,
+            conversation=conversation,
+            context_management=context_management,
+            prompt_cache_key=prompt_cache_key,
+            prompt_cache_retention=prompt_cache_retention,
+            store=store,
         )
-        if block is not None:
-            body["reasoning"] = block
-        if temperature is not None:
-            body["temperature"] = temperature
-        if response_format is not None:
-            body["text"] = {"format": response_format}
-
         url = f"{self.settings.llm_base_url.rstrip('/')}/responses"
         self._ensure_token_budget()
         response = await self._call_with_retry(url, body)
@@ -193,6 +191,107 @@ class LLMClient:
 
         self._record_token_usage(parsed.usage_total_tokens)
         return parsed
+
+    async def create_conversation(self, *, metadata: dict[str, str] | None = None) -> str:
+        url = f"{self.settings.llm_base_url.rstrip('/')}/conversations"
+        body: dict[str, Any] = {}
+        if metadata:
+            body["metadata"] = metadata
+        response = await self._call_with_retry(url, body)
+        conversation_id = response.get("id")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            raise LLMError("OpenAI conversation response did not include an id")
+        return conversation_id
+
+    async def stream_response(
+        self,
+        *,
+        input: list[dict[str, Any]] | str,
+        instructions: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        previous_response_id: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_summary: str | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        conversation: str | None = None,
+        context_management: list[dict[str, Any]] | None = None,
+        prompt_cache_key: str | None = None,
+        prompt_cache_retention: str | None = None,
+        store: bool = True,
+    ):
+        body = self._response_body(
+            input=input,
+            instructions=instructions,
+            tools=tools,
+            previous_response_id=previous_response_id,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            temperature=temperature,
+            response_format=response_format,
+            conversation=conversation,
+            context_management=context_management,
+            prompt_cache_key=prompt_cache_key,
+            prompt_cache_retention=prompt_cache_retention,
+            store=store,
+        )
+        body["stream"] = True
+        body["stream_options"] = {"include_obfuscation": False}
+        url = f"{self.settings.llm_base_url.rstrip('/')}/responses"
+        self._ensure_token_budget()
+        async for event in self._stream_sse(url, body):
+            yield event
+
+    def _response_body(
+        self,
+        *,
+        input: list[dict[str, Any]] | str,
+        instructions: str | None,
+        tools: list[dict[str, Any]] | None,
+        previous_response_id: str | None,
+        model: str | None,
+        reasoning_effort: str | None,
+        reasoning_summary: str | None,
+        temperature: float | None,
+        response_format: dict[str, Any] | None,
+        conversation: str | None,
+        context_management: list[dict[str, Any]] | None,
+        prompt_cache_key: str | None,
+        prompt_cache_retention: str | None,
+        store: bool,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": model or self.settings.llm_model,
+            "input": input,
+            "store": store,
+        }
+        if instructions is not None:
+            body["instructions"] = instructions
+        if previous_response_id is not None:
+            body["previous_response_id"] = previous_response_id
+        if conversation is not None:
+            body["conversation"] = conversation
+        if tools:
+            body["tools"] = tools
+        block = _reasoning_block(
+            reasoning_effort or self.settings.llm_reasoning_effort,
+            reasoning_summary or self.settings.llm_reasoning_summary,
+        )
+        if block is not None:
+            body["reasoning"] = block
+        if temperature is not None:
+            body["temperature"] = temperature
+        if response_format is not None:
+            body["text"] = {"format": response_format}
+        if context_management is not None:
+            body["context_management"] = context_management
+        if prompt_cache_key is not None:
+            body["prompt_cache_key"] = prompt_cache_key
+        if prompt_cache_retention is not None:
+            body["prompt_cache_retention"] = prompt_cache_retention
+        return body
 
     async def complete(
         self,
@@ -258,6 +357,34 @@ class LLMClient:
 
         assert last_error is not None
         raise LLMError(f"http error after {max_retries} retries: {last_error}") from last_error
+
+    async def _stream_sse(self, url: str, body: dict[str, Any]):
+        buffer: list[str] = []
+        async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
+            async with client.stream("POST", url, json=body, headers=self._headers()) as response:
+                if response.status_code >= 400:
+                    text = await response.aread()
+                    raise LLMError(
+                        f"llm stream error {response.status_code}: {text.decode(errors='replace')}"
+                    )
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        buffer.append(data)
+                        continue
+                    if line:
+                        continue
+                    if not buffer:
+                        continue
+                    payload = "\n".join(buffer)
+                    buffer = []
+                    try:
+                        event = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    yield event
 
     def _usage_day(self) -> str:
         return datetime.now(UTC).date().isoformat()
@@ -356,12 +483,25 @@ class LoopResult:
     response_id: str | None = None
 
 
+def conversation_context_options(session_id: str, turn_id: str) -> dict[str, Any]:
+    return {
+        "context_management": [{"type": "compaction", "compact_threshold": 200_000}],
+        "prompt_cache_key": f"cerno:{session_id}:{turn_id}",
+        "prompt_cache_retention": "24h",
+    }
+
+
 async def run_tool_loop(
     *,
     client: LLMClient,
     registry: ToolRegistry,
     input: list[dict[str, Any]],
     instructions: str | None = None,
+    model: str | None = None,
+    conversation: str | None = None,
+    context_management: list[dict[str, Any]] | None = None,
+    prompt_cache_key: str | None = None,
+    prompt_cache_retention: str | None = None,
     reasoning_effort: str | None = None,
     reasoning_summary: str | None = None,
     max_calls: int = DEFAULT_MAX_LLM_CALLS,
@@ -378,6 +518,7 @@ async def run_tool_loop(
     pending_input: list[dict[str, Any]] = list(input)
     previous_response_id: str | None = None
     call_count = 0
+    use_conversation = conversation is not None
 
     while True:
         if call_count >= max_calls:
@@ -392,8 +533,13 @@ async def run_tool_loop(
         response = await client.respond(
             input=pending_input,
             tools=tools,
-            instructions=instructions if previous_response_id is None else None,
-            previous_response_id=previous_response_id,
+            instructions=instructions,
+            previous_response_id=None if use_conversation else previous_response_id,
+            model=model,
+            conversation=conversation,
+            context_management=context_management,
+            prompt_cache_key=prompt_cache_key,
+            prompt_cache_retention=prompt_cache_retention,
             reasoning_effort=reasoning_effort,
             reasoning_summary=reasoning_summary,
         )

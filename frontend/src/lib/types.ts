@@ -223,6 +223,53 @@ export type ChatFeedTurn = {
   artifacts: ChatArtifact[];
 };
 
+export type ChatStreamEvent =
+  | {
+      type: "turn_started";
+      turn_id: string;
+      conversation_id: string;
+      message: string;
+    }
+  | {
+      type: "reasoning_delta" | "assistant_delta" | "tool_call_arguments_delta";
+      turn_id: string;
+      delta: string;
+      call_id?: string;
+    }
+  | {
+      type: "tool_call_started";
+      turn_id: string;
+      call_id: string;
+      name: string;
+    }
+  | {
+      type: "tool_call_done";
+      turn_id: string;
+      call_id: string;
+      name: string;
+      arguments: Record<string, unknown>;
+    }
+  | {
+      type: "tool_result";
+      turn_id: string;
+      call_id: string;
+      name: string;
+      result: Record<string, unknown>;
+    }
+  | {
+      type: "done";
+      turn_id: string;
+      conversation_id: string;
+      assistant_message: string;
+      response_id: string | null;
+      widgets: Widget[];
+    }
+  | {
+      type: "error";
+      turn_id: string;
+      message: string;
+    };
+
 export type DataDocColumn = {
   name: string;
   dtype: string;

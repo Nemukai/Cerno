@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
 from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
 from cerno.models import ChatArtifact, ChatMessage, ChatTurn, Widget
@@ -18,7 +21,7 @@ from cerno.repositories import (
     SchemaRepository,
     SessionRepository,
 )
-from cerno.services.chat import run_chat_turn
+from cerno.services.chat import run_chat_turn, stream_chat_turn
 
 router = APIRouter(tags=["chat"])
 
@@ -39,6 +42,7 @@ def _require_turn_owned(conn: sqlite3.Connection, turn_id: str, user_id: str) ->
 
 class ChatRequest(BaseModel):
     message: str
+    turn_id: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -69,6 +73,10 @@ async def post_chat(
     user: GrantedUserDep,
 ) -> ChatResponse:
     _require_session_owned(conn, session_id, user.id)
+    if body.turn_id is not None:
+        turn = _require_turn_owned(conn, body.turn_id, user.id)
+        if turn.session_id != session_id:
+            raise HTTPException(status_code=404, detail="turn not found")
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
@@ -76,6 +84,7 @@ async def post_chat(
         result = await run_chat_turn(
             session_id=session_id,
             user_message=message,
+            turn_id=body.turn_id,
             settings=settings,
             llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
             files_repo=FileRepository(conn),
@@ -92,6 +101,48 @@ async def post_chat(
         assistant_message=result.assistant_message,
         spawned_page_id=result.spawned_page_id,
         widgets=result.widgets,
+    )
+
+
+@router.post("/sessions/{session_id}/chat/stream")
+async def stream_chat(
+    session_id: str,
+    body: ChatRequest,
+    conn: ConnDep,
+    settings: SettingsDep,
+    llm_client: LLMDep,
+    user: GrantedUserDep,
+) -> StreamingResponse:
+    _require_session_owned(conn, session_id, user.id)
+    if body.turn_id is not None:
+        turn = _require_turn_owned(conn, body.turn_id, user.id)
+        if turn.session_id != session_id:
+            raise HTTPException(status_code=404, detail="turn not found")
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    async def events() -> AsyncIterator[str]:
+        async for event in stream_chat_turn(
+            session_id=session_id,
+            user_message=message,
+            turn_id=body.turn_id,
+            settings=settings,
+            llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
+            files_repo=FileRepository(conn),
+            schemas_repo=SchemaRepository(conn),
+            chat_repo=ChatRepository(conn),
+            chat_artifacts_repo=ChatArtifactRepository(conn),
+            artifacts_repo=AssetArtifactRepository(conn),
+            data_docs_repo=DataDocRepository(conn),
+        ):
+            event_name = str(event.get("type") or "message")
+            yield f"event: {event_name}\ndata: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
