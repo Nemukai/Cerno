@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -196,8 +197,9 @@ class ChatToolRegistryTests(unittest.TestCase):
         tool = build_tool_registry(ctx).get("run_python")
 
         self.assertIn("Available pandas DataFrames: orders", tool.description)
-        self.assertIn("pd (pandas) and np (numpy)", tool.description)
-        self.assertIn("Not allowed: imports", tool.description)
+        self.assertIn("Do not write import statements", tool.description)
+        self.assertIn("Already available libraries: pandas as pd, numpy as np", tool.description)
+        self.assertIn("Not allowed: import statements", tool.description)
 
     def test_raw_header_fallback_builds_reingest_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -248,6 +250,40 @@ class ChatToolRegistryTests(unittest.TestCase):
         assert spec is not None
         self.assertEqual([column.name for column in spec.columns], ["FOR DATE", "SHIFT", "Rate"])
         self.assertEqual([column.dtype for column in spec.columns], ["date", "int", "float"])
+
+    def test_run_python_result_preview_is_json_safe_for_dates(self) -> None:
+        ctx = ToolContext(
+            session_id="s1",
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=2,
+                    columns=[{"name": "FOR DATE", "type": "date", "nullable": False}],
+                    dataframe=pd.DataFrame(
+                        {"FOR DATE": [date(2026, 3, 16), date(2026, 3, 17)]}
+                    ),
+                )
+            },
+        )
+        result = asyncio.run(
+            build_tool_registry(ctx)
+            .get("run_python")
+            .handler({"code": "orders.groupby('FOR DATE').size().reset_index(name='count')"})
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            result["result_preview"],
+            {
+                "columns": ["FOR DATE", "count"],
+                "rows": [["2026-03-16", 1], ["2026-03-17", 1]],
+                "row_count": 2,
+                "truncated": False,
+            },
+        )
+        json.dumps(result)
+
 
 class FakeObjectStore:
     backend = "r2"

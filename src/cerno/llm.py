@@ -564,7 +564,7 @@ async def run_tool_loop(
                 except Exception as exc:
                     result = {"error": str(exc)}
                 tool_turns.append(ToolTurn(call=call, result=result))
-                payload = json.dumps(result)
+                payload = json.dumps(result, default=str)
                 pending_input.append(
                     {
                         "type": "function_call_output",

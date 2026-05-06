@@ -3,12 +3,14 @@ from __future__ import annotations
 import ast
 import builtins
 import io
+import math
 import multiprocessing as mp
 import os
 import tempfile
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
+from datetime import date, datetime, time
 from queue import Empty
 from typing import Any
 
@@ -206,20 +208,39 @@ def _call_name(node: ast.AST) -> str | None:
     return None
 
 
-def _nan_to_none(values: list[Any]) -> list[Any]:
-    out: list[Any] = []
-    for v in values:
-        if isinstance(v, float) and v != v:
-            out.append(None)
-        else:
-            out.append(v)
-    return out
+def _json_safe(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, pd.Timestamp):
+        return None if pd.isna(value) else value.isoformat()
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, float):
+        return None if math.isnan(value) or math.isinf(value) else value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, (str, int, bool)):
+        return value
+    return str(value)
+
+
+def _json_safe_list(values: list[Any]) -> list[Any]:
+    return [_json_safe(value) for value in values]
 
 
 def _preview_value(value: Any, *, max_rows: int = 20) -> tuple[str, dict[str, Any] | None]:
     if isinstance(value, pd.DataFrame):
         head = value.head(max_rows).astype(object)
-        rows = [_nan_to_none(list(row)) for row in head.values.tolist()]
+        rows = [_json_safe_list(list(row)) for row in head.values.tolist()]
         return "dataframe", {
             "columns": [str(c) for c in head.columns],
             "rows": rows,
@@ -230,19 +251,23 @@ def _preview_value(value: Any, *, max_rows: int = 20) -> tuple[str, dict[str, An
         head_series: pd.Series = value.head(max_rows).astype(object)
         return "series", {
             "name": str(head_series.name) if head_series.name is not None else None,
-            "values": _nan_to_none(head_series.tolist()),
+            "values": _json_safe_list(head_series.tolist()),
             "row_count": len(value),
             "truncated": len(value) > max_rows,
         }
     if isinstance(value, (int, float, str, bool)) or value is None:
-        return "scalar", {"value": value}
+        return "scalar", {"value": _json_safe(value)}
     if isinstance(value, np.generic):
-        return "scalar", {"value": value.item()}
+        return "scalar", {"value": _json_safe(value)}
     if isinstance(value, dict):
-        return "dict", {"keys": list(map(str, value.keys()))[:max_rows]}
+        items = list(value.items())[:max_rows]
+        return "dict", {
+            "items": [{"key": str(k), "value": _json_safe(v)} for k, v in items],
+            "truncated": len(value) > max_rows,
+        }
     if isinstance(value, (list, tuple, set)):
         seq = list(value)[:max_rows]
-        return "sequence", {"values": seq, "length": len(value)}
+        return "sequence", {"values": _json_safe_list(seq), "length": len(value)}
     return "other", None
 
 

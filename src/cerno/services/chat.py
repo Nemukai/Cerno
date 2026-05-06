@@ -38,6 +38,8 @@ SYSTEM_PROMPT = (
     "user about data they just uploaded. Every processed table is registered in Postgres "
     "and made available to run_python as a pandas DataFrame named after the slugified filename. "
     "Back every numeric claim by calling run_python — never guess numbers. "
+    "When using run_python, never write import statements: pandas is already available as pd, "
+    "numpy is already available as np, and no other libraries are available. "
     "Use read_schema_guide when you need to understand what the data contains, where "
     "fields live, caveats, relationships, or good ways to answer the user's question. "
     "Use list_tables and describe_table when you need exact dataframe columns. "
@@ -280,7 +282,7 @@ async def stream_chat_turn(
                             "ok": False,
                             "error": f"{type(exc).__name__}: {exc}",
                         }
-                    payload = json.dumps(result)
+                    payload = json.dumps(result, default=str)
                     chat_repo.append_message(
                         turn_id=runtime.turn.id,
                         role="tool",
