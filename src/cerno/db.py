@@ -432,20 +432,7 @@ _register_adapters()
 def connect(settings: Settings) -> sqlite3.Connection:
     if settings.use_postgres():
         return connect_postgres(settings)  # type: ignore[return-value]
-    path = settings.db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(
-        path,
-        detect_types=sqlite3.PARSE_DECLTYPES,
-        check_same_thread=False,
-        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
-    )
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
-    _apply_migrations(conn)
-    return conn
+    raise RuntimeError("CERNO_POSTGRES_URL must be set; SQLite is no longer supported")
 
 
 class CompatRow:

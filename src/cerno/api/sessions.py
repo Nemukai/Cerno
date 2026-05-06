@@ -6,11 +6,12 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, GrantedUserDep, SettingsDep
 from cerno.config import Settings
+from cerno.db import session_scope
 from cerno.models import (
     DataDoc,
     DataDocColumn,
@@ -47,6 +48,7 @@ from cerno.services.reingest import (
     apply_approval,
     preview_rows,
 )
+from cerno.services.storage_gc import cleanup_unused_storage_for_user
 from cerno.storage import StorageError, get_object_store, staging_upload_key
 
 router = APIRouter(tags=["sessions"])
@@ -107,14 +109,38 @@ def get_session(session_id: str, conn: ConnDep, user: GrantedUserDep) -> Session
 
 @router.delete("/sessions/{session_id}", status_code=204)
 def delete_session(
-    session_id: str, conn: ConnDep, settings: SettingsDep, user: GrantedUserDep
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    conn: ConnDep,
+    settings: SettingsDep,
+    user: GrantedUserDep,
 ) -> None:
     deleted = SessionRepository(conn).delete(session_id, user_id=user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="session not found")
+    conn.commit()
     session_dir = settings.session_dir(user.id, session_id)
     if session_dir.exists():
         shutil.rmtree(session_dir, ignore_errors=True)
+    background_tasks.add_task(_cleanup_unused_storage, settings, user.id)
+
+
+def _cleanup_unused_storage(settings: Settings, user_id: str) -> None:
+    """Run unused object cleanup outside the request transaction."""
+    try:
+        with session_scope(settings) as conn:
+            result = cleanup_unused_storage_for_user(conn, settings, user_id)
+        logger.info(
+            "event=storage_gc.completed user_id=%s scanned=%s deleted=%s "
+            "failed=%s pruned_source_assets=%s",
+            user_id,
+            result.scanned_keys,
+            len(result.deleted_keys),
+            len(result.failed_keys),
+            len(result.pruned_source_asset_ids),
+        )
+    except Exception:
+        logger.exception("event=storage_gc.failed user_id=%s", user_id)
 
 
 class FileUploadResponse(BaseModel):

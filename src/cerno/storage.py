@@ -31,6 +31,10 @@ class ObjectStore:
     def delete(self, object_key: str) -> None:
         raise NotImplementedError
 
+    def list_keys(self, prefix: str) -> list[str]:
+        """List object keys under the provided storage prefix."""
+        raise NotImplementedError
+
     def head(self, object_key: str) -> StoredObject:
         raise NotImplementedError
 
@@ -67,6 +71,17 @@ class LocalObjectStore(ObjectStore):
 
     def delete(self, object_key: str) -> None:
         (self.root / object_key).unlink(missing_ok=True)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """List local object keys under the provided storage prefix."""
+        root = self.root / prefix
+        if not root.exists():
+            return []
+        return [
+            str(path.relative_to(self.root))
+            for path in root.rglob("*")
+            if path.is_file()
+        ]
 
     def head(self, object_key: str) -> StoredObject:
         source = self.root / object_key
@@ -124,6 +139,14 @@ class R2ObjectStore(ObjectStore):
     def delete(self, object_key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=object_key)
 
+    def list_keys(self, prefix: str) -> list[str]:
+        """List R2 object keys under the provided storage prefix."""
+        paginator = self.client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            keys.extend(str(item["Key"]) for item in page.get("Contents", []))
+        return keys
+
     def head(self, object_key: str) -> StoredObject:
         try:
             response = self.client.head_object(Bucket=self.bucket, Key=object_key)
@@ -153,7 +176,7 @@ class R2ObjectStore(ObjectStore):
 def get_object_store(settings: Settings) -> ObjectStore:
     if settings.use_r2():
         return R2ObjectStore(settings)
-    return LocalObjectStore(settings)
+    raise RuntimeError("CERNO_R2_* settings must be set; local object storage is no longer supported")
 
 
 def source_object_key(user_id: str, asset_id: str, sha256: str, filename: str) -> str:

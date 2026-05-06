@@ -10,6 +10,7 @@ Commands:
   grant          Grant a user access without a code (by email)
   revoke         Revoke a user's access (by email)
   unrevoke       Move a revoked user back to pending
+  storage-gc     Delete unreferenced R2 objects for one or all users
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from cerno.config import get_settings
 from cerno.db import connect
 from cerno.repositories import BetaCodeRepository, UserRepository
+from cerno.services.storage_gc import cleanup_unused_storage_for_user
 
 # Avoid look-alike characters: no I, O, 0, 1.
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -167,6 +169,32 @@ def cmd_unrevoke(args: argparse.Namespace) -> None:
     print(f"moved {args.email} back to pending")
 
 
+def cmd_storage_gc(args: argparse.Namespace) -> None:
+    settings = get_settings()
+    conn = connect(settings)
+    try:
+        if args.email:
+            user = UserRepository(conn).get_by_email(args.email)
+            if user is None:
+                sys.exit(f"no user with email: {args.email}")
+            users = [user]
+        else:
+            users = UserRepository(conn).list_all()
+        if not users:
+            print("(no users)")
+            return
+        for user in users:
+            result = cleanup_unused_storage_for_user(conn, settings, user.id)
+            print(
+                f"{user.email}: scanned={result.scanned_keys} "
+                f"deleted={len(result.deleted_keys)} failed={len(result.failed_keys)} "
+                f"pruned_source_assets={len(result.pruned_source_asset_ids)}"
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cerno-admin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -199,6 +227,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("unrevoke", help="move a revoked user back to pending")
     p.add_argument("email")
     p.set_defaults(func=cmd_unrevoke)
+
+    p = sub.add_parser("storage-gc", help="delete unreferenced R2 objects")
+    p.add_argument("--email", help="limit cleanup to one user email")
+    p.set_defaults(func=cmd_storage_gc)
 
     return parser
 

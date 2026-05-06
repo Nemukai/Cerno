@@ -39,11 +39,11 @@ Still pending before a serious MVP:
 
 ## Stack
 
-- **Backend:** Python 3.12, FastAPI, SQLite, Polars, pandas, DuckDB,
+- **Backend:** Python 3.12, FastAPI, Postgres, Polars, pandas, DuckDB,
   python-calamine, pyarrow, Authlib, OpenAI Responses API.
 - **Frontend:** Vite, React, TypeScript, Tailwind, ECharts.
 - **Package managers:** `uv` for Python, `bun` for the frontend.
-- **Storage:** `~/.cerno` by default for SQLite metadata and session parquet files.
+- **Storage:** Cloudflare R2 for uploaded source files and generated artifacts.
 
 ## Development
 
