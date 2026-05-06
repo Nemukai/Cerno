@@ -445,6 +445,11 @@ function LiveChatBlock({ liveChat }: { liveChat: LiveChatState }) {
                   {tool.argsText}
                 </pre>
               ) : null}
+              {tool.result ? (
+                <pre className="mt-2 max-h-40 overflow-auto border-t border-neutral-200 bg-neutral-50 p-2 text-xs text-neutral-600">
+                  {formatToolResultPreview(tool.result)}
+                </pre>
+              ) : null}
             </div>
           ))}
         </div>
@@ -494,9 +499,17 @@ function summarizeRecord(record: Record<string, unknown>) {
 
 function summarizeToolResult(record: Record<string, unknown>) {
   if (typeof record.error === "string") return `Error: ${record.error}`;
+  if (Array.isArray(record.tables)) return `${record.tables.length} tables available`;
+  if (record.schema_guide && typeof record.schema_guide === "object") {
+    return "Schema guide returned";
+  }
+  if (typeof record.message === "string") return record.message;
+  if (record.result_preview && typeof record.result_preview === "object") {
+    return formatPreviewValue(record.result_preview);
+  }
   const keys = Object.keys(record).filter((key) => key !== "error");
-  if (keys.length === 0) return "Result returned";
-  return `Result: ${keys.slice(0, 4).join(", ")}`;
+  if (keys.length === 0) return "Empty result returned";
+  return `Result keys: ${keys.slice(0, 4).join(", ")}`;
 }
 
 function formatPreviewValue(value: unknown) {
@@ -509,6 +522,29 @@ function formatPreviewValue(value: unknown) {
     text = String(value);
   }
   return text.length > 64 ? `${text.slice(0, 61)}...` : text;
+}
+
+function formatToolResultPreview(record: Record<string, unknown>) {
+  const selected: Record<string, unknown> = {};
+  for (const key of [
+    "ok",
+    "message",
+    "error",
+    "table_count",
+    "python_dataframe_names",
+    "tables",
+    "columns",
+    "schema_guide",
+    "result_preview",
+    "stdout",
+    "stderr",
+  ]) {
+    if (record[key] !== undefined && record[key] !== null && record[key] !== "") {
+      selected[key] = record[key];
+    }
+  }
+  const payload = Object.keys(selected).length > 0 ? selected : record;
+  return JSON.stringify(payload, null, 2);
 }
 
 export function MarkdownText({

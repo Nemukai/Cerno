@@ -22,6 +22,7 @@ class ToolContext:
 
 def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
     registry = ToolRegistry()
+    available_table_names = sorted(ctx.tables)
 
     async def list_tables(_args: dict[str, Any]) -> dict[str, Any]:
         tables = []
@@ -34,12 +35,54 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                     "columns": [c["column"] for c in described],
                 }
             )
-        return {"tables": tables}
+        known = {table["name"] for table in tables}
+        for name in available_table_names:
+            if name in known:
+                continue
+            frame = ctx.tables[name]
+            tables.append(
+                {
+                    "name": name,
+                    "row_count": len(frame),
+                    "columns": list(map(str, frame.columns)),
+                }
+            )
+        return {
+            "ok": bool(tables),
+            "table_count": len(tables),
+            "python_dataframe_names": [table["name"] for table in tables],
+            "tables": tables,
+            "message": (
+                "Use these names exactly in run_python."
+                if tables
+                else "No processed tables are currently available to chat tools. Ask the user to process and approve files first."
+            ),
+        }
 
     async def describe_table(args: dict[str, Any]) -> dict[str, Any]:
         table = str(args["table"])
-        described = ctx.engine.describe_table(table)
+        try:
+            described = ctx.engine.describe_table(table)
+        except Exception:
+            frame = ctx.tables.get(table)
+            if frame is None:
+                return {
+                    "ok": False,
+                    "error": f"Unknown table: {table}",
+                    "available_tables": available_table_names,
+                }
+            return {
+                "ok": True,
+                "table": table,
+                "row_count": len(frame),
+                "columns": [
+                    {"name": str(name), "type": str(dtype), "nullable": bool(frame[name].isna().any())}
+                    for name, dtype in frame.dtypes.items()
+                ],
+            }
         return {
+            "ok": True,
+            "table": table,
             "columns": [
                 {"name": c["column"], "type": c["type"], "nullable": c["nullable"]}
                 for c in described
@@ -47,6 +90,12 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
         }
 
     async def run_python_handler(args: dict[str, Any]) -> dict[str, Any]:
+        if not ctx.tables:
+            return {
+                "ok": False,
+                "error": "No pandas DataFrames are currently available.",
+                "available_tables": [],
+            }
         code = str(args["code"])
         return run_python(code, tables=ctx.tables).to_dict()
 
@@ -63,13 +112,24 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
 
     async def read_schema_guide(_args: dict[str, Any]) -> dict[str, Any]:
         if ctx.data_doc is None:
-            return {"schema_guide": None}
-        return {"schema_guide": ctx.data_doc.model_dump(mode="json")}
+            return {
+                "ok": False,
+                "schema_guide": None,
+                "message": (
+                    "No schema guide has been generated for this session yet. "
+                    "Use list_tables and describe_table as the fallback."
+                ),
+                "fallback_tables": available_table_names,
+            }
+        return {"ok": True, "schema_guide": ctx.data_doc.model_dump(mode="json")}
 
     registry.register(
         Tool(
             name="list_tables",
-            description="List every dataframe available for Python analysis in this session.",
+            description=(
+                "List every table/dataframe available for analysis in this session. "
+                "Use the returned python_dataframe_names exactly when writing run_python code."
+            ),
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             handler=list_tables,
         )
@@ -91,9 +151,15 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
         Tool(
             name="run_python",
             description=(
-                "Run Python in a restricted sandbox. Every ingested file is pre-bound "
-                "as a pandas DataFrame named after the slugified filename. `pd` and `np` "
-                "are available. The value of the last expression is returned in result_preview."
+                "Run Python in a restricted, read-only sandbox for analysis. "
+                f"Available pandas DataFrames: {', '.join(available_table_names) if available_table_names else '(none currently available)'}. "
+                "Use only those dataframe variable names, plus pd (pandas) and np (numpy). "
+                "Allowed: pandas/numpy calculations, filtering, grouping, sorting, joins/merges, simple statistics, "
+                "creating local variables, and printing concise diagnostics. "
+                "Not allowed: imports, file/network access, subprocesses, OS/system calls, database writes, package installs, "
+                "open/read/write files, eval/exec/compile, or mutating external state. "
+                "Return the answer as the last expression whenever possible; the last expression is captured in result_preview. "
+                "If you need to inspect available dataframe names first, call list_tables before run_python."
             ),
             parameters={
                 "type": "object",
