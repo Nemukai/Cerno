@@ -47,6 +47,15 @@ export function SessionHeader({
         <button
           type="button"
           onClick={onHome}
+          className="flex h-8 w-8 shrink-0 items-center justify-center border border-neutral-200 bg-white font-mono text-lg leading-none text-neutral-500 transition hover:border-ember hover:text-ember"
+          title="Back to workspaces"
+          aria-label="Back to workspaces"
+        >
+          ←
+        </button>
+        <button
+          type="button"
+          onClick={onHome}
           className="shrink-0 text-neutral-500 transition hover:text-ink"
           title="Back to workspaces"
         >

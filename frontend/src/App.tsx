@@ -41,6 +41,7 @@ import {
 } from "./components/SessionPanels";
 import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
+import { DashboardTab } from "./components/DashboardTab";
 
 type WorkspaceMetric = {
   fileCount: number;
@@ -48,6 +49,48 @@ type WorkspaceMetric = {
   lastOpenedAt: string | null;
   loaded: boolean;
 };
+
+type HomeView = "landing" | "sessions";
+
+type AppRoute =
+  | { kind: "landing" }
+  | { kind: "sessions" }
+  | { kind: "session"; sessionId: string; tab: TabKey };
+
+const SESSION_TABS: TabKey[] = ["ask", "dashboard", "insights", "files"];
+
+function isTabKey(value: string | undefined): value is TabKey {
+  return SESSION_TABS.includes(value as TabKey);
+}
+
+function readRoute(): AppRoute {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts.length === 0) return { kind: "landing" };
+  if (parts[0] === "sessions") {
+    if (parts.length === 1) return { kind: "sessions" };
+    const sessionId = parts[1];
+    if (!sessionId) return { kind: "sessions" };
+    return {
+      kind: "session",
+      sessionId: decodeURIComponent(sessionId),
+      tab: isTabKey(parts[2]) ? parts[2] : "ask",
+    };
+  }
+  if (parts[0] === "dashboard" && parts[1]) {
+    return {
+      kind: "session",
+      sessionId: decodeURIComponent(parts[1]),
+      tab: "dashboard",
+    };
+  }
+  return { kind: "landing" };
+}
+
+function routePath(route: AppRoute): string {
+  if (route.kind === "landing") return "/";
+  if (route.kind === "sessions") return "/sessions";
+  return `/sessions/${encodeURIComponent(route.sessionId)}/${route.tab}`;
+}
 
 function hasActiveProcessingEvents(events: ProcessingEvent[]): boolean {
   const stateByJob = new Map<string, ProcessingEvent["kind"]>();
@@ -66,8 +109,13 @@ function hasActiveProcessingEvents(events: ProcessingEvent[]): boolean {
 }
 
 export function App() {
+  const initialRoute = useRef<AppRoute>(readRoute());
+  const [route, setRoute] = useState<AppRoute>(initialRoute.current);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [homeView, setHomeView] = useState<"landing" | "sessions">("landing");
+  const [homeView, setHomeView] = useState<HomeView>(
+    initialRoute.current.kind === "landing" ? "landing" : "sessions",
+  );
   const [session, setSession] = useState<Session | null>(null);
   const [workspaceMetrics, setWorkspaceMetrics] = useState<
     Record<string, WorkspaceMetric>
@@ -144,6 +192,39 @@ export function App() {
     }
   }, []);
 
+  const navigate = useCallback((next: AppRoute, options?: { replace?: boolean }) => {
+    const nextPath = routePath(next);
+    const currentPath = `${window.location.pathname}${window.location.search}`;
+    if (currentPath !== nextPath) {
+      if (options?.replace) {
+        window.history.replaceState({}, "", nextPath);
+      } else {
+        window.history.pushState({}, "", nextPath);
+      }
+    }
+    setRoute(readRoute());
+  }, []);
+
+  const navigateHome = useCallback(
+    (view: HomeView) => {
+      navigate(view === "landing" ? { kind: "landing" } : { kind: "sessions" });
+    },
+    [navigate],
+  );
+
+  const navigateSessionTab = useCallback(
+    (sessionId: string, tab: TabKey, options?: { replace?: boolean }) => {
+      navigate({ kind: "session", sessionId, tab }, options);
+    },
+    [navigate],
+  );
+
+  useEffect(() => {
+    const onPopState = () => setRoute(readRoute());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
   useEffect(() => {
     if (session) return;
     let cancelled = false;
@@ -186,12 +267,6 @@ export function App() {
       cancelled = true;
     };
   }, [session, sessions]);
-
-  useEffect(() => {
-    if (bootstrapped.current) return;
-    bootstrapped.current = true;
-    refreshSessions().catch((err: Error) => setError(err.message));
-  }, [refreshSessions]);
 
   useEffect(() => {
     if (!session) return;
@@ -277,6 +352,72 @@ export function App() {
     setFocusPageId(null);
   }, []);
 
+  useEffect(() => {
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    refreshSessions()
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setSessionsLoaded(true));
+  }, [refreshSessions]);
+
+  useEffect(() => {
+    if (!sessionsLoaded) return;
+
+    if (route.kind === "landing") {
+      if (session) {
+        setSession(null);
+        clearSessionState();
+      }
+      setHomeView("landing");
+      return;
+    }
+
+    if (route.kind === "sessions") {
+      if (session) {
+        setSession(null);
+        clearSessionState();
+      }
+      setHomeView("sessions");
+      return;
+    }
+
+    const nextSession =
+      sessions.find((item) => item.id === route.sessionId) ??
+      (session?.id === route.sessionId ? session : null);
+    if (!nextSession) {
+      if (session) {
+        setSession(null);
+        clearSessionState();
+      }
+      setHomeView("sessions");
+      setError("Workspace not found or not available for this user.");
+      navigate({ kind: "sessions" }, { replace: true });
+      return;
+    }
+
+    setHomeView("sessions");
+    if (session?.id !== nextSession.id) {
+      clearSessionState();
+      markWorkspaceOpened(nextSession.id);
+      setSession(nextSession);
+    }
+    if (activeTab !== route.tab) {
+      setActiveTab(route.tab);
+    }
+    if (route.tab !== "dashboard" && focusPageId) {
+      setFocusPageId(null);
+    }
+  }, [
+    activeTab,
+    clearSessionState,
+    focusPageId,
+    navigate,
+    route,
+    session,
+    sessions,
+    sessionsLoaded,
+  ]);
+
   const handleCreateSession = useCallback(
     async (name: string) => {
       setError(null);
@@ -287,6 +428,8 @@ export function App() {
         setHomeView("sessions");
         markWorkspaceOpened(s.id);
         setSession(s);
+        setActiveTab("files");
+        navigateSessionTab(s.id, "files");
         await refreshSessions();
       } catch (err) {
         setError((err as Error).message);
@@ -294,7 +437,7 @@ export function App() {
         setStarting(false);
       }
     },
-    [clearSessionState, refreshSessions],
+    [clearSessionState, navigateSessionTab, refreshSessions],
   );
 
   const handleResumeSession = useCallback(
@@ -303,16 +446,19 @@ export function App() {
       setHomeView("sessions");
       markWorkspaceOpened(s.id);
       setSession(s);
+      setActiveTab("ask");
+      navigateSessionTab(s.id, "ask");
     },
-    [clearSessionState],
+    [clearSessionState, navigateSessionTab],
   );
 
   const handleHome = useCallback(() => {
     setSession(null);
     setHomeView("sessions");
     clearSessionState();
+    navigateHome("sessions");
     refreshSessions().catch((err: Error) => setError(err.message));
-  }, [clearSessionState, refreshSessions]);
+  }, [clearSessionState, navigateHome, refreshSessions]);
 
   const handleDeleteSession = useCallback(
     async (id: string) => {
@@ -327,13 +473,14 @@ export function App() {
         if (session?.id === id) {
           setSession(null);
           clearSessionState();
+          navigateHome("sessions");
         }
         await refreshSessions();
       } catch (err) {
         setError((err as Error).message);
       }
     },
-    [session, clearSessionState, refreshSessions],
+    [session, clearSessionState, navigateHome, refreshSessions],
   );
 
   const handleUpload = useCallback(
@@ -350,6 +497,7 @@ export function App() {
       setError(null);
       setUploading(true);
       setActiveTab("files");
+      navigateSessionTab(session.id, "files");
       try {
         const result = await uploadFiles(session.id, deduped);
         const queuedEvents = result.jobs.flatMap((job) => job.events);
@@ -378,6 +526,7 @@ export function App() {
     },
     [
       session,
+      navigateSessionTab,
       refreshFiles,
       refreshSessions,
       refreshDiscovery,
@@ -389,6 +538,7 @@ export function App() {
       if (!session) return;
       setError(null);
       setActiveTab("files");
+      navigateSessionTab(session.id, "files");
       try {
         await deleteFile(fileId);
         setPages([]);
@@ -409,6 +559,7 @@ export function App() {
     },
     [
       session,
+      navigateSessionTab,
       refreshEvents,
       refreshSessions,
       refreshDiscovery,
@@ -421,6 +572,7 @@ export function App() {
     setProcessing(true);
     setEvents([]);
     setActiveTab("insights");
+    navigateSessionTab(session.id, "insights");
     setPages([]);
     setCellsByPage({});
     setDashboardLoadedFor(session.id);
@@ -441,6 +593,7 @@ export function App() {
     }
   }, [
     session,
+    navigateSessionTab,
     refreshFiles,
     refreshDiscovery,
     refreshEvents,
@@ -470,13 +623,21 @@ export function App() {
           refreshSessions(),
         ]);
         setActiveTab("ask");
+        navigateSessionTab(session.id, "ask");
       } catch (err) {
         setError((err as Error).message);
       } finally {
         setApproving(false);
       }
     },
-    [session, refreshFiles, refreshLinks, refreshSchemaGuide, refreshSessions],
+    [
+      session,
+      navigateSessionTab,
+      refreshFiles,
+      refreshLinks,
+      refreshSchemaGuide,
+      refreshSessions,
+    ],
   );
 
   const handleSend = useCallback(
@@ -514,13 +675,15 @@ export function App() {
   }, [session, refreshDashboard]);
 
   const handleOpenPage = useCallback((pageId: string) => {
-    setActiveTab("ask");
+    if (session) navigateSessionTab(session.id, "dashboard");
+    setActiveTab("dashboard");
     setFocusPageId(pageId);
-  }, []);
+  }, [navigateSessionTab, session]);
 
   const handleNewChat = useCallback(() => {
+    if (session) navigateSessionTab(session.id, "ask");
     setActiveTab("ask");
-  }, []);
+  }, [navigateSessionTab, session]);
 
   const handleDeleteTurn = useCallback(
     async (turnId: string) => {
@@ -534,6 +697,15 @@ export function App() {
       }
     },
     [session, refreshTurns],
+  );
+
+  const handleTabChange = useCallback(
+    (tab: TabKey) => {
+      if (session) navigateSessionTab(session.id, tab);
+      setActiveTab(tab);
+      if (tab !== "dashboard") setFocusPageId(null);
+    },
+    [navigateSessionTab, session],
   );
 
   const discoveryStatus = discovery?.status ?? "empty";
@@ -560,7 +732,7 @@ export function App() {
       return (
         <LandingPage
           sessionCount={sessions.length}
-          onEnter={() => setHomeView("sessions")}
+          onEnter={() => navigateHome("sessions")}
         />
       );
     }
@@ -574,7 +746,7 @@ export function App() {
         starting={starting}
         error={error}
         onDismissError={() => setError(null)}
-        onBackToLanding={() => setHomeView("landing")}
+        onBackToLanding={() => navigateHome("landing")}
       />
     );
   }
@@ -589,7 +761,7 @@ export function App() {
             session={session}
             files={files}
             turns={turns}
-            onSelectTab={setActiveTab}
+            onSelectTab={handleTabChange}
             onNewChat={handleNewChat}
             onDeleteTurn={handleDeleteTurn}
           />
@@ -606,7 +778,7 @@ export function App() {
             showFileActions={files.length > 0}
           />
         }
-        rightPanel={focusPageId ? (
+        rightPanel={focusPageId && activeTab !== "dashboard" ? (
           <VisualPanel
             pages={pages}
             cellsByPage={cellsByPage}
@@ -618,7 +790,7 @@ export function App() {
           />
         ) : null}
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={handleTabChange}
         onDropFile={handleUpload}
         showTabs={files.length > 0}
         sidebarOpen={sidebarOpen}
@@ -635,6 +807,23 @@ export function App() {
             onProcess={handleProcess}
           />
         ) : null}
+        {files.length > 0 && activeTab === "dashboard" ? (
+          <DashboardTab
+            pages={pages}
+            cellsByPage={cellsByPage}
+            focusPageId={focusPageId}
+            files={files}
+            discoveryStatus={discoveryStatus}
+            onUpload={handleUpload}
+            uploading={uploading}
+            onDeleteFile={handleDeleteFile}
+            onProcess={handleProcess}
+            processing={processing}
+            onBuildDashboard={handleBuildDashboard}
+            building={building}
+            onReviewSchema={() => handleTabChange("insights")}
+          />
+        ) : null}
         {files.length > 0 && activeTab === "ask" ? (
           <ChatSidebar
             turns={turns}
@@ -647,8 +836,8 @@ export function App() {
             sending={sending}
             onSend={handleSend}
             onOpenPage={handleOpenPage}
-            onOpenInsights={() => setActiveTab("insights")}
-            onOpenFiles={() => setActiveTab("files")}
+            onOpenInsights={() => handleTabChange("insights")}
+            onOpenFiles={() => handleTabChange("files")}
           />
         ) : null}
         {files.length > 0 && activeTab === "insights" ? (
@@ -664,7 +853,7 @@ export function App() {
             onProcess={handleProcess}
             onApprove={handleApprove}
             onBuildDashboard={handleBuildDashboard}
-            onOpenFiles={() => setActiveTab("files")}
+            onOpenFiles={() => handleTabChange("files")}
           />
         ) : null}
         {files.length > 0 && activeTab === "files" ? (
