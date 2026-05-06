@@ -10,6 +10,7 @@ type Props = {
   onHome: () => void;
   onDelete: () => void;
   onResume: (session: Session) => void;
+  onPrefetch?: (sessionId: string) => void;
   showFileActions?: boolean;
 };
 
@@ -21,6 +22,7 @@ export function SessionHeader({
   onHome,
   onDelete,
   onResume,
+  onPrefetch,
   showFileActions = true,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -68,6 +70,12 @@ export function SessionHeader({
         {sessions.length > 1 ? (
           <select
             value={session?.id ?? ""}
+            onFocus={() => {
+              sessions.forEach((item) => onPrefetch?.(item.id));
+            }}
+            onMouseEnter={() => {
+              sessions.forEach((item) => onPrefetch?.(item.id));
+            }}
             onChange={(event) => {
               const next = sessions.find((item) => item.id === event.target.value);
               if (next && next.id !== session?.id) onResume(next);

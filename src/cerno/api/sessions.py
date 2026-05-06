@@ -13,6 +13,9 @@ from cerno.api.deps import ConnDep, GrantedUserDep, SettingsDep
 from cerno.config import Settings
 from cerno.db import session_scope
 from cerno.models import (
+    ChatArtifact,
+    ChatMessage,
+    ChatTurn,
     DataDoc,
     DataDocColumn,
     DataDocFile,
@@ -25,6 +28,8 @@ from cerno.models import (
 from cerno.models import File as FileModel
 from cerno.repositories import (
     AssetArtifactRepository,
+    ChatArtifactRepository,
+    ChatRepository,
     DataDocRepository,
     FileRepository,
     LinkRepository,
@@ -462,6 +467,22 @@ class DiscoveryResponse(BaseModel):
     overview: str
 
 
+class ChatFeedTurn(BaseModel):
+    turn: ChatTurn
+    messages: list[ChatMessage]
+    artifacts: list[ChatArtifact]
+
+
+class WorkspaceResponse(BaseModel):
+    session: Session
+    files: list[FileModel]
+    links: list[Link]
+    discovery: DiscoveryResponse
+    events: list[ProcessingEvent]
+    chat_feed: list[ChatFeedTurn]
+    data_doc: DataDoc | None = None
+
+
 _INFERRED_TO_SIMPLE = {
     "string": "string",
     "int": "int",
@@ -581,6 +602,52 @@ def post_process(
 @router.get("/sessions/{session_id}/discovery", response_model=DiscoveryResponse)
 def get_discovery(session_id: str, conn: ConnDep, user: GrantedUserDep) -> DiscoveryResponse:
     return _build_discovery_response(session_id, conn, user.id)
+
+
+@router.get("/sessions/{session_id}/workspace", response_model=WorkspaceResponse)
+def get_workspace(session_id: str, conn: ConnDep, user: GrantedUserDep) -> WorkspaceResponse:
+    session = _require_session(conn, session_id, user.id)
+    files = FileRepository(conn).list_for_session(session_id)
+    links = LinkRepository(conn).list_for_session(session_id)
+    discovery = _build_discovery_response(session_id, conn, user.id)
+    events = ProcessingEventRepository(conn).list_for_session(session_id)
+
+    chat_repo = ChatRepository(conn)
+    artifact_repo = ChatArtifactRepository(conn)
+    messages_by_turn = chat_repo.list_messages_for_session(session_id)
+    artifacts_by_turn = artifact_repo.list_for_session(session_id)
+    chat_feed = [
+        ChatFeedTurn(
+            turn=turn,
+            messages=messages_by_turn.get(turn.id, []),
+            artifacts=artifacts_by_turn.get(turn.id, []),
+        )
+        for turn in chat_repo.list_turns(session_id)
+    ]
+
+    data_doc: DataDoc | None = None
+    if session.discovery_status in {"pending_review", "approved"}:
+        data_docs_repo = DataDocRepository(conn)
+        data_doc = data_docs_repo.get(session_id)
+        if data_doc is None:
+            _synthesize_docs_from_current_schema(
+                session_id=session_id,
+                user_id=user.id,
+                conn=conn,
+                data_docs_repo=data_docs_repo,
+            )
+            conn.commit()
+            data_doc = data_docs_repo.get(session_id)
+
+    return WorkspaceResponse(
+        session=session,
+        files=files,
+        links=links,
+        discovery=discovery,
+        events=events,
+        chat_feed=chat_feed,
+        data_doc=data_doc,
+    )
 
 
 @router.get("/sessions/{session_id}/docs", response_model=DataDoc)

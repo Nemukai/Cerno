@@ -223,6 +223,16 @@ export type ChatFeedTurn = {
   artifacts: ChatArtifact[];
 };
 
+export type WorkspaceResponse = {
+  session: Session;
+  files: FileRecord[];
+  links: Link[];
+  discovery: DiscoveryResponse;
+  events: ProcessingEvent[];
+  chat_feed: ChatFeedTurn[];
+  data_doc: DataDoc | null;
+};
+
 export type ChatStreamEvent =
   | {
       type: "turn_started";

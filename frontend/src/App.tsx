@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { ArrowRight, Database, LineChart, FileSpreadsheet, Sparkles, MessageSquare } from "lucide-react";
 import {
@@ -11,6 +12,7 @@ import {
   getDiscovery,
   getProcessingEvents,
   getSchemaGuide,
+  getWorkspace,
   listFiles,
   listLinks,
   listSessions,
@@ -32,6 +34,7 @@ import type {
   Link,
   ProcessingEvent,
   Session,
+  WorkspaceResponse,
 } from "./lib/types";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { CernoLockup } from "./components/Brand";
@@ -153,6 +156,8 @@ export function App() {
   const [liveChat, setLiveChat] = useState<LiveChatState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const queryClient = useQueryClient();
+  const [_navigationPending, startNavigationTransition] = useTransition();
   const bootstrapped = useRef(false);
   const pollRef = useRef<number | null>(null);
 
@@ -182,8 +187,7 @@ export function App() {
     setEvents(e);
   }, []);
 
-  const refreshChatFeed = useCallback(async (sessionId: string) => {
-    const feed = await getChatFeed(sessionId);
+  const applyChatFeed = useCallback((feed: WorkspaceResponse["chat_feed"]) => {
     setTurns(feed.map((item) => item.turn));
     setMessagesByTurn(
       Object.fromEntries(feed.map((item) => [item.turn.id, item.messages])),
@@ -193,6 +197,11 @@ export function App() {
     );
   }, []);
 
+  const refreshChatFeed = useCallback(async (sessionId: string) => {
+    const feed = await getChatFeed(sessionId);
+    applyChatFeed(feed);
+  }, [applyChatFeed]);
+
   const refreshSchemaGuide = useCallback(async (sessionId: string) => {
     try {
       const doc = await getSchemaGuide(sessionId);
@@ -201,6 +210,37 @@ export function App() {
       setDataDoc(null);
     }
   }, []);
+
+  const applyWorkspace = useCallback(
+    (workspace: WorkspaceResponse) => {
+      setSession(workspace.session);
+      setFiles(workspace.files);
+      setLinks(workspace.links);
+      setDiscovery(workspace.discovery);
+      setEvents(workspace.events);
+      setDataDoc(workspace.data_doc);
+      applyChatFeed(workspace.chat_feed);
+    },
+    [applyChatFeed],
+  );
+
+  const prefetchWorkspace = useCallback(
+    (sessionId: string) => {
+      queryClient.prefetchQuery({
+        queryKey: ["workspace", sessionId],
+        queryFn: () => getWorkspace(sessionId),
+        staleTime: 30_000,
+      });
+    },
+    [queryClient],
+  );
+
+  const workspaceQuery = useQuery({
+    queryKey: ["workspace", session?.id],
+    queryFn: () => getWorkspace(session!.id),
+    enabled: Boolean(session?.id),
+    placeholderData: (previousData) => previousData,
+  });
 
   const navigate = useCallback((next: AppRoute, options?: { replace?: boolean }) => {
     const nextPath = routePath(next);
@@ -245,6 +285,7 @@ export function App() {
     Promise.all(
       sessions.map(async (item) => {
         try {
+          prefetchWorkspace(item.id);
           const workspaceFiles = await listFiles(item.id);
           return [
             item.id,
@@ -276,28 +317,20 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [session, sessions]);
+  }, [session, sessions, prefetchWorkspace]);
 
   useEffect(() => {
-    if (!session) return;
-    const id = session.id;
-    Promise.all([
-      refreshFiles(id),
-      refreshLinks(id),
-      refreshDiscovery(id),
-      refreshEvents(id),
-      refreshChatFeed(id),
-      refreshSchemaGuide(id),
-    ]).catch((err: Error) => setError(err.message));
-  }, [
-    session,
-    refreshFiles,
-    refreshLinks,
-    refreshDiscovery,
-    refreshEvents,
-    refreshChatFeed,
-    refreshSchemaGuide,
-  ]);
+    if (!workspaceQuery.data || !session) return;
+    if (workspaceQuery.data.session.id !== session.id) return;
+    startNavigationTransition(() => {
+      applyWorkspace(workspaceQuery.data);
+    });
+  }, [applyWorkspace, session, startNavigationTransition, workspaceQuery.data]);
+
+  useEffect(() => {
+    if (!workspaceQuery.error || !session) return;
+    setError((workspaceQuery.error as Error).message);
+  }, [session, workspaceQuery.error]);
 
   useEffect(() => {
     const hasActiveEvent = hasActiveProcessingEvents(events);
@@ -404,12 +437,16 @@ export function App() {
 
     setHomeView("sessions");
     if (session?.id !== nextSession.id) {
-      clearSessionState();
       markWorkspaceOpened(nextSession.id);
-      setSession(nextSession);
+      startNavigationTransition(() => {
+        clearSessionState();
+        setSession(nextSession);
+      });
     }
     if (activeTab !== route.tab) {
-      setActiveTab(route.tab);
+      startNavigationTransition(() => {
+        setActiveTab(route.tab);
+      });
     }
   }, [
     activeTab,
@@ -419,6 +456,7 @@ export function App() {
     session,
     sessions,
     sessionsLoaded,
+    startNavigationTransition,
   ]);
 
   const handleCreateSession = useCallback(
@@ -427,11 +465,13 @@ export function App() {
       setStarting(true);
       try {
         const s = await createSession(name);
-        clearSessionState();
-        setHomeView("sessions");
         markWorkspaceOpened(s.id);
-        setSession(s);
-        setActiveTab("files");
+        startNavigationTransition(() => {
+          clearSessionState();
+          setHomeView("sessions");
+          setSession(s);
+          setActiveTab("files");
+        });
         navigateSessionTab(s.id, "files");
         await refreshSessions();
       } catch (err) {
@@ -440,19 +480,22 @@ export function App() {
         setStarting(false);
       }
     },
-    [clearSessionState, navigateSessionTab, refreshSessions],
+    [clearSessionState, navigateSessionTab, refreshSessions, startNavigationTransition],
   );
 
   const handleResumeSession = useCallback(
     (s: Session) => {
-      clearSessionState();
-      setHomeView("sessions");
       markWorkspaceOpened(s.id);
-      setSession(s);
-      setActiveTab("ask");
+      prefetchWorkspace(s.id);
+      startNavigationTransition(() => {
+        clearSessionState();
+        setHomeView("sessions");
+        setSession(s);
+        setActiveTab("ask");
+      });
       navigateSessionTab(s.id, "ask");
     },
-    [clearSessionState, navigateSessionTab],
+    [clearSessionState, navigateSessionTab, prefetchWorkspace, startNavigationTransition],
   );
 
   const handleHome = useCallback(() => {
@@ -517,6 +560,7 @@ export function App() {
           refreshFiles(session.id),
           refreshSessions(),
         ]);
+        await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
       } catch (err) {
         setError((err as Error).message);
         await refreshDiscovery(session.id).catch(() => undefined);
@@ -530,6 +574,7 @@ export function App() {
       refreshFiles,
       refreshSessions,
       refreshDiscovery,
+      queryClient,
     ],
   );
 
@@ -548,6 +593,7 @@ export function App() {
         setDataDoc(null);
         setEvents([]);
         await refreshSessions();
+        await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
       } catch (err) {
         setError((err as Error).message);
         await refreshDiscovery(session.id).catch(() => undefined);
@@ -560,6 +606,7 @@ export function App() {
       refreshEvents,
       refreshSessions,
       refreshDiscovery,
+      queryClient,
     ],
   );
 
@@ -579,6 +626,7 @@ export function App() {
         refreshEvents(session.id),
         refreshSessions(),
       ]);
+      await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
     } catch (err) {
       setError((err as Error).message);
       await refreshDiscovery(session.id).catch(() => undefined);
@@ -592,6 +640,7 @@ export function App() {
     refreshDiscovery,
     refreshEvents,
     refreshSessions,
+    queryClient,
   ]);
 
   const handleApprove = useCallback(
@@ -616,6 +665,7 @@ export function App() {
           refreshSchemaGuide(session.id),
           refreshSessions(),
         ]);
+        await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
         setActiveTab("ask");
         navigateSessionTab(session.id, "ask");
       } catch (err) {
@@ -631,6 +681,7 @@ export function App() {
       refreshLinks,
       refreshSchemaGuide,
       refreshSessions,
+      queryClient,
     ],
   );
 
@@ -756,6 +807,7 @@ export function App() {
           },
         );
         await refreshChatFeed(session.id);
+        await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
         setLiveChat(null);
       } catch (err) {
         setError((err as Error).message);
@@ -763,7 +815,7 @@ export function App() {
         setSending(false);
       }
     },
-    [activeTurnId, session, refreshChatFeed],
+    [activeTurnId, session, refreshChatFeed, queryClient],
   );
 
   const handleNewChat = useCallback(() => {
@@ -789,11 +841,12 @@ export function App() {
       try {
         await updateTurn(turnId, { title });
         await refreshChatFeed(session.id);
+        await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
       } catch (err) {
         setError((err as Error).message);
       }
     },
-    [session, refreshChatFeed],
+    [session, refreshChatFeed, queryClient],
   );
 
   const handleDeleteTurn = useCallback(
@@ -804,22 +857,32 @@ export function App() {
         await deleteTurn(turnId);
         if (activeTurnId === turnId) setActiveTurnId(null);
         await refreshChatFeed(session.id);
+        await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
       } catch (err) {
         setError((err as Error).message);
       }
     },
-    [activeTurnId, session, refreshChatFeed],
+    [activeTurnId, session, refreshChatFeed, queryClient],
   );
 
   const handleTabChange = useCallback(
     (tab: TabKey) => {
       if (session) navigateSessionTab(session.id, tab);
-      setActiveTab(tab);
+      startNavigationTransition(() => {
+        setActiveTab(tab);
+      });
     },
-    [navigateSessionTab, session],
+    [navigateSessionTab, session, startNavigationTransition],
   );
 
   const discoveryStatus = discovery?.status ?? "empty";
+  const sessionHasWorkspaceContent =
+    files.length > 0 || discoveryStatus !== "empty" || session?.status !== "new";
+  const workspaceLoading =
+    Boolean(session) &&
+    (workspaceQuery.isPending ||
+      (workspaceQuery.isFetching && files.length === 0 && sessionHasWorkspaceContent));
+  const showSessionTabs = sessionHasWorkspaceContent || workspaceLoading;
 
   if (!session) {
     if (homeView === "landing") {
@@ -835,6 +898,7 @@ export function App() {
               onStart={handleCreateSession}
               onResume={handleResumeSession}
               onDelete={handleDeleteSession}
+              onPrefetch={prefetchWorkspace}
               metrics={workspaceMetrics}
               starting={starting}
               error={error}
@@ -880,17 +944,20 @@ export function App() {
             onHome={handleHome}
             onDelete={() => handleDeleteSession(session.id)}
             onResume={handleResumeSession}
-            showFileActions={files.length > 0}
+            onPrefetch={prefetchWorkspace}
+            showFileActions={showSessionTabs}
           />
         }
         activeTab={activeTab}
         onTabChange={handleTabChange}
         onDropFile={handleUpload}
-        showTabs={files.length > 0}
+        showTabs={showSessionTabs}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((current) => !current)}
       >
-        {files.length === 0 ? (
+        {workspaceLoading ? (
+          <WorkspaceLoadingPanel activeTab={activeTab} />
+        ) : files.length === 0 ? (
           <FilesPanel
             files={files}
             discoveryStatus={discoveryStatus}
@@ -901,7 +968,7 @@ export function App() {
             onProcess={handleProcess}
           />
         ) : null}
-        {files.length > 0 && activeTab === "ask" ? (
+        {!workspaceLoading && files.length > 0 && activeTab === "ask" ? (
           <ChatSidebar
             turns={turns}
             messagesByTurn={messagesByTurn}
@@ -919,7 +986,7 @@ export function App() {
             onOpenFiles={() => handleTabChange("files")}
           />
         ) : null}
-        {files.length > 0 && activeTab === "insights" ? (
+        {!workspaceLoading && files.length > 0 && activeTab === "insights" ? (
           <SchemaTab
             files={files}
             links={links}
@@ -933,7 +1000,7 @@ export function App() {
             onApprove={handleApprove}
           />
         ) : null}
-        {files.length > 0 && activeTab === "files" ? (
+        {!workspaceLoading && files.length > 0 && activeTab === "files" ? (
           <FilesPanel
             files={files}
             discoveryStatus={discoveryStatus}
@@ -1166,6 +1233,7 @@ function WorkspacesPage({
   onStart,
   onResume,
   onDelete,
+  onPrefetch,
   metrics,
   starting,
   error,
@@ -1178,6 +1246,7 @@ function WorkspacesPage({
   onStart: (name: string) => void;
   onResume: (session: Session) => void;
   onDelete: (id: string) => void;
+  onPrefetch: (sessionId: string) => void;
   metrics: Record<string, WorkspaceMetric>;
   starting: boolean;
   error: string | null;
@@ -1187,6 +1256,10 @@ function WorkspacesPage({
 }) {
   const [name, setName] = useState("");
   const stats = buildWorkspaceStats(sessions, metrics);
+
+  useEffect(() => {
+    sessions.slice(0, 6).forEach((session) => onPrefetch(session.id));
+  }, [onPrefetch, sessions]);
 
   const handleStart = () => {
     const trimmed = name.trim();
@@ -1303,6 +1376,7 @@ function WorkspacesPage({
                       metric={metrics[s.id]}
                       onResume={() => onResume(s)}
                       onDelete={() => handleDelete(s)}
+                      onPrefetch={() => onPrefetch(s.id)}
                     />
                   ))}
                 </ul>
@@ -1403,16 +1477,54 @@ function WorkspaceStat({
   );
 }
 
+function WorkspaceLoadingPanel({ activeTab }: { activeTab: TabKey }) {
+  const title =
+    activeTab === "ask"
+      ? "Loading chat"
+      : activeTab === "insights"
+        ? "Loading insights"
+        : "Loading files";
+
+  return (
+    <div className="h-full bg-[#fffdf9] px-8 py-7">
+      <div className="max-w-5xl">
+        <div className="small-caps text-xs text-neutral-500">{title}</div>
+        <div className="mt-4 grid gap-3">
+          <SkeletonBlock className="h-12 w-2/3" />
+          <SkeletonBlock className="h-24 w-full" />
+          <SkeletonBlock className="h-24 w-5/6" />
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <SkeletonBlock className="h-28" />
+            <SkeletonBlock className="h-28" />
+            <SkeletonBlock className="h-28" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SkeletonBlock({ className = "" }: { className?: string }) {
+  return (
+    <div
+      className={`animate-pulse border border-drift bg-drift/30 ${className}`}
+      aria-hidden="true"
+    />
+  );
+}
+
 function WorkspaceRow({
   session,
   metric,
   onResume,
   onDelete,
+  onPrefetch,
 }: {
   session: Session;
   metric?: WorkspaceMetric;
   onResume: () => void;
   onDelete: () => void;
+  onPrefetch: () => void;
 }) {
   const activity = workspaceActivity(session, metric);
   const fileCount = metric?.loaded ? metric.fileCount : null;
@@ -1420,7 +1532,11 @@ function WorkspaceRow({
 
   return (
     <li>
-      <div className="group grid gap-4 border border-drift bg-tidepaper px-5 py-5 transition hover:border-deep-sea hover:bg-drift/30 md:grid-cols-[minmax(0,1fr)_auto]">
+      <div
+        className="group grid gap-4 border border-drift bg-tidepaper px-5 py-5 transition hover:border-deep-sea hover:bg-drift/30 md:grid-cols-[minmax(0,1fr)_auto]"
+        onMouseEnter={onPrefetch}
+        onFocus={onPrefetch}
+      >
         <button
           type="button"
           onClick={onResume}

@@ -15,6 +15,7 @@ import type {
   ProcessingEvent,
   ProcessingJobResponse,
   Session,
+  WorkspaceResponse,
 } from "./types";
 
 export type Health = {
@@ -72,6 +73,10 @@ export function listSessions(): Promise<Session[]> {
 
 export function getSession(id: string): Promise<Session> {
   return request<Session>(`/sessions/${id}`);
+}
+
+export function getWorkspace(id: string): Promise<WorkspaceResponse> {
+  return request<WorkspaceResponse>(`/sessions/${id}/workspace`);
 }
 
 export async function deleteSession(id: string): Promise<void> {

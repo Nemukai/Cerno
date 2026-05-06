@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 export type AccessStatus = "pending" | "granted" | "revoked";
 
@@ -64,25 +64,22 @@ export type UseUser = {
 };
 
 export function useUser(): UseUser {
-  const [user, setUser] = useState<CurrentUser | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: fetchCurrentUser,
+    staleTime: 60_000,
+  });
 
   const refresh = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setUser(await fetchCurrentUser());
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
+    await queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+    await query.refetch();
   };
 
-  useEffect(() => {
-    refresh();
-  }, []);
-
-  return { user, loading, error, refresh };
+  return {
+    user: query.data ?? null,
+    loading: query.isPending,
+    error: query.error ? (query.error as Error).message : null,
+    refresh,
+  };
 }
