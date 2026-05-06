@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { ArrowRight, Database, LineChart, FileSpreadsheet, Sparkles, MessageSquare } from "lucide-react";
 import {
   approveSchema,
   createSession,
@@ -825,6 +827,12 @@ export function App() {
   );
 }
 
+function DotPattern() {
+  return (
+    <div className="absolute inset-0 z-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#345A67 1px, transparent 1px)', backgroundSize: '32px 32px' }} />
+  );
+}
+
 function LandingPage({
   onEnter,
 }: {
@@ -844,8 +852,9 @@ function LandingPage({
 
   return (
     <div className="relative min-h-full overflow-hidden bg-tidepaper text-night-watch">
+      <DotPattern />
       <main className="relative z-10 flex min-h-full flex-col">
-        <header className="flex items-center justify-between px-6 py-5 sm:px-10 border-b border-drift">
+        <header className="flex items-center justify-between px-6 py-5 sm:px-10 border-b border-drift bg-tidepaper/80 backdrop-blur-md">
           <CernoLockup markClassName="h-6 w-6 text-deep-sea" wordmarkClassName="text-base text-night-watch" />
           <a
             href={googleLoginUrl()}
@@ -855,24 +864,109 @@ function LandingPage({
           </a>
         </header>
 
-        <section className="flex flex-1 items-center px-6 pb-16 pt-8 sm:px-10">
-          <div className="max-w-5xl border-l border-drift pl-8">
-            <div className="small-caps text-xs text-deep-sea">measured & tactile</div>
-            <h1 className="mt-5 max-w-4xl font-serif text-5xl leading-[1.02] text-night-watch sm:text-7xl lg:text-8xl">
-              Research notebook meets observatory.
-            </h1>
-            <p className="mt-5 max-w-2xl text-lg leading-8 text-night-watch/70">
-              Upload spreadsheets, approve the data map, then work from a chat
-              that understands the files before it answers.
-            </p>
-            <div className="mt-10 flex flex-wrap items-center gap-4">
-              <a
-                href={googleLoginUrl()}
-                className="small-caps bg-night-watch px-5 py-3 text-xs text-tidepaper transition hover:bg-deep-sea"
+        <section className="flex flex-1 items-center px-6 pb-16 pt-12 sm:px-10 relative z-10">
+          <div className="w-full max-w-7xl mx-auto grid lg:grid-cols-2 gap-16 items-center">
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, ease: "easeOut" }}
+              className="border-l border-drift pl-8"
+            >
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.3 }}
+                className="flex items-center gap-2 small-caps text-xs text-deep-sea"
               >
-                sign in to continue
-              </a>
-            </div>
+                <Sparkles className="h-3 w-3" /> measured & tactile
+              </motion.div>
+              <h1 className="mt-5 max-w-2xl font-serif text-5xl leading-[1.02] text-night-watch sm:text-7xl lg:text-7xl">
+                Research notebook meets observatory.
+              </h1>
+              <p className="mt-6 max-w-xl text-lg leading-8 text-night-watch/70">
+                Upload spreadsheets, approve the data map, then work from a chat
+                that understands the files before it answers.
+              </p>
+              <div className="mt-10 flex flex-wrap items-center gap-4">
+                <a
+                  href={googleLoginUrl()}
+                  className="group flex items-center gap-2 small-caps bg-night-watch px-6 py-3.5 text-sm text-tidepaper transition hover:bg-deep-sea"
+                >
+                  sign in to continue
+                  <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+                </a>
+              </div>
+            </motion.div>
+
+            <motion.div 
+              initial={{ opacity: 0, x: 40 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 1, delay: 0.2, ease: "easeOut" }}
+              className="hidden lg:block relative h-[500px] w-full"
+            >
+              {/* Abstract Mockup Elements */}
+              <div className="absolute inset-0 grid grid-cols-6 grid-rows-6 gap-4 p-4 border border-drift bg-tidepaper/50 backdrop-blur-sm">
+                <motion.div 
+                   initial={{ height: 0 }}
+                   animate={{ height: "100%" }}
+                   transition={{ duration: 1.5, delay: 0.5, ease: "easeInOut" }}
+                   className="col-span-2 row-span-4 border border-drift bg-drift/20 p-4 flex flex-col gap-4 overflow-hidden"
+                >
+                   <div className="h-2 w-1/2 bg-drift" />
+                   <div className="h-2 w-3/4 bg-drift" />
+                   <div className="flex-1 border border-drift/50 flex items-center justify-center text-drift">
+                      <Database className="h-8 w-8" />
+                   </div>
+                </motion.div>
+                <motion.div 
+                   initial={{ opacity: 0, scale: 0.95 }}
+                   animate={{ opacity: 1, scale: 1 }}
+                   transition={{ duration: 1, delay: 0.8, ease: "easeOut" }}
+                   className="col-span-4 row-span-3 border border-drift bg-tidepaper p-4 shadow-sm flex flex-col gap-3 relative"
+                >
+                  <div className="flex items-center gap-3 border-b border-drift pb-3">
+                     <MessageSquare className="h-4 w-4 text-deep-sea" />
+                     <div className="h-2 w-1/3 bg-drift" />
+                  </div>
+                  <div className="flex-1 flex items-end gap-2 px-2">
+                     <motion.div initial={{ height: "20%" }} animate={{ height: "40%" }} transition={{ duration: 1, delay: 1 }} className="flex-1 bg-sea-glass/40 border border-sea-glass/20" />
+                     <motion.div initial={{ height: "30%" }} animate={{ height: "70%" }} transition={{ duration: 1, delay: 1.2 }} className="flex-1 bg-sea-glass/60 border border-sea-glass/30" />
+                     <motion.div initial={{ height: "40%" }} animate={{ height: "100%" }} transition={{ duration: 1, delay: 1.4 }} className="flex-1 bg-sea-glass border border-sea-glass" />
+                     <motion.div initial={{ height: "20%" }} animate={{ height: "60%" }} transition={{ duration: 1, delay: 1.6 }} className="flex-1 bg-sea-glass/80 border border-sea-glass/40" />
+                  </div>
+                </motion.div>
+                <motion.div 
+                   initial={{ opacity: 0, y: 20 }}
+                   animate={{ opacity: 1, y: 0 }}
+                   transition={{ duration: 0.8, delay: 1.2, ease: "easeOut" }}
+                   className="col-span-4 row-span-3 border border-drift bg-tidepaper p-4 shadow-sm"
+                >
+                  <div className="h-2 w-1/4 bg-drift mb-4" />
+                  <div className="space-y-3">
+                     <div className="h-8 w-full border border-drift flex items-center px-3 gap-3">
+                        <FileSpreadsheet className="h-3 w-3 text-deep-sea" />
+                        <div className="h-1 w-1/2 bg-drift" />
+                     </div>
+                     <div className="h-8 w-full border border-drift flex items-center px-3 gap-3">
+                        <FileSpreadsheet className="h-3 w-3 text-deep-sea" />
+                        <div className="h-1 w-1/3 bg-drift" />
+                     </div>
+                  </div>
+                </motion.div>
+                <motion.div 
+                   initial={{ opacity: 0 }}
+                   animate={{ opacity: 1 }}
+                   transition={{ duration: 1, delay: 1.5 }}
+                   className="col-span-2 row-span-2 border border-drift bg-night-watch text-tidepaper p-4 flex flex-col justify-between"
+                >
+                   <LineChart className="h-5 w-5 text-clay" />
+                   <div>
+                     <div className="text-2xl font-mono">84%</div>
+                     <div className="text-[10px] small-caps text-tidepaper/60 mt-1">confidence</div>
+                   </div>
+                </motion.div>
+              </div>
+            </motion.div>
           </div>
         </section>
 
@@ -881,16 +975,19 @@ function LandingPage({
             index="01"
             title="Map first"
             body="Headers, file meaning, relationships, and caveats are reviewed before analysis."
+            icon={Database}
           />
           <LandingFact
             index="02"
             title="Chat visuals next"
             body="Approved workspaces answer questions with charts, KPIs, and tables directly in chat."
+            icon={LineChart}
           />
           <LandingFact
             index="03"
             title="Chat stays grounded"
             body="Questions use the approved schema guide and render new views when visuals help."
+            icon={MessageSquare}
           />
         </section>
       </main>
@@ -902,17 +999,26 @@ function LandingFact({
   index,
   title,
   body,
+  icon: Icon,
 }: {
   index: string;
   title: string;
   body: string;
+  icon?: any;
 }) {
   return (
-    <div className="border-b border-drift px-6 py-5 md:border-b-0 md:border-r md:last:border-r-0 lg:px-10">
-      <div className="small-caps text-xs text-deep-sea">{index}</div>
-      <h2 className="mt-2 font-mono text-lg text-night-watch">{title}</h2>
-      <p className="mt-2 max-w-sm text-sm leading-6 text-night-watch/70">{body}</p>
-    </div>
+    <motion.div 
+      whileHover={{ backgroundColor: "rgba(226, 221, 209, 0.2)" }}
+      transition={{ duration: 0.2 }}
+      className="border-b border-drift px-6 py-8 md:border-b-0 md:border-r md:last:border-r-0 lg:px-10 group"
+    >
+      <div className="flex items-center justify-between">
+        <div className="small-caps text-xs text-deep-sea group-hover:text-sea-glass transition-colors">{index}</div>
+        {Icon && <Icon className="h-4 w-4 text-drift group-hover:text-clay transition-colors" />}
+      </div>
+      <h2 className="mt-6 font-mono text-xl text-night-watch">{title}</h2>
+      <p className="mt-3 max-w-sm text-sm leading-relaxed text-night-watch/70">{body}</p>
+    </motion.div>
   );
 }
 
