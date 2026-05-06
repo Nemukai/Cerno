@@ -352,6 +352,7 @@ export function App() {
           const nextHasActiveEvent = hasActiveProcessingEvents(nextEvents);
           if (nextDiscovery.status === "discovering" || nextHasActiveEvent) return;
           setProcessing(false);
+          queryClient.invalidateQueries({ queryKey: ["workspace", id] });
           return Promise.all([
             refreshFiles(id),
             refreshLinks(id),
