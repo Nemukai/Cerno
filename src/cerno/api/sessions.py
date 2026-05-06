@@ -559,7 +559,10 @@ def get_discovery(session_id: str, conn: ConnDep, user: GrantedUserDep) -> Disco
 
 @router.get("/sessions/{session_id}/docs", response_model=DataDoc)
 def get_data_docs(session_id: str, conn: ConnDep, user: GrantedUserDep) -> DataDoc:
-    _require_session(conn, session_id, user.id)
+    session = _require_session(conn, session_id, user.id)
+    if session.discovery_status not in {"pending_review", "approved"}:
+        raise HTTPException(status_code=404, detail="data docs not generated yet")
+
     data_docs_repo = DataDocRepository(conn)
     doc = data_docs_repo.get(session_id)
     if doc is None:

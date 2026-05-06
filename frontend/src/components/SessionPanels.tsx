@@ -181,11 +181,15 @@ export function InsightsPanel({
   onOpenFiles,
 }: InsightsPanelProps) {
   const status = discovery?.status ?? "empty";
+  const isProcessingState = processing || status === "discovering";
+  const insightsReady = status === "pending_review" || status === "approved";
+  const visibleDataDoc = insightsReady ? dataDoc : null;
   const canApprove = discovery?.status === "pending_review";
-  const overview = dataDoc?.overview || discovery?.overview;
+  const overview = visibleDataDoc?.overview || (insightsReady ? discovery?.overview : "");
   const relationshipCards = useMemo(() => {
-    if (dataDoc?.relationships.length) {
-      return dataDoc.relationships.map((rel) => ({
+    if (!insightsReady) return [];
+    if (visibleDataDoc?.relationships.length) {
+      return visibleDataDoc.relationships.map((rel) => ({
         leftFileId: rel.left_file_id,
         leftColumn: rel.left_column,
         rightFileId: rel.right_file_id,
@@ -209,7 +213,7 @@ export function InsightsPanel({
       rightColumn: link.col_b,
       explanation: link.summary ?? "",
     }));
-  }, [dataDoc, discovery, links]);
+  }, [discovery, insightsReady, links, visibleDataDoc]);
 
   return (
     <section className="px-8 py-7">
@@ -242,16 +246,16 @@ export function InsightsPanel({
              <button
               type="button"
               onClick={onProcess}
-              disabled={processing || files.length === 0}
+              disabled={isProcessingState || files.length === 0}
               className="small-caps border border-neutral-300 px-4 py-2 text-sm hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 transition"
             >
-              {processing ? "analyzing..." : "analyze files"}
+              {isProcessingState ? "analyzing..." : "analyze files"}
             </button>
           )}
         </div>
       </div>
 
-      {processing ? (
+      {isProcessingState ? (
         <div className="flex flex-col items-center justify-center py-24 text-center">
           <div className="mb-6 h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-ember"></div>
           <h3 className="font-mono text-lg text-ink">Analyzing your workspace...</h3>
@@ -274,6 +278,15 @@ export function InsightsPanel({
         />
       ) : null}
 
+      {files.length > 0 && status === "empty" ? (
+        <EmptyBlock
+          title="Files are uploaded"
+          body="Run processing to detect headers, profile columns, generate descriptions, and find relationships."
+          actionLabel="process files"
+          onAction={onProcess}
+        />
+      ) : null}
+
       {overview ? (
         <section className="mt-7 border border-orange-200 bg-orange-50/70 px-5 py-5">
           <div className="small-caps text-sm text-ember">summary</div>
@@ -283,10 +296,10 @@ export function InsightsPanel({
         </section>
       ) : null}
 
-      {dataDoc || relationshipCards.length > 0 ? (
+      {insightsReady && (visibleDataDoc || relationshipCards.length > 0) ? (
         <div className="mt-7 grid gap-5 xl:grid-cols-2">
-          {dataDoc?.usage_notes && dataDoc.usage_notes.length > 0 && (
-             <InsightGroup title="usage notes" items={dataDoc.usage_notes} />
+          {visibleDataDoc?.usage_notes && visibleDataDoc.usage_notes.length > 0 && (
+             <InsightGroup title="usage notes" items={visibleDataDoc.usage_notes} />
           )}
 
           <section className="border border-neutral-200 bg-white px-5 py-4">
@@ -315,12 +328,12 @@ export function InsightsPanel({
             )}
           </section>
 
-          {dataDoc ? (
+          {visibleDataDoc ? (
             <section className="border border-neutral-200 bg-white px-5 py-4">
               <div className="small-caps text-sm text-neutral-500">glossary</div>
-              {dataDoc.glossary.length > 0 ? (
+              {visibleDataDoc.glossary.length > 0 ? (
                 <div className="mt-3 flex flex-col gap-2">
-                  {dataDoc.glossary.map((item, idx) => (
+                  {visibleDataDoc.glossary.map((item, idx) => (
                     <div key={idx} className="flex flex-col gap-0.5 border-b border-neutral-100 pb-2 last:border-0">
                       <div className="font-medium text-sm text-ink">{item.term}</div>
                       <div className="text-xs text-neutral-600">{item.meaning}</div>
@@ -335,7 +348,7 @@ export function InsightsPanel({
         </div>
       ) : null}
 
-      {discovery?.files.length ? (
+      {insightsReady && discovery?.files.length ? (
         <section className="mt-7">
           <div className="small-caps text-sm text-neutral-500">file understanding</div>
           <div className="mt-3 grid gap-3">
