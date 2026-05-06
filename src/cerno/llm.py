@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -486,9 +487,14 @@ class LoopResult:
 def conversation_context_options(session_id: str, turn_id: str) -> dict[str, Any]:
     return {
         "context_management": [{"type": "compaction", "compact_threshold": 200_000}],
-        "prompt_cache_key": f"cerno:{session_id}:{turn_id}",
+        "prompt_cache_key": _prompt_cache_key(session_id, turn_id),
         "prompt_cache_retention": "24h",
     }
+
+
+def _prompt_cache_key(session_id: str, turn_id: str) -> str:
+    digest = hashlib.sha256(f"{session_id}:{turn_id}".encode()).hexdigest()[:32]
+    return f"cerno:{digest}"
 
 
 async def run_tool_loop(
