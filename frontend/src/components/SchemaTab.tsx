@@ -12,7 +12,6 @@ import type {
   Link,
   LinkDirection,
   ProcessingEvent,
-  ProcessingEventKind,
   SimpleDtype,
 } from "../lib/types";
 
@@ -49,22 +48,12 @@ const DIRECTIONS: LinkDirection[] = [
   "many_to_many",
 ];
 
-const PHASES: { label: string; kinds: ProcessingEventKind[]; note: string }[] = [
-  {
-    label: "Preparing files",
-    kinds: ["queued", "uploading", "ingesting_file", "started", "loading_artifacts", "reading_files"],
-    note: "Uploading, loading, and reading sheets, headers, and usable rows.",
-  },
-  {
-    label: "Finding meaning",
-    kinds: ["python_analysis", "calling_llm", "parsing_response"],
-    note: "Naming files, explaining columns, and checking how documents relate.",
-  },
-  {
-    label: "Preparing review",
-    kinds: ["saving_schema", "resolving_links", "done"],
-    note: "Saving a draft map so you can inspect it.",
-  },
+const STEPS: { key: string; label: string }[] = [
+  { key: "reading_files", label: "Reading files" },
+  { key: "profiling_columns", label: "Profiling columns" },
+  { key: "understanding_structure", label: "Understanding structure" },
+  { key: "building_data_map", label: "Building data map" },
+  { key: "mapping_connections", label: "Mapping connections" },
 ];
 
 export function SchemaTab({
@@ -503,43 +492,128 @@ function ProcessingCheckpoints({
   const latestError =
     [...events].reverse().find((event: ProcessingEvent) => event.kind === "error") ??
     null;
-  const latestEvent = events.at(-1) ?? null;
-  const completedKinds = new Set(events.map((event) => event.kind));
-  const currentPhase = completedKinds.has("done")
-    ? 2
-    : completedKinds.has("python_analysis") ||
-        completedKinds.has("calling_llm") ||
-        completedKinds.has("parsing_response")
-      ? 1
-      : 0;
-  const progress =
-    latestEvent?.progress ?? (completedKinds.has("done") ? 100 : currentPhase === 1 ? 58 : 24);
-  const current = PHASES[currentPhase] ?? PHASES[0]!;
+  const isDone = events.some((e) => e.kind === "done");
+  const progress = events.at(-1)?.progress ?? 0;
+
+  // Build a set of step_keys that have appeared
+  const seenKeys = new Set(events.map((e) => e.step_key).filter(Boolean));
+  // Find the timestamp of first event for each step_key
+  const stepTimestamps: Record<string, { start: string; end?: string }> = {};
+  for (const ev of events) {
+    if (!ev.step_key) continue;
+    if (!stepTimestamps[ev.step_key]) {
+      stepTimestamps[ev.step_key] = { start: ev.created_at };
+    }
+  }
+  // Mark the end of a step when the next step starts
+  const stepOrder = STEPS.map((s) => s.key);
+  for (let i = 0; i < stepOrder.length - 1; i++) {
+    const current = stepOrder[i]!;
+    const next = stepOrder[i + 1]!;
+    if (stepTimestamps[current] && stepTimestamps[next]) {
+      stepTimestamps[current]!.end = stepTimestamps[next]!.start;
+    }
+  }
+  if (isDone && stepTimestamps["mapping_connections"]) {
+    const doneEv = events.find((e) => e.kind === "done");
+    if (doneEv) stepTimestamps["mapping_connections"]!.end = doneEv.created_at;
+  }
+
+  // Find the last step that has been seen
+  let activeStepIdx = -1;
+  for (let i = STEPS.length - 1; i >= 0; i--) {
+    if (seenKeys.has(STEPS[i]!.key)) {
+      activeStepIdx = i;
+      break;
+    }
+  }
 
   return (
-    <section className="mb-6 border border-neutral-200 bg-white p-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h3 className="font-mono text-sm text-ink">
-            {latestError ? "Processing stopped" : current.label}
-          </h3>
-          <p className="mt-1 text-xs text-neutral-500">
-            {latestError ? "Review the message below and try again." : current.note}
-          </p>
-        </div>
-        <div className="small-caps text-xs text-neutral-500">
-          {completedKinds.has("done") ? "complete" : "in progress"}
+    <section className="mb-6 border border-neutral-200 bg-white p-5">
+      <div className="flex items-center justify-between gap-4 mb-4">
+        <h3 className="font-mono text-sm text-ink">
+          {latestError ? "Processing stopped" : isDone ? "Processing complete" : "Analyzing your data"}
+        </h3>
+        <div className="small-caps text-xs text-neutral-400">
+          {isDone ? "complete" : `${progress}%`}
         </div>
       </div>
-      <div className="relative mt-4 h-2 overflow-hidden bg-neutral-100">
+
+      {/* Progress bar */}
+      <div className="relative h-1.5 overflow-hidden bg-neutral-100 mb-5">
         <div
-          className="h-full bg-ember transition-all duration-700"
+          className={`h-full transition-all duration-700 ease-out ${isDone ? "bg-emerald-500" : "bg-ember"}`}
           style={{ width: `${progress}%` }}
         />
-        {processing && !completedKinds.has("done") && !latestError ? (
-          <div className="absolute inset-y-0 left-0 w-1/3 animate-pulse bg-ember/40" />
+        {processing && !isDone && !latestError ? (
+          <div className="absolute inset-y-0 left-0 w-1/3 animate-pulse bg-ember/30" />
         ) : null}
       </div>
+
+      {/* Steps */}
+      <div className="grid gap-1">
+        {STEPS.map((step, idx) => {
+          const isComplete = isDone || idx < (isDone ? STEPS.length : activeStepIdx);
+          const isActive = !isDone && idx === activeStepIdx && !latestError;
+          const ts = stepTimestamps[step.key];
+          const elapsed =
+            isComplete && ts?.start && ts?.end ? formatElapsed(ts.start, ts.end) : null;
+
+          return (
+            <div
+              key={step.key}
+              className={`flex items-center gap-3 px-3 py-2 transition-colors ${
+                isActive ? "bg-orange-50" : ""
+              }`}
+            >
+              {/* Icon */}
+              <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
+                {isComplete ? (
+                  <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="square" strokeLinejoin="miter" d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : isActive ? (
+                  <div className="w-3.5 h-3.5 border-2 border-ember border-t-transparent animate-spin" />
+                ) : (
+                  <div className="w-2 h-2 bg-neutral-200" />
+                )}
+              </div>
+
+              {/* Label */}
+              <span
+                className={`text-sm flex-1 ${
+                  isComplete
+                    ? "text-neutral-500"
+                    : isActive
+                      ? "text-ink font-medium"
+                      : "text-neutral-300"
+                }`}
+              >
+                {step.label}
+              </span>
+
+              {/* Elapsed time */}
+              {elapsed ? (
+                <span className="text-[10px] font-mono text-neutral-400">
+                  {elapsed}
+                </span>
+              ) : isActive ? (
+                <span className="text-[10px] font-mono text-ember animate-pulse">
+                  working
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Latest message */}
+      {!latestError && events.length > 0 && !isDone ? (
+        <p className="mt-3 px-3 text-xs text-neutral-400 animate-pulse">
+          {events.at(-1)?.message}
+        </p>
+      ) : null}
+
       {latestError ? (
         <div className="mt-4 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
           {friendlyEventMessage(latestError)}
@@ -547,6 +621,16 @@ function ProcessingCheckpoints({
       ) : null}
     </section>
   );
+}
+
+function formatElapsed(start: string, end: string): string {
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  if (ms < 0) return "";
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${minutes}m ${secs}s`;
 }
 
 type SummaryStats = {
@@ -1615,8 +1699,8 @@ function linkLookupKey(fileA: string, colA: string, fileB: string, colB: string)
 
 function friendlyEventMessage(event: ProcessingEvent): string {
   if (event.kind === "error") return event.message;
-  const phase = PHASES.find((item) => item.kinds.includes(event.kind));
-  return phase?.label ?? event.message;
+  const step = STEPS.find((s) => s.key === event.step_key);
+  return step?.label ?? event.message;
 }
 
 function formatCell(value: unknown): string {

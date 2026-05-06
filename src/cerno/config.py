@@ -14,9 +14,11 @@ class CernoConfigError(ValueError):
 
 @dataclass(frozen=True)
 class DiscoveryProcessingConfig:
-    model: str = "gpt-5.4"
-    reasoning_effort: str = "high"
+    model: str = "gpt-5.5"
+    reasoning_effort: str = "medium"
     reasoning_summary: str = "auto"
+    analysis_model: str = "gpt-5.4-mini"
+    analysis_reasoning_effort: str = "low"
 
 
 @dataclass(frozen=True)
@@ -190,6 +192,15 @@ def load_processing_config(path: Path) -> ProcessingConfig:
         defaults.reasoning_summary,
         path,
     ).lower()
+    analysis_model = _string_value(
+        discovery, "analysis_model", defaults.analysis_model, path
+    )
+    analysis_reasoning_effort = _string_value(
+        discovery,
+        "analysis_reasoning_effort",
+        defaults.analysis_reasoning_effort,
+        path,
+    ).lower()
 
     if reasoning_effort not in _REASONING_EFFORTS:
         allowed = ", ".join(sorted(_REASONING_EFFORTS))
@@ -203,12 +214,20 @@ def load_processing_config(path: Path) -> ProcessingConfig:
             f"Invalid processing.discovery.reasoning_summary in {path}: "
             f"{reasoning_summary!r}. Expected one of: {allowed}."
         )
+    if analysis_reasoning_effort not in _REASONING_EFFORTS:
+        allowed = ", ".join(sorted(_REASONING_EFFORTS))
+        raise CernoConfigError(
+            f"Invalid processing.discovery.analysis_reasoning_effort in {path}: "
+            f"{analysis_reasoning_effort!r}. Expected one of: {allowed}."
+        )
 
     return ProcessingConfig(
         discovery=DiscoveryProcessingConfig(
             model=model,
             reasoning_effort=reasoning_effort,
             reasoning_summary=reasoning_summary,
+            analysis_model=analysis_model,
+            analysis_reasoning_effort=analysis_reasoning_effort,
         )
     )
 

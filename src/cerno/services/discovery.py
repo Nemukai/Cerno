@@ -12,7 +12,7 @@ import pandas as pd
 import polars as pl
 
 from cerno.config import DiscoveryProcessingConfig, Settings
-from cerno.llm import LLMClient, Tool, ToolRegistry, run_tool_loop
+from cerno.llm import LLMClient
 from cerno.models import (
     DataDoc,
     DataDocColumn,
@@ -32,11 +32,10 @@ from cerno.repositories import (
 )
 from cerno.services.artifact_cache import ensure_file_artifact_cached
 from cerno.services.ingest import first_n_raw_rows, slugify_table_name
-from cerno.services.sandbox import run_python
 from cerno.storage import ObjectStore
 
 SAMPLE_ROWS = 10
-LINK_VALUE_SAMPLE_LIMIT = 10_000
+LINK_VALUE_SAMPLE_LIMIT = 5_000
 logger = logging.getLogger(__name__)
 
 
@@ -367,16 +366,16 @@ def _build_prompt(file_payload: list[dict[str, Any]], analysis: str) -> str:
     )
 
 
-ANALYSIS_PROMPT = """You must inspect the full uploaded dataframes using the provided tools (profile_table, find_shared_identifiers).
-If you need highly specific aggregations not covered by the standard tools, use run_python. Do not write files or use SQL.
+ANALYSIS_SUMMARY_PROMPT = """You are Cerno's internal data profiler. Below are pre-computed column profiles and
+shared-identifier overlaps for every uploaded file. Synthesise them into concise analysis notes covering:
 
-Return concise, structured profiling notes covering:
 - File Purpose & Grain: What does each file represent? What does one row mean?
-- Schema Reality: Likely header row index. Are there title/metadata rows to skip?
-- Column Profiling: Row counts, highly null columns, primary keys/IDs, date columns, key measures, and categoricals.
-- Relationships: Concrete evidence of shared identifiers between files (use find_shared_identifiers).
-- Data Quality & Caveats: Any anomalies, missing data patterns, or gotchas a non-technical user must know.
-"""
+- Schema Reality: Likely header row index (0 = first row is already headers). Are there title/metadata rows to skip?
+- Column Roles: Primary keys/IDs, date columns, key measures, categoricals, and highly null columns.
+- Relationships: Which shared identifiers look like real foreign-key joins vs. coincidental overlap?
+- Data Quality & Caveats: Missing data patterns or gotchas a non-technical user must know.
+
+Be concise. Focus on facts that help build an accurate schema."""
 
 
 def _table_name(filename: str, seen: set[str]) -> str:
@@ -412,161 +411,109 @@ def _load_raw_tables(files: list[File]) -> tuple[dict[str, pd.DataFrame], list[d
     return tables, catalog
 
 
-def _build_analysis_registry(
-    *, raw_tables: dict[str, pd.DataFrame], catalog: list[dict[str, Any]]
-) -> ToolRegistry:
-    registry = ToolRegistry()
+def _profile_table(df: pd.DataFrame) -> dict[str, Any]:
+    stats: dict[str, Any] = {}
+    for col in df.columns:
+        series = df[col]
+        nulls = int(series.isnull().sum())
+        distinct = int(series.nunique())
+        stats[str(col)] = {
+            "dtype": str(series.dtype),
+            "nulls": nulls,
+            "null_pct": round(nulls / len(df) * 100, 1) if len(df) > 0 else 0,
+            "distinct": distinct,
+            "sample": [str(x) for x in series.dropna().unique()[:3]],
+        }
+    return {"row_count": len(df), "columns": stats}
 
-    async def list_raw_tables(_args: dict[str, Any]) -> dict[str, Any]:
-        return {"tables": catalog}
 
-    async def run_python_handler(args: dict[str, Any]) -> dict[str, Any]:
-        code = str(args["code"])
-        return run_python(code, tables=raw_tables, timeout_seconds=20.0).to_dict()
+def _profile_all_tables(
+    raw_tables: dict[str, pd.DataFrame],
+) -> dict[str, dict[str, Any]]:
+    return {name: _profile_table(df) for name, df in raw_tables.items()}
 
-    async def profile_table_handler(args: dict[str, Any]) -> dict[str, Any]:
-        table_name = str(args.get("table_name", ""))
-        df = raw_tables.get(table_name)
-        if df is None:
-            return {"error": f"Table {table_name} not found"}
 
-        stats = {}
-        for col in df.columns:
-            series = df[col]
-            nulls = int(series.isnull().sum())
-            distinct = int(series.nunique())
-            stats[str(col)] = {
-                "dtype": str(series.dtype),
-                "nulls": nulls,
-                "null_pct": round(nulls / len(df) * 100, 1) if len(df) > 0 else 0,
-                "distinct": distinct,
-                "sample": [str(x) for x in series.dropna().unique()[:3]]
-            }
-        return {"row_count": len(df), "columns": stats}
+def _find_shared_identifiers(
+    df_a: pd.DataFrame, df_b: pd.DataFrame
+) -> list[dict[str, Any]]:
+    value_cache_a: dict[str, set[str]] = {}
+    value_cache_b: dict[str, set[str]] = {}
+    results: list[dict[str, Any]] = []
+    for col_a in df_a.columns:
+        if col_a not in value_cache_a:
+            value_cache_a[col_a] = set(df_a[col_a].dropna().astype(str).unique())
+        set_a = value_cache_a[col_a]
+        if len(set_a) < 2:
+            continue
+        for col_b in df_b.columns:
+            if col_b not in value_cache_b:
+                value_cache_b[col_b] = set(df_b[col_b].dropna().astype(str).unique())
+            set_b = value_cache_b[col_b]
+            if len(set_b) < 2:
+                continue
 
-    async def find_shared_identifiers_handler(args: dict[str, Any]) -> dict[str, Any]:
-        table_a = str(args.get("table_a", ""))
-        table_b = str(args.get("table_b", ""))
-        df_a = raw_tables.get(table_a)
-        df_b = raw_tables.get(table_b)
-        if df_a is None or df_b is None:
-            return {"error": "One or both tables not found"}
+            intersection = set_a & set_b
+            if not intersection:
+                continue
 
-        results = []
-        for col_a in df_a.columns:
-            for col_b in df_b.columns:
-                set_a = set(df_a[col_a].dropna().astype(str).unique())
-                if not set_a or len(set_a) < 2:
-                    continue
-                set_b = set(df_b[col_b].dropna().astype(str).unique())
-                if not set_b or len(set_b) < 2:
-                    continue
-
-                intersection = set_a.intersection(set_b)
-                if not intersection:
-                    continue
-
-                overlap_a = len(intersection) / len(set_a)
-                overlap_b = len(intersection) / len(set_b)
-
-                if overlap_a > 0.1 or overlap_b > 0.1:
-                    results.append({
-                        "col_a": col_a,
-                        "col_b": col_b,
+            overlap_a = len(intersection) / len(set_a)
+            overlap_b = len(intersection) / len(set_b)
+            if overlap_a > 0.1 or overlap_b > 0.1:
+                results.append(
+                    {
+                        "col_a": str(col_a),
+                        "col_b": str(col_b),
                         "overlap_a": round(overlap_a, 3),
                         "overlap_b": round(overlap_b, 3),
                         "distinct_a": len(set_a),
                         "distinct_b": len(set_b),
-                        "intersection_size": len(intersection)
-                    })
-        return {"potential_links": sorted(results, key=lambda x: max(x["overlap_a"], x["overlap_b"]), reverse=True)[:10]}
-
-    registry.register(
-        Tool(
-            name="list_raw_tables",
-            description="List the raw uploaded dataframes available for Python analysis.",
-            parameters={"type": "object", "properties": {}, "additionalProperties": False},
-            handler=list_raw_tables,
-        )
-    )
-    registry.register(
-        Tool(
-            name="run_python",
-            description=(
-                "Run Python against the full raw uploaded dataframes. Each dataframe is "
-                "pre-bound by table_name from list_raw_tables. pd and np are available."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {"code": {"type": "string"}},
-                "required": ["code"],
-                "additionalProperties": False,
-            },
-            handler=run_python_handler,
-        )
-    )
-    registry.register(
-        Tool(
-            name="profile_table",
-            description="Quickly get row counts, null percentages, distinct counts, and sample values for all columns in a table without writing Python code.",
-            parameters={
-                "type": "object",
-                "properties": {"table_name": {"type": "string"}},
-                "required": ["table_name"],
-                "additionalProperties": False,
-            },
-            handler=profile_table_handler,
-        )
-    )
-    registry.register(
-        Tool(
-            name="find_shared_identifiers",
-            description="Automatically compute column value overlaps between two tables to find potential foreign keys or shared identifiers.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "table_a": {"type": "string"},
-                    "table_b": {"type": "string"}
-                },
-                "required": ["table_a", "table_b"],
-                "additionalProperties": False,
-            },
-            handler=find_shared_identifiers_handler,
-        )
-    )
-    return registry
+                        "intersection_size": len(intersection),
+                    }
+                )
+    results.sort(key=lambda x: max(x["overlap_a"], x["overlap_b"]), reverse=True)
+    return results[:10]
 
 
-async def _analyze_with_python(
+def _find_all_overlaps(
+    raw_tables: dict[str, pd.DataFrame],
+) -> dict[str, list[dict[str, Any]]]:
+    names = list(raw_tables)
+    overlaps: dict[str, list[dict[str, Any]]] = {}
+    for i, name_a in enumerate(names):
+        for name_b in names[i + 1 :]:
+            key = f"{name_a} ↔ {name_b}"
+            links = _find_shared_identifiers(raw_tables[name_a], raw_tables[name_b])
+            if links:
+                overlaps[key] = links
+    return overlaps
+
+
+async def _summarize_analysis(
     *,
     llm_client: LLMClient,
-    raw_tables: dict[str, pd.DataFrame],
+    profiles: dict[str, dict[str, Any]],
+    overlaps: dict[str, list[dict[str, Any]]],
     catalog: list[dict[str, Any]],
     config: DiscoveryProcessingConfig,
 ) -> str:
-    result = await run_tool_loop(
-        client=llm_client,
-        registry=_build_analysis_registry(raw_tables=raw_tables, catalog=catalog),
-        input=[
-            {
-                "role": "user",
-                "content": (
-                    f"{ANALYSIS_PROMPT}\n\nRaw table catalog:\n"
-                    f"{json.dumps(catalog, default=str, indent=2)}"
-                ),
-            }
-        ],
-        instructions=(
-            "You are Cerno's internal data profiler. Use the specialized tools (profile_table, find_shared_identifiers) "
-            "to quickly inspect files. Use run_python only for complex or specific queries not covered by the standard tools. "
-            "Write concise analysis notes about grain, column roles, and relationships."
-        ),
-        model=config.model,
-        reasoning_effort=config.reasoning_effort,
-        reasoning_summary=config.reasoning_summary,
-        max_calls=8,
+    user_content = (
+        f"{ANALYSIS_SUMMARY_PROMPT}\n\n"
+        f"Table catalog:\n{json.dumps(catalog, default=str, indent=2)}\n\n"
+        f"Column profiles:\n{json.dumps(profiles, default=str, indent=2)}\n\n"
+        f"Shared identifiers:\n{json.dumps(overlaps, default=str, indent=2)}"
     )
-    return result.final_message
+    response = await llm_client.respond(
+        input=[{"role": "user", "content": user_content}],
+        instructions=(
+            "You are Cerno's internal data profiler. Write concise analysis notes "
+            "about grain, column roles, and relationships based on the pre-computed "
+            "profiles. Do not ask for tools or additional data."
+        ),
+        model=config.analysis_model,
+        reasoning_effort=config.analysis_reasoning_effort,
+        reasoning_summary=config.reasoning_summary,
+    )
+    return response.content
 
 
 def _data_doc_from_result(session_id: str, result: DiscoveryResult) -> DataDoc:
@@ -830,10 +777,10 @@ async def run_discovery(
         session_id=session_id,
         job_id=job_id,
         kind="started",
-        step_key="started",
+        step_key="reading_files",
         level="info",
         progress=5,
-        message="processing started",
+        message="Reading your files",
     )
 
     files = files_repo.list_for_session(session_id)
@@ -848,13 +795,6 @@ async def run_discovery(
         sum(f.row_count for f in files),
     )
     if artifacts_repo and object_store:
-        logger.info(
-            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=loading_artifacts file_count=%s progress=15",
-            user_id,
-            session_id,
-            job_id,
-            len(files),
-        )
         for f in files:
             cached = ensure_file_artifact_cached(
                 file=f,
@@ -866,12 +806,6 @@ async def run_discovery(
             )
             if cached:
                 f.raw_parquet_path = cached
-        logger.info(
-            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=loading_artifacts_done progress=20",
-            user_id,
-            session_id,
-            job_id,
-        )
 
     events_repo.append(
         session_id=session_id,
@@ -879,24 +813,11 @@ async def run_discovery(
         kind="reading_files",
         step_key="reading_files",
         level="info",
-        progress=25,
-        message=f"reading first {SAMPLE_ROWS} rows of {len(files)} file(s)",
+        progress=15,
+        message=f"Loading {len(files)} file(s)",
     )
 
-    logger.info(
-        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=reading_files progress=25",
-        user_id,
-        session_id,
-        job_id,
-    )
     raw_tables, raw_catalog = _load_raw_tables(files)
-    logger.info(
-        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=reading_files_done table_count=%s progress=35",
-        user_id,
-        session_id,
-        job_id,
-        len(raw_tables),
-    )
     file_payload: list[dict[str, Any]] = []
     for f in files:
         if not f.raw_parquet_path:
@@ -911,37 +832,82 @@ async def run_discovery(
             }
         )
 
+    # ── Phase 2: Deterministic profiling (no LLM needed) ──
     events_repo.append(
         session_id=session_id,
         job_id=job_id,
         kind="python_analysis",
-        step_key="python_analysis",
+        step_key="profiling_columns",
         level="info",
-        progress=45,
-        message="analyzing full files with Python",
+        progress=20,
+        message="Profiling columns and data types",
+    )
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=profiling_tables progress=20",
+        user_id,
+        session_id,
+        job_id,
+    )
+    profiles = _profile_all_tables(raw_tables)
+
+    events_repo.append(
+        session_id=session_id,
+        job_id=job_id,
+        kind="python_analysis",
+        step_key="profiling_columns",
+        level="info",
+        progress=28,
+        message="Looking for shared identifiers across files",
+    )
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=finding_overlaps progress=28",
+        user_id,
+        session_id,
+        job_id,
+    )
+    overlaps = _find_all_overlaps(raw_tables)
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=profiling_done overlap_pairs=%s progress=30",
+        user_id,
+        session_id,
+        job_id,
+        len(overlaps),
+    )
+
+    # ── Phase 3: Single LLM call to summarize profiles ──
+    events_repo.append(
+        session_id=session_id,
+        job_id=job_id,
+        kind="python_analysis",
+        step_key="understanding_structure",
+        level="info",
+        progress=32,
+        message="Interpreting column roles and relationships",
     )
     try:
         logger.info(
-            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=python_analysis progress=45",
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=analysis_summary model=%s progress=32",
             user_id,
             session_id,
             job_id,
+            discovery_config.analysis_model,
         )
-        analysis = await _analyze_with_python(
+        analysis = await _summarize_analysis(
             llm_client=llm_client,
-            raw_tables=raw_tables,
+            profiles=profiles,
+            overlaps=overlaps,
             catalog=raw_catalog,
             config=discovery_config,
         )
         logger.info(
-            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=python_analysis_done progress=55",
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=analysis_summary_done progress=50",
             user_id,
             session_id,
             job_id,
         )
     except Exception as exc:
         logger.exception(
-            "event=processing.failed user_id=%s session_id=%s job_id=%s phase=python_analysis",
+            "event=processing.failed user_id=%s session_id=%s job_id=%s phase=analysis_summary",
             user_id,
             session_id,
             job_id,
@@ -953,28 +919,26 @@ async def run_discovery(
             step_key="error",
             level="error",
             progress=100,
-            message=f"Python analysis failed: {exc}",
+            message="Failed to interpret file structure. Please try again.",
         )
         sessions_repo.set_discovery_status(session_id, "failed")
-        raise DiscoveryError(f"Python analysis failed: {exc}") from exc
+        raise DiscoveryError(f"Analysis summary failed: {exc}") from exc
 
+    # ── Phase 4: Full schema generation via LLM ──
     user_prompt = _build_prompt(file_payload, analysis)
     events_repo.append(
         session_id=session_id,
         job_id=job_id,
         kind="calling_llm",
-        step_key="llm_schema",
+        step_key="building_data_map",
         level="info",
-        progress=65,
-        message=(
-            f"asking {discovery_config.model} "
-            f"(reasoning={discovery_config.reasoning_effort}). this can take a few minutes."
-        ),
+        progress=55,
+        message="Building the data map — naming files, explaining columns, and checking connections",
     )
 
     try:
         logger.info(
-            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=llm_schema model=%s progress=65",
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=llm_schema model=%s progress=55",
             user_id,
             session_id,
             job_id,
@@ -994,7 +958,7 @@ async def run_discovery(
             },
         )
         logger.info(
-            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=llm_schema_done progress=72",
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=llm_schema_done progress=80",
             user_id,
             session_id,
             job_id,
@@ -1013,36 +977,29 @@ async def run_discovery(
             step_key="error",
             level="error",
             progress=100,
-            message=f"LLM call failed: {exc}",
+            message="Failed to build the data map. Please try again.",
         )
         sessions_repo.set_discovery_status(session_id, "failed")
         raise DiscoveryError(f"LLM call failed: {exc}") from exc
 
+    # ── Phase 5: Parse, validate, and save ──
     events_repo.append(
         session_id=session_id,
         job_id=job_id,
-        kind="parsing_response",
-        step_key="parsing_response",
+        kind="saving_schema",
+        step_key="mapping_connections",
         level="info",
-        progress=75,
-        message="parsing LLM response",
+        progress=85,
+        message="Verifying connections and saving the data map",
     )
     logger.info(
-        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=parsing_response progress=75",
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=parsing_response progress=85",
         user_id,
         session_id,
         job_id,
     )
     payload = _parse_json_block(response.content)
     result = _parse_response(payload)
-    logger.info(
-        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=parsing_response_done file_count=%s link_count=%s progress=82",
-        user_id,
-        session_id,
-        job_id,
-        len(result.files),
-        len(result.links),
-    )
 
     valid_ids = {f.id for f in files}
     result.files = [df for df in result.files if df.file_id in valid_ids]
@@ -1055,23 +1012,6 @@ async def run_discovery(
         )
         sessions_repo.set_discovery_status(session_id, "failed")
         raise DiscoveryError("LLM did not return schema for any uploaded file")
-
-    events_repo.append(
-        session_id=session_id,
-        job_id=job_id,
-        kind="saving_schema",
-        step_key="saving_schema",
-        level="info",
-        progress=85,
-        message=f"saving discovered schema for {len(result.files)} file(s)",
-    )
-    logger.info(
-        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=saving_schema file_count=%s progress=85",
-        user_id,
-        session_id,
-        job_id,
-        len(result.files),
-    )
 
     for df in result.files:
         files_repo.set_metadata(
@@ -1086,7 +1026,7 @@ async def run_discovery(
     )
     result.links = _merge_links(result.links, candidates)
     logger.info(
-        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=resolving_links candidate_count=%s link_count=%s progress=92",
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=resolving_links candidate_count=%s link_count=%s progress=95",
         user_id,
         session_id,
         job_id,
@@ -1121,7 +1061,7 @@ async def run_discovery(
         step_key="done",
         level="info",
         progress=100,
-        message="discovery complete - review the schema then approve",
+        message="Your data map is ready for review",
     )
     logger.info(
         "event=processing.complete user_id=%s session_id=%s job_id=%s file_count=%s link_count=%s progress=100",
@@ -1132,3 +1072,4 @@ async def run_discovery(
         len(result.links),
     )
     return result
+

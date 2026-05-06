@@ -11,6 +11,14 @@ import type {
 } from "../lib/types";
 import { MarkdownText } from "./ChatSidebar";
 
+const INSIGHTS_STEPS: { key: string; label: string }[] = [
+  { key: "reading_files", label: "Reading files" },
+  { key: "profiling_columns", label: "Profiling columns" },
+  { key: "understanding_structure", label: "Understanding structure" },
+  { key: "building_data_map", label: "Building data map" },
+  { key: "mapping_connections", label: "Mapping connections" },
+];
+
 type WorkspaceSidebarProps = {
   session: Session;
   files: FileRecord[];
@@ -251,14 +259,60 @@ export function InsightsPanel({
       </div>
 
       {isProcessingState ? (
-        <div className="flex flex-col items-center justify-center py-24 text-center">
-          <div className="mb-6 h-10 w-10 animate-spin border-2 border-neutral-200 border-t-ember"></div>
-          <h3 className="font-mono text-lg text-ink">Analyzing your workspace...</h3>
-          {events.length > 0 && (
-             <p className="mt-2 text-sm text-neutral-500 animate-pulse">
-               {events.at(-1)?.message}
-             </p>
-          )}
+        <div className="py-12">
+          <div className="mx-auto max-w-md border border-neutral-200 bg-white p-5">
+            <div className="flex items-center justify-between gap-4 mb-4">
+              <h3 className="font-mono text-sm text-ink">Analyzing your data</h3>
+              <span className="small-caps text-xs text-neutral-400">
+                {events.at(-1)?.progress ?? 0}%
+              </span>
+            </div>
+            <div className="relative h-1.5 overflow-hidden bg-neutral-100 mb-5">
+              <div
+                className="h-full bg-ember transition-all duration-700 ease-out"
+                style={{ width: `${events.at(-1)?.progress ?? 0}%` }}
+              />
+              <div className="absolute inset-y-0 left-0 w-1/3 animate-pulse bg-ember/30" />
+            </div>
+            <div className="grid gap-1">
+              {INSIGHTS_STEPS.map((step, idx) => {
+                const seenKeys = new Set(events.map((e) => e.step_key).filter(Boolean));
+                let activeIdx = -1;
+                for (let si = INSIGHTS_STEPS.length - 1; si >= 0; si--) {
+                  if (seenKeys.has(INSIGHTS_STEPS[si]!.key)) { activeIdx = si; break; }
+                }
+                const isComplete = idx < activeIdx;
+                const isActive = idx === activeIdx;
+                return (
+                  <div
+                    key={step.key}
+                    className={`flex items-center gap-3 px-3 py-1.5 ${isActive ? "bg-orange-50" : ""}`}
+                  >
+                    <div className="flex-shrink-0 w-4 h-4 flex items-center justify-center">
+                      {isComplete ? (
+                        <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="square" strokeLinejoin="miter" d="M5 13l4 4L19 7" />
+                        </svg>
+                      ) : isActive ? (
+                        <div className="w-3 h-3 border-2 border-ember border-t-transparent animate-spin" />
+                      ) : (
+                        <div className="w-1.5 h-1.5 bg-neutral-200" />
+                      )}
+                    </div>
+                    <span className={`text-sm ${isComplete ? "text-neutral-500" : isActive ? "text-ink font-medium" : "text-neutral-300"}`}>
+                      {step.label}
+                    </span>
+                    {isActive ? <span className="ml-auto text-[10px] font-mono text-ember animate-pulse">working</span> : null}
+                  </div>
+                );
+              })}
+            </div>
+            {events.length > 0 && (
+              <p className="mt-3 px-3 text-xs text-neutral-400 animate-pulse">
+                {events.at(-1)?.message}
+              </p>
+            )}
+          </div>
         </div>
       ) : (
         <>
