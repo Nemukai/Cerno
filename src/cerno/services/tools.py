@@ -190,7 +190,9 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
             name="render_widget",
             description=(
                 "Emit a widget for this chat turn. "
-                "Call this for every chart, KPI, or table you want the user to see."
+                "Call this for every chart, KPI, or table you want the user to see. "
+                "The data field is required and must be an object, never a raw list. "
+                "For table, bar, line, and pie widgets, use data={columns: [...], rows: [[...], ...]}."
             ),
             parameters={
                 "type": "object",

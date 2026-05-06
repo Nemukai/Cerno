@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - Windows desktop build fallback.
     resource = None  # type: ignore[assignment]
 
 _SAFE_BUILTIN_NAMES = (
+    "__import__",
     "abs",
     "all",
     "any",

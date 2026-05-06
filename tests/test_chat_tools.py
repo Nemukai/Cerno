@@ -201,6 +201,15 @@ class ChatToolRegistryTests(unittest.TestCase):
         self.assertIn("Already available libraries: pandas as pd, numpy as np", tool.description)
         self.assertIn("Not allowed: import statements", tool.description)
 
+    def test_render_widget_description_specifies_data_shape(self) -> None:
+        ctx = ToolContext(session_id="s1", tables={})
+        tool = build_tool_registry(ctx).get("render_widget")
+
+        self.assertIn("data field is required", tool.description)
+        self.assertIn("must be an object", tool.description)
+        self.assertIn("columns", tool.description)
+        self.assertIn("rows", tool.description)
+
     def test_raw_header_fallback_builds_reingest_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
