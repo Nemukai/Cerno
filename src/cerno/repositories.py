@@ -1372,7 +1372,7 @@ class LLMUsageRepository:
         self.conn.execute(
             """INSERT INTO llm_usage (user_id, day, tokens_used) VALUES (?, ?, ?)
                ON CONFLICT(user_id, day) DO UPDATE
-               SET tokens_used = tokens_used + excluded.tokens_used""",
+               SET tokens_used = llm_usage.tokens_used + excluded.tokens_used""",
             (user_id, day, tokens),
         )
         if self.auto_commit:

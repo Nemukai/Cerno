@@ -357,7 +357,11 @@ async def post_process(
             object_store=get_object_store(settings),
         )
     except DiscoveryError as exc:
+        _mark_processing_failed(conn, session_id, str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _mark_processing_failed(conn, session_id, str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     conn.commit()
     return DiscoveryResponse(
@@ -394,6 +398,26 @@ async def post_process(
         ],
         overview=result.overview,
     )
+
+
+def _mark_processing_failed(conn: sqlite3.Connection, session_id: str, message: str) -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        SessionRepository(conn).set_discovery_status(session_id, "failed")
+        ProcessingEventRepository(conn).append(
+            session_id=session_id,
+            kind="error",
+            message=message[:1000],
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 @router.get("/sessions/{session_id}/discovery", response_model=DiscoveryResponse)
