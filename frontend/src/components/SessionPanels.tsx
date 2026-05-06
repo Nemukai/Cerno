@@ -1,8 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type {
   ChatTurn,
-  DashboardCell,
-  DashboardPage,
   DataDoc,
   DiscoveryResponse,
   DiscoveryStatus,
@@ -10,18 +8,18 @@ import type {
   Link,
   ProcessingEvent,
   Session,
-  Widget,
 } from "../lib/types";
-import { widgetFromCell } from "../lib/widgets";
 import { MarkdownText } from "./ChatSidebar";
-import { WidgetRenderer } from "./WidgetRenderer";
 
 type WorkspaceSidebarProps = {
   session: Session;
   files: FileRecord[];
   turns: ChatTurn[];
+  activeTurnId: string | null;
   onSelectTab: (tab: "ask" | "insights" | "files") => void;
+  onSelectTurn: (turnId: string) => void;
   onNewChat: () => void;
+  onRenameTurn: (turnId: string, title: string) => void;
   onDeleteTurn: (turnId: string) => void;
 };
 
@@ -29,8 +27,11 @@ export function WorkspaceSidebar({
   session,
   files,
   turns,
+  activeTurnId,
   onSelectTab,
+  onSelectTurn,
   onNewChat,
+  onRenameTurn,
   onDeleteTurn,
 }: WorkspaceSidebarProps) {
   const [menu, setMenu] = useState<{
@@ -38,20 +39,19 @@ export function WorkspaceSidebar({
     x: number;
     y: number;
   } | null>(null);
-  const [titles, setTitles] = useStoredChatTitles(session.id);
 
   const renameTurn = (turn: ChatTurn) => {
-    const current = titles[turn.id] ?? defaultTurnTitle(turn);
+    const current = defaultTurnTitle(turn);
     const next = window.prompt("Rename chat", current);
     if (next === null) return;
     const trimmed = next.trim();
     if (!trimmed) return;
-    setTitles((currentTitles) => ({ ...currentTitles, [turn.id]: trimmed }));
+    onRenameTurn(turn.id, trimmed);
     setMenu(null);
   };
 
   const deleteTurn = (turn: ChatTurn) => {
-    const ok = window.confirm(`Delete "${titles[turn.id] ?? defaultTurnTitle(turn)}"?`);
+    const ok = window.confirm(`Delete "${defaultTurnTitle(turn)}"?`);
     if (!ok) return;
     setMenu(null);
     onDeleteTurn(turn.id);
@@ -94,15 +94,19 @@ export function WorkspaceSidebar({
               <button
                 key={turn.id}
                 type="button"
-                onClick={() => onSelectTab("ask")}
+                onClick={() => onSelectTurn(turn.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setMenu({ turn, x: event.clientX, y: event.clientY });
                 }}
-                className="min-w-0 rounded-lg px-3 py-2 text-left transition hover:bg-orange-50"
+                className={`min-w-0 rounded-lg px-3 py-2 text-left transition ${
+                  activeTurnId === turn.id
+                    ? "bg-orange-50 text-ember"
+                    : "hover:bg-orange-50"
+                }`}
               >
                 <div className="truncate text-sm font-medium text-ink">
-                  {titles[turn.id] ?? defaultTurnTitle(turn)}
+                  {defaultTurnTitle(turn)}
                 </div>
                 <div className="mt-0.5 flex items-center justify-between gap-2">
                   <span className="text-[10px] uppercase tracking-wider text-neutral-400">
@@ -155,14 +159,12 @@ type InsightsPanelProps = {
   events: ProcessingEvent[];
   processing: boolean;
   approving: boolean;
-  building: boolean;
   onProcess: () => void;
   onApprove: (
     files: DiscoveryResponse["files"],
     links: DiscoveryResponse["links"],
     overview: string,
   ) => void;
-  onBuildDashboard: () => void;
   onOpenFiles: () => void;
 };
 
@@ -174,10 +176,8 @@ export function InsightsPanel({
   events,
   processing,
   approving,
-  building,
   onProcess,
   onApprove,
-  onBuildDashboard,
   onOpenFiles,
 }: InsightsPanelProps) {
   const status = discovery?.status ?? "empty";
@@ -233,17 +233,8 @@ export function InsightsPanel({
             >
               {approving ? "approving..." : "approve workspace"}
             </button>
-          ) : status === "approved" ? (
+          ) : status !== "approved" ? (
             <button
-              type="button"
-              onClick={onBuildDashboard}
-              disabled={building}
-              className="small-caps border border-ink bg-white px-4 py-2 text-sm hover:border-ember hover:text-ember disabled:opacity-40 transition"
-            >
-              {building ? "building visuals..." : "generate visuals"}
-            </button>
-          ) : (
-             <button
               type="button"
               onClick={onProcess}
               disabled={isProcessingState || files.length === 0}
@@ -251,6 +242,10 @@ export function InsightsPanel({
             >
               {isProcessingState ? "analyzing..." : "analyze files"}
             </button>
+          ) : (
+            <span className="small-caps border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              approved
+            </span>
           )}
         </div>
       </div>
@@ -549,103 +544,6 @@ export function FilesPanel({
   );
 }
 
-type VisualPanelProps = {
-  pages: DashboardPage[];
-  cellsByPage: Record<string, DashboardCell[]>;
-  selectedPageId: string | null;
-  canBuild: boolean;
-  building: boolean;
-  onSelectPage: (pageId: string) => void;
-  onBuildDashboard: () => void;
-};
-
-export function VisualPanel({
-  pages,
-  cellsByPage,
-  selectedPageId,
-  canBuild,
-  building,
-  onSelectPage,
-  onBuildDashboard,
-}: VisualPanelProps) {
-  const pagesWithWidgets = useMemo(
-    () =>
-      pages
-        .map((page) => ({
-          page,
-          widgets: (cellsByPage[page.id] ?? [])
-            .map(widgetFromCell)
-            .filter((widget): widget is Widget => Boolean(widget)),
-        }))
-        .filter((item) => item.widgets.length > 0),
-    [cellsByPage, pages],
-  );
-  const selected =
-    pagesWithWidgets.find((item) => item.page.id === selectedPageId) ??
-    pagesWithWidgets[0] ??
-    null;
-
-  return (
-    <div className="flex min-h-full flex-col">
-      <div className="hairline border-b px-5 py-4">
-        <div className="font-mono text-lg text-ink">Visuals</div>
-      </div>
-
-      {pagesWithWidgets.length > 0 ? (
-        <>
-          <div className="hairline border-b px-5 py-4">
-            <div className="grid gap-2">
-              {pagesWithWidgets.map(({ page, widgets }) => (
-                <button
-                  key={page.id}
-                  type="button"
-                  onClick={() => onSelectPage(page.id)}
-                  className={`border px-3 py-2 text-left transition ${
-                    selected?.page.id === page.id
-                      ? "border-ember bg-orange-50"
-                      : "border-neutral-200 hover:border-neutral-300"
-                  }`}
-                >
-                  <div className="truncate font-mono text-sm text-ink">{page.title}</div>
-                  <div className="mt-1 small-caps text-xs text-neutral-400">
-                    {widgets.length} visual{widgets.length === 1 ? "" : "s"}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex-1 px-5 py-4">
-            {selected?.widgets.map((widget, index) => (
-              <div key={`${selected.page.id}:${index}`} className="mb-5 border border-neutral-200 bg-white px-4 py-3">
-                <WidgetRenderer widget={widget} height={280} />
-              </div>
-            ))}
-          </div>
-        </>
-      ) : (
-        <div className="px-5 py-6">
-          <div className="border border-dashed border-neutral-300 bg-[#fff8f1] px-4 py-8 text-sm leading-6 text-neutral-600">
-            No saved visuals yet. Ask Cerno for a chart, or generate visuals
-            after approving the workspace insights.
-          </div>
-          <button
-            type="button"
-            onClick={onBuildDashboard}
-            disabled={building || !canBuild}
-            className="small-caps mt-4 w-full border border-ink px-3 py-2 text-sm hover:bg-neutral-100 disabled:opacity-40"
-          >
-            {building
-              ? "building..."
-              : canBuild
-                ? "generate visuals"
-                : "approve insights first"}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function InsightGroup({ title, items }: { title: string; items: string[] }) {
   return (
     <section className="border border-neutral-200 bg-white px-5 py-4">
@@ -723,37 +621,8 @@ function nameForFile(fileId: string, files: FileRecord[]) {
   return file?.friendly_name || file?.filename || "file";
 }
 
-function useStoredChatTitles(sessionId: string) {
-  const key = `cerno:chat-titles:${sessionId}`;
-  const [titles, setTitles] = useState<Record<string, string>>(() => {
-    if (typeof window === "undefined") return {};
-    try {
-      return JSON.parse(window.localStorage.getItem(key) ?? "{}") as Record<
-        string,
-        string
-      >;
-    } catch {
-      return {};
-    }
-  });
-
-  const setStoredTitles = (
-    updater: (current: Record<string, string>) => Record<string, string>,
-  ) => {
-    setTitles((current) => {
-      const next = updater(current);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(key, JSON.stringify(next));
-      }
-      return next;
-    });
-  };
-
-  return [titles, setStoredTitles] as const;
-}
-
 function defaultTurnTitle(turn: ChatTurn): string {
-  const trimmed = turn.user_message.trim();
+  const trimmed = (turn.title || turn.user_message).trim();
   return trimmed.length > 52 ? `${trimmed.slice(0, 49)}...` : trimmed || "Untitled chat";
 }
 

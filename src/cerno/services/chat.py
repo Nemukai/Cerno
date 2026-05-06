@@ -2,24 +2,20 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
 
 from cerno.config import Settings
 from cerno.llm import LLMClient, run_tool_loop
-from cerno.models import ChatTurn, DashboardCell, Widget
+from cerno.models import ChatTurn, Widget
 from cerno.repositories import (
     AssetArtifactRepository,
     ChatArtifactRepository,
     ChatRepository,
-    DashboardCellRepository,
-    DashboardRepository,
     DataDocRepository,
     FileRepository,
     SchemaRepository,
-    new_id,
 )
 from cerno.services.artifact_cache import ensure_file_artifact_cached
 from cerno.services.engine import DuckDBEngine
@@ -36,7 +32,7 @@ SYSTEM_PROMPT = (
     "fields live, caveats, relationships, or good ways to answer the user's question. "
     "Use list_tables and describe_table when you need exact dataframe columns. "
     "When the answer benefits from a chart, KPI, or table, call render_widget — those "
-    "widgets become a new dashboard page the user can pin. If the question is purely "
+    "widgets are shown directly in this chat. If the question is purely "
     "conversational and no widget is useful, just reply in text. "
     "Format responses in visually clean markdown. Use bullet points or short paragraphs. "
     "Keep the final message short, grounded, and clean; the widgets carry the detail."
@@ -60,15 +56,18 @@ async def run_chat_turn(
     llm_client: LLMClient,
     files_repo: FileRepository,
     schemas_repo: SchemaRepository,
-    dashboards_repo: DashboardRepository,
-    dashboard_cells_repo: DashboardCellRepository,
     chat_repo: ChatRepository,
     chat_artifacts_repo: ChatArtifactRepository,
     artifacts_repo: AssetArtifactRepository,
     data_docs_repo: DataDocRepository,
 ) -> ChatTurnResult:
     del schemas_repo  # reserved for future schema-aware prompts
-    turn = chat_repo.create_turn(session_id=session_id, user_message=user_message)
+    turn = chat_repo.create_turn(
+        session_id=session_id,
+        user_message=user_message,
+        title=_default_turn_title(user_message),
+        metadata={"version": 1},
+    )
     chat_repo.append_message(turn_id=turn.id, role="user", content=user_message)
     chat_repo.conn.commit()
 
@@ -100,7 +99,6 @@ async def run_chat_turn(
             session_id=session_id,
             engine=engine,
             tables=tables,
-            dashboard_cells_repo=dashboard_cells_repo,
             data_doc=data_docs_repo.get(session_id),
         )
         registry = build_tool_registry(ctx)
@@ -125,29 +123,25 @@ async def run_chat_turn(
             chat_repo.conn.commit()
             raise
 
-        spawned_page_id: str | None = None
         if ctx.rendered_widgets:
-            spawned_page_id = _spawn_dashboard_page(
-                dashboards_repo=dashboards_repo,
-                dashboard_cells_repo=dashboard_cells_repo,
+            _persist_widget_artifacts(
                 chat_artifacts_repo=chat_artifacts_repo,
                 session_id=session_id,
                 turn_id=turn.id,
-                user_message=user_message,
                 widgets=ctx.rendered_widgets,
             )
 
         chat_repo.complete_turn(
             turn_id=turn.id,
             assistant_message=result.final_message,
-            spawned_page_id=spawned_page_id,
+            spawned_page_id=None,
         )
         chat_repo.conn.commit()
 
         return ChatTurnResult(
             turn=turn,
             assistant_message=result.final_message,
-            spawned_page_id=spawned_page_id,
+            spawned_page_id=None,
             widgets=list(ctx.rendered_widgets),
             tool_calls=result.call_count,
         )
@@ -192,41 +186,19 @@ def _persist_loop_message(chat_repo: ChatRepository, turn_id: str, message: dict
         )
 
 
-def _spawn_dashboard_page(
+def _default_turn_title(user_message: str) -> str:
+    title = " ".join(user_message.strip().split())
+    return title[:80] or "New chat"
+
+
+def _persist_widget_artifacts(
     *,
-    dashboards_repo: DashboardRepository,
-    dashboard_cells_repo: DashboardCellRepository,
     chat_artifacts_repo: ChatArtifactRepository,
     session_id: str,
     turn_id: str,
-    user_message: str,
     widgets: list[Widget],
-) -> str:
-    dashboard = dashboards_repo.get_for_session(session_id)
-    if dashboard is None:
-        dashboard = dashboards_repo.create(session_id)
-    existing = dashboards_repo.list_pages(dashboard.id)
-    position = max((p.position for p in existing), default=-1) + 1
-    title = user_message.strip()[:60] or "Question"
-    page = dashboards_repo.add_page(
-        dashboard_id=dashboard.id,
-        title=title,
-        kind="question",
-        position=position,
-        source_chat_turn_id=turn_id,
-    )
-
+) -> None:
     for idx, widget in enumerate(widgets):
-        cell = DashboardCell(
-            id=new_id(),
-            page_id=page.id,
-            order_index=idx,
-            kind="widget",
-            code="",
-            output={"widget": widget.model_dump()},
-            created_at=datetime.now(UTC),
-        )
-        dashboard_cells_repo.add_cell(cell)
         chat_artifacts_repo.create(
             session_id=session_id,
             turn_id=turn_id,
@@ -235,4 +207,3 @@ def _spawn_dashboard_page(
             inline_payload={"widget": widget.model_dump()},
             order_index=idx,
         )
-    return page.id

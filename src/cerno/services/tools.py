@@ -7,7 +7,6 @@ import pandas as pd
 
 from cerno.llm import Tool, ToolRegistry
 from cerno.models import DataDoc, Widget
-from cerno.repositories import DashboardCellRepository
 from cerno.services.engine import DuckDBEngine
 from cerno.services.sandbox import run_python
 
@@ -17,7 +16,6 @@ class ToolContext:
     session_id: str
     engine: DuckDBEngine
     tables: dict[str, pd.DataFrame]
-    dashboard_cells_repo: DashboardCellRepository
     data_doc: DataDoc | None = None
     rendered_widgets: list[Widget] = field(default_factory=list)
 
@@ -62,11 +60,6 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
         )
         ctx.rendered_widgets.append(widget)
         return {"widget": widget.model_dump()}
-
-    async def read_cells(args: dict[str, Any]) -> dict[str, Any]:
-        page_id = str(args["page_id"])
-        cells = ctx.dashboard_cells_repo.list_for_page(page_id)
-        return {"cells": [c.model_dump(mode="json") for c in cells]}
 
     async def read_schema_guide(_args: dict[str, Any]) -> dict[str, Any]:
         if ctx.data_doc is None:
@@ -115,7 +108,7 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
         Tool(
             name="render_widget",
             description=(
-                "Emit a widget for the dashboard page spawned by this chat turn. "
+                "Emit a widget for this chat turn. "
                 "Call this for every chart, KPI, or table you want the user to see."
             ),
             parameters={
@@ -134,19 +127,6 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 "additionalProperties": False,
             },
             handler=render_widget,
-        )
-    )
-    registry.register(
-        Tool(
-            name="read_cells",
-            description="Read the stored widget records on a dashboard page (read-only).",
-            parameters={
-                "type": "object",
-                "properties": {"page_id": {"type": "string"}},
-                "required": ["page_id"],
-                "additionalProperties": False,
-            },
-            handler=read_cells,
         )
     )
     registry.register(

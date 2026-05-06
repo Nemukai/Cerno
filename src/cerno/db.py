@@ -10,8 +10,8 @@ from typing import Any
 
 from cerno.config import Settings
 
-SCHEMA_VERSION = 10
-POSTGRES_SCHEMA_VERSION = 2
+SCHEMA_VERSION = 11
+POSTGRES_SCHEMA_VERSION = 3
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 
 _MIGRATIONS: dict[int, list[str]] = {
@@ -403,6 +403,10 @@ _MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE processing_events ADD COLUMN progress INTEGER",
         "ALTER TABLE processing_events ADD COLUMN details TEXT NOT NULL DEFAULT '{}'",
     ],
+    11: [
+        "ALTER TABLE chat_turns ADD COLUMN title TEXT",
+        "ALTER TABLE chat_turns ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'",
+    ],
 }
 
 
@@ -619,6 +623,10 @@ _POSTGRES_MIGRATIONS = {
         "ALTER TABLE processing_events ADD COLUMN IF NOT EXISTS level TEXT",
         "ALTER TABLE processing_events ADD COLUMN IF NOT EXISTS progress INTEGER",
         "ALTER TABLE processing_events ADD COLUMN IF NOT EXISTS details TEXT NOT NULL DEFAULT '{}'",
+    ],
+    3: [
+        "ALTER TABLE chat_turns ADD COLUMN IF NOT EXISTS title TEXT",
+        "ALTER TABLE chat_turns ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'",
     ],
 }
 

@@ -4,83 +4,19 @@ import sqlite3
 
 from fastapi import APIRouter, HTTPException
 
-from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
-from cerno.models import Anomaly, DashboardCell, DashboardPage
+from cerno.api.deps import ConnDep, GrantedUserDep
+from cerno.models import Anomaly
 from cerno.repositories import (
     AnomalyRepository,
-    AssetArtifactRepository,
-    DashboardCellRepository,
-    DashboardRepository,
-    FileRepository,
-    LinkRepository,
-    SchemaRepository,
     SessionRepository,
 )
-from cerno.services.dashboard import generate_overview
-from cerno.storage import get_object_store
 
-router = APIRouter(tags=["dashboard"])
+router = APIRouter(tags=["insights"])
 
 
 def _require_session_owned(conn: sqlite3.Connection, session_id: str, user_id: str) -> None:
     if SessionRepository(conn).get(session_id, user_id=user_id) is None:
         raise HTTPException(status_code=404, detail="session not found")
-
-
-@router.post("/sessions/{session_id}/build-dashboard")
-async def post_build_dashboard(
-    session_id: str,
-    conn: ConnDep,
-    settings: SettingsDep,
-    user: GrantedUserDep,
-    llm_client: LLMDep,
-) -> dict[str, object]:
-    _require_session_owned(conn, session_id, user.id)
-    files_repo = FileRepository(conn)
-    schemas_repo = SchemaRepository(conn)
-    links_repo = LinkRepository(conn)
-    dashboards_repo = DashboardRepository(conn)
-    dashboard_cells_repo = DashboardCellRepository(conn)
-
-    page = await generate_overview(
-        session_id=session_id,
-        settings=settings,
-        sessions_repo=SessionRepository(conn),
-        files_repo=files_repo,
-        schemas_repo=schemas_repo,
-        links_repo=links_repo,
-        dashboards_repo=dashboards_repo,
-        dashboard_cells_repo=dashboard_cells_repo,
-        llm_client=llm_client,
-        artifacts_repo=AssetArtifactRepository(conn),
-        object_store=get_object_store(settings),
-    )
-    widgets = dashboard_cells_repo.list_for_page(page.id)
-    return {
-        "page_id": page.id,
-        "widget_count": len(widgets),
-    }
-
-
-@router.get("/sessions/{session_id}/dashboard")
-def get_dashboard(session_id: str, conn: ConnDep, user: GrantedUserDep) -> dict[str, object]:
-    _require_session_owned(conn, session_id, user.id)
-    dashboards_repo = DashboardRepository(conn)
-    dashboard_cells_repo = DashboardCellRepository(conn)
-    dashboard = dashboards_repo.get_for_session(session_id)
-    if dashboard is None:
-        return {"pages": [], "cells_by_page": {}}
-    pages = dashboards_repo.list_pages(dashboard.id)
-    cells_by_page: dict[str, list[DashboardCell]] = {
-        page.id: dashboard_cells_repo.list_for_page(page.id) for page in pages
-    }
-    return {
-        "pages": [DashboardPage.model_validate(p).model_dump(mode="json") for p in pages],
-        "cells_by_page": {
-            pid: [DashboardCell.model_validate(c).model_dump(mode="json") for c in cells]
-            for pid, cells in cells_by_page.items()
-        },
-    }
 
 
 @router.get("/sessions/{session_id}/anomalies", response_model=list[Anomaly])

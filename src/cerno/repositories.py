@@ -1077,19 +1077,36 @@ class ChatRepository:
         self.conn = conn
 
     def create_turn(
-        self, *, session_id: str, user_message: str, turn_id: str | None = None
+        self,
+        *,
+        session_id: str,
+        user_message: str,
+        turn_id: str | None = None,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ChatTurn:
         tid = turn_id or new_id()
         created_at = _now()
+        saved_metadata = metadata or {}
         self.conn.execute(
-            """INSERT INTO chat_turns (id, session_id, user_message, state, created_at)
-               VALUES (?, ?, ?, 'pending', ?)""",
-            (tid, session_id, user_message, created_at.isoformat()),
+            """INSERT INTO chat_turns
+               (id, session_id, user_message, title, metadata, state, created_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (
+                tid,
+                session_id,
+                user_message,
+                title,
+                dumps_json(saved_metadata),
+                created_at.isoformat(),
+            ),
         )
         return ChatTurn(
             id=tid,
             session_id=session_id,
             user_message=user_message,
+            title=title,
+            metadata=saved_metadata,
             state="pending",
             created_at=created_at,
         )
@@ -1153,12 +1170,45 @@ class ChatRepository:
         row = self.conn.execute("SELECT * FROM chat_turns WHERE id = ?", (turn_id,)).fetchone()
         return _row_to_turn(row) if row else None
 
+    def update_turn(
+        self,
+        *,
+        turn_id: str,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ChatTurn | None:
+        current = self.get_turn(turn_id)
+        if current is None:
+            return None
+        next_title = title if title is not None else current.title
+        next_metadata = metadata if metadata is not None else current.metadata
+        self.conn.execute(
+            "UPDATE chat_turns SET title = ?, metadata = ? WHERE id = ?",
+            (next_title, dumps_json(next_metadata), turn_id),
+        )
+        return self.get_turn(turn_id)
+
     def list_turns(self, session_id: str) -> list[ChatTurn]:
         rows = self.conn.execute(
             "SELECT * FROM chat_turns WHERE session_id = ? ORDER BY created_at",
             (session_id,),
         ).fetchall()
         return [_row_to_turn(r) for r in rows]
+
+    def list_messages_for_session(self, session_id: str) -> dict[str, list[ChatMessage]]:
+        rows = self.conn.execute(
+            """SELECT chat_messages.*
+               FROM chat_messages
+               JOIN chat_turns ON chat_turns.id = chat_messages.turn_id
+               WHERE chat_turns.session_id = ?
+               ORDER BY chat_turns.created_at, chat_messages.created_at""",
+            (session_id,),
+        ).fetchall()
+        messages_by_turn: dict[str, list[ChatMessage]] = {}
+        for row in rows:
+            message = _row_to_message(row)
+            messages_by_turn.setdefault(message.turn_id, []).append(message)
+        return messages_by_turn
 
     def list_messages(self, turn_id: str) -> list[ChatMessage]:
         rows = self.conn.execute(
@@ -1237,6 +1287,21 @@ class ChatArtifactRepository:
             (turn_id,),
         ).fetchall()
         return [_row_to_chat_artifact(r) for r in rows]
+
+    def list_for_session(self, session_id: str) -> dict[str, list[ChatArtifact]]:
+        rows = self.conn.execute(
+            """SELECT * FROM chat_artifacts
+               WHERE session_id = ? AND turn_id IS NOT NULL
+               ORDER BY turn_id, order_index""",
+            (session_id,),
+        ).fetchall()
+        artifacts_by_turn: dict[str, list[ChatArtifact]] = {}
+        for row in rows:
+            artifact = _row_to_chat_artifact(row)
+            if artifact.turn_id is None:
+                continue
+            artifacts_by_turn.setdefault(artifact.turn_id, []).append(artifact)
+        return artifacts_by_turn
 
 
 class AuditRepository:
@@ -1824,12 +1889,16 @@ def _row_to_cell(row: sqlite3.Row) -> DashboardCell:
 
 
 def _row_to_turn(row: sqlite3.Row) -> ChatTurn:
+    title = row["title"] if "title" in row.keys() else None
+    metadata = loads_json(row["metadata"], default={}) if "metadata" in row.keys() else {}
     return ChatTurn(
         id=row["id"],
         session_id=row["session_id"],
         user_message=row["user_message"],
         assistant_message=row["assistant_message"],
         spawned_page_id=row["spawned_page_id"],
+        title=title,
+        metadata=metadata,
         state=row["state"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )

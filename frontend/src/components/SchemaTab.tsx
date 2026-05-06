@@ -466,10 +466,10 @@ function headerDescription(
     return "Cerno is reading the uploads, finding the real headers, and looking for connections across documents.";
   }
   if (status === "pending_review") {
-    return "Check the plain-language map before Cerno builds dashboards or answers questions from these files.";
+    return "Check the plain-language map before Cerno answers questions from these files.";
   }
   if (status === "approved") {
-    return "This map is the shared understanding Cerno uses for dashboards and chat.";
+    return "This map is the shared understanding Cerno uses for chat.";
   }
   if (status === "failed") {
     return "Processing stopped before Cerno could finish the map. Fix the issue, then process the files again.";
@@ -702,8 +702,8 @@ function DataGuideSection({
           <div className="small-caps text-xs text-neutral-500">guidance</div>
           <h3 className="mt-1 font-mono text-lg text-ink">How to use this data</h3>
           <p className="mt-1 max-w-3xl text-sm leading-5 text-neutral-600">
-            These notes travel with the map, so the dashboard and chat
-            share the same understanding of the uploaded documents.
+            These notes travel with the map, so every chat answer shares the same
+            understanding of the uploaded documents.
           </p>
         </div>
         <div className="small-caps text-xs text-neutral-500">

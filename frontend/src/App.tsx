@@ -1,31 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   approveSchema,
-  buildDashboard,
   createSession,
   deleteFile,
   deleteSession,
   deleteTurn,
-  getDashboard,
+  getChatFeed,
   getDiscovery,
   getProcessingEvents,
   getSchemaGuide,
   listFiles,
   listLinks,
   listSessions,
-  listTurns,
   postChat,
   processSession,
+  updateTurn,
   uploadFiles,
 } from "./lib/api";
 import type {
+  ChatArtifact,
+  ChatMessage,
   ChatTurn,
   DataDoc,
-  DashboardPage,
   DiscoveredFile,
   DiscoveredLink,
   DiscoveryResponse,
-  DashboardCell,
   FileRecord,
   Link,
   ProcessingEvent,
@@ -36,12 +35,10 @@ import { CernoLockup, CernoMark, CernoWordmark } from "./components/Brand";
 import {
   FilesPanel,
   InsightsPanel,
-  VisualPanel,
   WorkspaceSidebar,
 } from "./components/SessionPanels";
 import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
-import { DashboardTab } from "./components/DashboardTab";
 
 type WorkspaceMetric = {
   fileCount: number;
@@ -57,7 +54,7 @@ type AppRoute =
   | { kind: "sessions" }
   | { kind: "session"; sessionId: string; tab: TabKey };
 
-const SESSION_TABS: TabKey[] = ["ask", "dashboard", "insights", "files"];
+const SESSION_TABS: TabKey[] = ["ask", "insights", "files"];
 
 function isTabKey(value: string | undefined): value is TabKey {
   return SESSION_TABS.includes(value as TabKey);
@@ -74,13 +71,6 @@ function readRoute(): AppRoute {
       kind: "session",
       sessionId: decodeURIComponent(sessionId),
       tab: isTabKey(parts[2]) ? parts[2] : "ask",
-    };
-  }
-  if (parts[0] === "dashboard" && parts[1]) {
-    return {
-      kind: "session",
-      sessionId: decodeURIComponent(parts[1]),
-      tab: "dashboard",
     };
   }
   return { kind: "landing" };
@@ -125,25 +115,24 @@ export function App() {
   const [discovery, setDiscovery] = useState<DiscoveryResponse | null>(null);
   const [events, setEvents] = useState<ProcessingEvent[]>([]);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [messagesByTurn, setMessagesByTurn] = useState<
+    Record<string, ChatMessage[]>
+  >({});
+  const [artifactsByTurn, setArtifactsByTurn] = useState<
+    Record<string, ChatArtifact[]>
+  >({});
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [dataDoc, setDataDoc] = useState<DataDoc | null>(null);
-  const [pages, setPages] = useState<DashboardPage[]>([]);
-  const [cellsByPage, setCellsByPage] = useState<Record<string, DashboardCell[]>>(
-    {},
-  );
-  const [dashboardLoadedFor, setDashboardLoadedFor] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("ask");
-  const [focusPageId, setFocusPageId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [approving, setApproving] = useState(false);
   const [sending, setSending] = useState(false);
-  const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const bootstrapped = useRef(false);
   const pollRef = useRef<number | null>(null);
-  const autoBuildSessions = useRef<Set<string>>(new Set());
 
   const refreshSessions = useCallback(async () => {
     const list = await listSessions();
@@ -171,16 +160,15 @@ export function App() {
     setEvents(e);
   }, []);
 
-  const refreshDashboard = useCallback(async (sessionId: string) => {
-    const dash = await getDashboard(sessionId);
-    setPages(dash.pages);
-    setCellsByPage(dash.cells_by_page);
-    setDashboardLoadedFor(sessionId);
-  }, []);
-
-  const refreshTurns = useCallback(async (sessionId: string) => {
-    const ts = await listTurns(sessionId);
-    setTurns(ts);
+  const refreshChatFeed = useCallback(async (sessionId: string) => {
+    const feed = await getChatFeed(sessionId);
+    setTurns(feed.map((item) => item.turn));
+    setMessagesByTurn(
+      Object.fromEntries(feed.map((item) => [item.turn.id, item.messages])),
+    );
+    setArtifactsByTurn(
+      Object.fromEntries(feed.map((item) => [item.turn.id, item.artifacts])),
+    );
   }, []);
 
   const refreshSchemaGuide = useCallback(async (sessionId: string) => {
@@ -276,8 +264,7 @@ export function App() {
       refreshLinks(id),
       refreshDiscovery(id),
       refreshEvents(id),
-      refreshDashboard(id),
-      refreshTurns(id),
+      refreshChatFeed(id),
       refreshSchemaGuide(id),
     ]).catch((err: Error) => setError(err.message));
   }, [
@@ -286,8 +273,7 @@ export function App() {
     refreshLinks,
     refreshDiscovery,
     refreshEvents,
-    refreshDashboard,
-    refreshTurns,
+    refreshChatFeed,
     refreshSchemaGuide,
   ]);
 
@@ -344,12 +330,11 @@ export function App() {
     setDiscovery(null);
     setEvents([]);
     setTurns([]);
+    setMessagesByTurn({});
+    setArtifactsByTurn({});
+    setActiveTurnId(null);
     setDataDoc(null);
-    setPages([]);
-    setCellsByPage({});
-    setDashboardLoadedFor(null);
     setActiveTab("ask");
-    setFocusPageId(null);
   }, []);
 
   useEffect(() => {
@@ -404,13 +389,9 @@ export function App() {
     if (activeTab !== route.tab) {
       setActiveTab(route.tab);
     }
-    if (route.tab !== "dashboard" && focusPageId) {
-      setFocusPageId(null);
-    }
   }, [
     activeTab,
     clearSessionState,
-    focusPageId,
     navigate,
     route,
     session,
@@ -507,9 +488,6 @@ export function App() {
         } else {
           setEvents([]);
         }
-        setPages([]);
-        setCellsByPage({});
-        setDashboardLoadedFor(session.id);
         setDiscovery(null);
         setLinks([]);
         setDataDoc(null);
@@ -541,9 +519,6 @@ export function App() {
       navigateSessionTab(session.id, "files");
       try {
         await deleteFile(fileId);
-        setPages([]);
-        setCellsByPage({});
-        setDashboardLoadedFor(session.id);
         const nextFiles = await listFiles(session.id);
         setFiles(nextFiles);
         setDiscovery(null);
@@ -573,9 +548,6 @@ export function App() {
     setEvents([]);
     setActiveTab("insights");
     navigateSessionTab(session.id, "insights");
-    setPages([]);
-    setCellsByPage({});
-    setDashboardLoadedFor(session.id);
     try {
       const result = await processSession(session.id);
       setEvents(result.events);
@@ -646,44 +618,46 @@ export function App() {
       setError(null);
       setSending(true);
       try {
-        await postChat(session.id, message);
-        await Promise.all([
-          refreshTurns(session.id),
-          refreshDashboard(session.id),
-        ]);
+        const response = await postChat(session.id, message);
+        setActiveTurnId(response.turn_id);
+        await refreshChatFeed(session.id);
       } catch (err) {
         setError((err as Error).message);
       } finally {
         setSending(false);
       }
     },
-    [session, refreshTurns, refreshDashboard],
+    [session, refreshChatFeed],
   );
-
-  const handleBuildDashboard = useCallback(async () => {
-    if (!session) return;
-    setError(null);
-    setBuilding(true);
-    try {
-      await buildDashboard(session.id);
-      await refreshDashboard(session.id);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBuilding(false);
-    }
-  }, [session, refreshDashboard]);
-
-  const handleOpenPage = useCallback((pageId: string) => {
-    if (session) navigateSessionTab(session.id, "dashboard");
-    setActiveTab("dashboard");
-    setFocusPageId(pageId);
-  }, [navigateSessionTab, session]);
 
   const handleNewChat = useCallback(() => {
     if (session) navigateSessionTab(session.id, "ask");
     setActiveTab("ask");
+    setActiveTurnId(null);
   }, [navigateSessionTab, session]);
+
+  const handleSelectTurn = useCallback(
+    (turnId: string) => {
+      if (session) navigateSessionTab(session.id, "ask");
+      setActiveTab("ask");
+      setActiveTurnId(turnId);
+    },
+    [navigateSessionTab, session],
+  );
+
+  const handleRenameTurn = useCallback(
+    async (turnId: string, title: string) => {
+      if (!session) return;
+      setError(null);
+      try {
+        await updateTurn(turnId, { title });
+        await refreshChatFeed(session.id);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [session, refreshChatFeed],
+  );
 
   const handleDeleteTurn = useCallback(
     async (turnId: string) => {
@@ -691,41 +665,24 @@ export function App() {
       setError(null);
       try {
         await deleteTurn(turnId);
-        await refreshTurns(session.id);
+        if (activeTurnId === turnId) setActiveTurnId(null);
+        await refreshChatFeed(session.id);
       } catch (err) {
         setError((err as Error).message);
       }
     },
-    [session, refreshTurns],
+    [activeTurnId, session, refreshChatFeed],
   );
 
   const handleTabChange = useCallback(
     (tab: TabKey) => {
       if (session) navigateSessionTab(session.id, tab);
       setActiveTab(tab);
-      if (tab !== "dashboard") setFocusPageId(null);
     },
     [navigateSessionTab, session],
   );
 
   const discoveryStatus = discovery?.status ?? "empty";
-
-  useEffect(() => {
-    if (!session) return;
-    if (discoveryStatus !== "approved") return;
-    if (dashboardLoadedFor !== session.id) return;
-    if (pages.length > 0 || building) return;
-    if (autoBuildSessions.current.has(session.id)) return;
-    autoBuildSessions.current.add(session.id);
-    handleBuildDashboard().catch((err: Error) => setError(err.message));
-  }, [
-    session,
-    discoveryStatus,
-    dashboardLoadedFor,
-    pages.length,
-    building,
-    handleBuildDashboard,
-  ]);
 
   if (!session) {
     if (homeView === "landing") {
@@ -761,8 +718,11 @@ export function App() {
             session={session}
             files={files}
             turns={turns}
+            activeTurnId={activeTurnId}
             onSelectTab={handleTabChange}
+            onSelectTurn={handleSelectTurn}
             onNewChat={handleNewChat}
+            onRenameTurn={handleRenameTurn}
             onDeleteTurn={handleDeleteTurn}
           />
         }
@@ -778,17 +738,6 @@ export function App() {
             showFileActions={files.length > 0}
           />
         }
-        rightPanel={focusPageId && activeTab !== "dashboard" ? (
-          <VisualPanel
-            pages={pages}
-            cellsByPage={cellsByPage}
-            selectedPageId={focusPageId}
-            canBuild={discoveryStatus === "approved"}
-            building={building}
-            onSelectPage={setFocusPageId}
-            onBuildDashboard={handleBuildDashboard}
-          />
-        ) : null}
         activeTab={activeTab}
         onTabChange={handleTabChange}
         onDropFile={handleUpload}
@@ -807,27 +756,12 @@ export function App() {
             onProcess={handleProcess}
           />
         ) : null}
-        {files.length > 0 && activeTab === "dashboard" ? (
-          <DashboardTab
-            pages={pages}
-            cellsByPage={cellsByPage}
-            focusPageId={focusPageId}
-            files={files}
-            discoveryStatus={discoveryStatus}
-            onUpload={handleUpload}
-            uploading={uploading}
-            onDeleteFile={handleDeleteFile}
-            onProcess={handleProcess}
-            processing={processing}
-            onBuildDashboard={handleBuildDashboard}
-            building={building}
-            onReviewSchema={() => handleTabChange("insights")}
-          />
-        ) : null}
         {files.length > 0 && activeTab === "ask" ? (
           <ChatSidebar
             turns={turns}
-            pages={pages}
+            messagesByTurn={messagesByTurn}
+            artifactsByTurn={artifactsByTurn}
+            activeTurnId={activeTurnId}
             files={files}
             discovery={discovery}
             dataDoc={dataDoc}
@@ -835,7 +769,6 @@ export function App() {
             disabled={!chatReady}
             sending={sending}
             onSend={handleSend}
-            onOpenPage={handleOpenPage}
             onOpenInsights={() => handleTabChange("insights")}
             onOpenFiles={() => handleTabChange("files")}
           />
@@ -849,10 +782,8 @@ export function App() {
             events={events}
             processing={processing}
             approving={approving}
-            building={building}
             onProcess={handleProcess}
             onApprove={handleApprove}
-            onBuildDashboard={handleBuildDashboard}
             onOpenFiles={() => handleTabChange("files")}
           />
         ) : null}
@@ -905,10 +836,10 @@ function LandingPage({
 
   const asciiRows = [
     "CERNO::DATA_MAP   raw rows -> headers -> relationships",
-    "schema guide / dashboard signals / analyst chat",
+    "schema guide / inline visuals / analyst chat",
     "xlsx + csv ::::: profile ::::: approve ::::: inspect",
     "joins: detected   caveats: written   charts: generated",
-    "source files -> shared meaning -> working dashboard",
+    "source files -> shared meaning -> grounded answers",
     "01000011 01000101 01010010 01001110 01001111",
   ];
 
@@ -971,7 +902,7 @@ function LandingPage({
               <CernoWordmark />
             </h1>
             <p className="mt-5 max-w-2xl text-lg leading-8 text-neutral-600">
-              Upload spreadsheets, approve the data map, then work from a dashboard
+              Upload spreadsheets, approve the data map, then work from a chat
               that understands the files before it answers.
             </p>
             <div className="mt-10 flex flex-wrap items-center gap-4">
@@ -997,8 +928,8 @@ function LandingPage({
           />
           <LandingFact
             index="02"
-            title="Dashboard next"
-            body="Approved workspaces open into generated views that can be reshaped for the task."
+            title="Chat visuals next"
+            body="Approved workspaces answer questions with charts, KPIs, and tables directly in chat."
           />
           <LandingFact
             index="03"
@@ -1066,7 +997,7 @@ function WorkspacesPage({
 
   const handleDelete = (s: Session) => {
     const ok = window.confirm(
-      `Delete workspace "${s.name}"? Files, links, dashboards, and chat history will be removed. This cannot be undone.`,
+      `Delete workspace "${s.name}"? Files, links, insights, and chat history will be removed. This cannot be undone.`,
     );
     if (ok) onDelete(s.id);
   };

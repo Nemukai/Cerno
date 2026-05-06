@@ -6,9 +6,6 @@ export type LinkDirection = "many_to_one" | "one_to_one" | "many_to_many";
 export type WidgetKind = "kpi" | "bar" | "line" | "pie" | "table" | "markdown";
 export type LinkSource = "discovered" | "user_added";
 export type LinkAction = "confirm" | "reject" | "edit";
-export type PageKind = "overview" | "file" | "question";
-export type CellKind = "python" | "sql" | "widget";
-export type RunStatus = "ok" | "error" | "stale";
 export type TurnState = "pending" | "tool_running" | "rendering" | "complete" | "failed";
 export type MessageRole = "user" | "assistant" | "tool" | "system";
 export type ProcessingEventKind =
@@ -173,38 +170,14 @@ export type Anomaly = {
   created_at: string;
 };
 
-export type DashboardPage = {
-  id: string;
-  dashboard_id: string;
-  title: string;
-  kind: PageKind;
-  source_chat_turn_id: string | null;
-  pinned: boolean;
-  position: number;
-  created_at: string;
-};
-
-export type DashboardCell = {
-  id: string;
-  page_id: string;
-  order_index: number;
-  kind: CellKind;
-  code: string;
-  output: Record<string, unknown> | null;
-  bound_file_ids: string[];
-  bound_schema_versions: Record<string, number>;
-  threshold_snapshot: Record<string, unknown>;
-  last_run_at: string | null;
-  last_run_status: RunStatus | null;
-  created_at: string;
-};
-
 export type ChatTurn = {
   id: string;
   session_id: string;
   user_message: string;
   assistant_message: string | null;
   spawned_page_id: string | null;
+  title: string | null;
+  metadata: Record<string, unknown>;
   state: TurnState;
   created_at: string;
 };
@@ -228,9 +201,26 @@ export type Widget = {
   caption: string | null;
 };
 
-export type DashboardResponse = {
-  pages: DashboardPage[];
-  cells_by_page: Record<string, DashboardCell[]>;
+export type ChatArtifact = {
+  id: string;
+  session_id: string;
+  turn_id: string | null;
+  message_id: string | null;
+  artifact_type: string;
+  title: string;
+  inline_payload: Record<string, unknown> | null;
+  storage_backend: string | null;
+  object_key: string | null;
+  size_bytes: number;
+  mime_type: string | null;
+  order_index: number;
+  created_at: string;
+};
+
+export type ChatFeedTurn = {
+  turn: ChatTurn;
+  messages: ChatMessage[];
+  artifacts: ChatArtifact[];
 };
 
 export type DataDocColumn = {
@@ -277,11 +267,6 @@ export type DataDoc = {
   starter_questions: string[];
   created_at: string;
   updated_at: string;
-};
-
-export type BuildDashboardResponse = {
-  page_id: string;
-  widget_count: number;
 };
 
 export type ChatResponse = {

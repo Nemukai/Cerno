@@ -36,7 +36,7 @@ export function SessionHeader({
   const handleDelete = () => {
     if (!session) return;
     const ok = window.confirm(
-      `Delete session "${session.name}"? Files, links, dashboards, and chat history will be removed. This cannot be undone.`,
+      `Delete session "${session.name}"? Files, links, insights, and chat history will be removed. This cannot be undone.`,
     );
     if (ok) onDelete();
   };

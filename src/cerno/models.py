@@ -338,6 +338,8 @@ class ChatTurn(BaseModel):
     user_message: str
     assistant_message: str | None = None
     spawned_page_id: str | None = None
+    title: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     state: TurnState = "pending"
     created_at: datetime
 

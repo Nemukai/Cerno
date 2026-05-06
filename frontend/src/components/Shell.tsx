@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 
-export type TabKey = "ask" | "dashboard" | "insights" | "files";
+export type TabKey = "ask" | "insights" | "files";
 
 type Tab = {
   key: TabKey;
@@ -10,9 +10,8 @@ type Tab = {
 
 const TABS: Tab[] = [
   { key: "ask", label: "ask", index: "01" },
-  { key: "dashboard", label: "dashboard", index: "02" },
-  { key: "insights", label: "insights", index: "03" },
-  { key: "files", label: "files", index: "04" },
+  { key: "insights", label: "insights", index: "02" },
+  { key: "files", label: "files", index: "03" },
 ];
 
 type Props = {

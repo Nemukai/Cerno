@@ -1,19 +1,21 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
-import { listTurnMessages } from "../lib/api";
 import type {
+  ChatArtifact,
   ChatMessage,
   ChatTurn,
-  DashboardPage,
   DataDoc,
   DiscoveryResponse,
   DiscoveryStatus,
   FileRecord,
+  Widget,
 } from "../lib/types";
-import { ViewChip } from "./ViewChip";
+import { WidgetRenderer } from "./WidgetRenderer";
 
 type Props = {
   turns: ChatTurn[];
-  pages: DashboardPage[];
+  messagesByTurn: Record<string, ChatMessage[]>;
+  artifactsByTurn: Record<string, ChatArtifact[]>;
+  activeTurnId: string | null;
   files: FileRecord[];
   discovery: DiscoveryResponse | null;
   dataDoc: DataDoc | null;
@@ -21,46 +23,32 @@ type Props = {
   disabled: boolean;
   sending: boolean;
   onSend: (message: string) => void;
-  onOpenPage: (pageId: string) => void;
   onOpenInsights: () => void;
   onOpenFiles: () => void;
 };
 
 export function ChatSidebar({
   turns,
-  pages,
+  messagesByTurn,
+  artifactsByTurn,
+  activeTurnId,
   dataDoc,
   disabled,
   sending,
   onSend,
-  onOpenPage,
 }: Props) {
   const [input, setInput] = useState("");
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
-  const [messagesByTurn, setMessagesByTurn] = useState<
-    Record<string, ChatMessage[]>
-  >({});
   const [openTraceByTurn, setOpenTraceByTurn] = useState<Record<string, boolean>>(
     {},
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  const visibleTurns = activeTurnId
+    ? turns.filter((turn) => turn.id === activeTurnId)
+    : [];
 
   useEffect(() => {
-    let cancelled = false;
-
-    if (turns.length === 0) {
-      setMessagesByTurn({});
-      return;
-    }
-
     const turnIds = new Set(turns.map((turn) => turn.id));
-    setMessagesByTurn((current) => {
-      const next: Record<string, ChatMessage[]> = {};
-      for (const [turnId, messages] of Object.entries(current)) {
-        if (turnIds.has(turnId)) next[turnId] = messages;
-      }
-      return next;
-    });
     setOpenTraceByTurn((current) => {
       const next: Record<string, boolean> = {};
       for (const [turnId, open] of Object.entries(current)) {
@@ -68,24 +56,6 @@ export function ChatSidebar({
       }
       return next;
     });
-
-    Promise.all(
-      turns.map(async (turn) => {
-        const messages = await listTurnMessages(turn.id);
-        return [turn.id, messages] as const;
-      }),
-    )
-      .then((entries) => {
-        if (cancelled) return;
-        setMessagesByTurn(Object.fromEntries(entries));
-      })
-      .catch((err: unknown) => {
-        console.warn("Failed to load chat message trace", err);
-      });
-
-    return () => {
-      cancelled = true;
-    };
   }, [turns]);
 
   const submit = () => {
@@ -108,14 +78,7 @@ export function ChatSidebar({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [turns, sending, pendingMessage]);
-
-  const pageByIdTitle = (id: string): string => {
-    const p = pages.find((x) => x.id === id);
-    if (!p) return "VIEW";
-    const num = String(p.position + 1).padStart(2, "0");
-    return `${num} ${p.title.toUpperCase()}`;
-  };
+  }, [visibleTurns, sending, pendingMessage]);
 
   const toggleTrace = (turnId: string) => {
     setOpenTraceByTurn((current) => ({
@@ -127,7 +90,7 @@ export function ChatSidebar({
   return (
     <section className="flex h-full w-full flex-col bg-[#fffdf9]">
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-6">
-        {turns.length === 0 && !pendingMessage ? (
+        {visibleTurns.length === 0 && !pendingMessage ? (
           <div className="mt-4 flex flex-col items-center justify-center text-center">
             <div className="mb-6 font-mono text-xl text-neutral-400">
               How can I help you analyze this workspace?
@@ -152,8 +115,9 @@ export function ChatSidebar({
             )}
           </div>
         ) : (
-          turns.map((turn) => {
+          visibleTurns.map((turn) => {
             const messages = messagesByTurn[turn.id] ?? [];
+            const widgets = widgetsFromArtifacts(artifactsByTurn[turn.id] ?? []);
             const traceItems = messages
               .map((message, index) => ({
                 message,
@@ -188,12 +152,16 @@ export function ChatSidebar({
                     }
                   />
                 </div>
-                {turn.spawned_page_id ? (
-                  <div className="mt-3">
-                    <ViewChip
-                      label={pageByIdTitle(turn.spawned_page_id)}
-                      onClick={() => onOpenPage(turn.spawned_page_id!)}
-                    />
+                {widgets.length > 0 ? (
+                  <div className="mt-4 grid gap-3">
+                    {widgets.map((widget, index) => (
+                      <div
+                        key={`${turn.id}:widget:${index}`}
+                        className="border border-neutral-200 bg-white px-4 py-3 shadow-[0_10px_30px_rgba(14,14,14,0.04)]"
+                      >
+                        <WidgetRenderer widget={widget} height={260} />
+                      </div>
+                    ))}
                   </div>
                 ) : null}
               </div>
@@ -246,6 +214,26 @@ export function ChatSidebar({
         </div>
       </div>
     </section>
+  );
+}
+
+function widgetsFromArtifacts(artifacts: ChatArtifact[]): Widget[] {
+  return artifacts
+    .map((artifact) => {
+      const widget = artifact.inline_payload?.widget;
+      return isWidget(widget) ? widget : null;
+    })
+    .filter((widget): widget is Widget => widget !== null);
+}
+
+function isWidget(value: unknown): value is Widget {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<Widget>;
+  return (
+    typeof candidate.kind === "string" &&
+    typeof candidate.title === "string" &&
+    Boolean(candidate.data) &&
+    typeof candidate.data === "object"
   );
 }
 

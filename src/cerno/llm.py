@@ -14,7 +14,7 @@ import httpx
 from cerno.config import Settings
 from cerno.repositories import LLMUsageRepository
 
-DEFAULT_MAX_LLM_CALLS = 5
+DEFAULT_MAX_LLM_CALLS = 20
 
 
 class LLMError(RuntimeError):

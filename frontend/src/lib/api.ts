@@ -1,11 +1,10 @@
 import type {
   Anomaly,
-  BuildDashboardResponse,
   ChatMessage,
+  ChatFeedTurn,
   ChatResponse,
   ChatTurn,
   DataDoc,
-  DashboardResponse,
   DiscoveredFile,
   DiscoveredLink,
   DiscoveryResponse,
@@ -208,19 +207,6 @@ export function listLinks(sessionId: string): Promise<Link[]> {
   return request<Link[]>(`/sessions/${sessionId}/links`);
 }
 
-export function buildDashboard(
-  sessionId: string,
-): Promise<BuildDashboardResponse> {
-  return postJson<BuildDashboardResponse>(
-    `/sessions/${sessionId}/build-dashboard`,
-    {},
-  );
-}
-
-export function getDashboard(sessionId: string): Promise<DashboardResponse> {
-  return request<DashboardResponse>(`/sessions/${sessionId}/dashboard`);
-}
-
 export function getSchemaGuide(sessionId: string): Promise<DataDoc> {
   return request<DataDoc>(`/sessions/${sessionId}/docs`);
 }
@@ -243,8 +229,23 @@ export function listTurns(sessionId: string): Promise<ChatTurn[]> {
   return request<ChatTurn[]>(`/sessions/${sessionId}/turns`);
 }
 
+export function getChatFeed(sessionId: string): Promise<ChatFeedTurn[]> {
+  return request<ChatFeedTurn[]>(`/sessions/${sessionId}/chat-feed`);
+}
+
 export function listTurnMessages(turnId: string): Promise<ChatMessage[]> {
   return request<ChatMessage[]>(`/turns/${turnId}/messages`);
+}
+
+export function updateTurn(
+  turnId: string,
+  body: { title?: string; metadata?: Record<string, unknown> },
+): Promise<ChatTurn> {
+  return request<ChatTurn>(`/turns/${turnId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export async function deleteTurn(turnId: string): Promise<void> {

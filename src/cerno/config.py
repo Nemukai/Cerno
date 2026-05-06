@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     anomaly_key_overlap_min: float = 0.6
     anomaly_per_detector_limit: int = 100
 
-    chat_max_llm_calls: int = 8
+    chat_max_llm_calls: int = 20
 
     google_client_id: str = ""
     google_client_secret: str = ""
