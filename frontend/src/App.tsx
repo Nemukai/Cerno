@@ -39,6 +39,9 @@ import {
 } from "./components/SessionPanels";
 import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
+import { AuthGate } from "./components/AuthGate";
+import { BetaGate } from "./components/BetaGate";
+import { useUser, googleLoginUrl } from "./lib/auth";
 
 type WorkspaceMetric = {
   fileCount: number;
@@ -686,34 +689,37 @@ export function App() {
 
   if (!session) {
     if (homeView === "landing") {
-      return (
-        <LandingPage
-          sessionCount={sessions.length}
-          onEnter={() => navigateHome("sessions")}
-        />
-      );
+      return <LandingPage onEnter={() => navigateHome("sessions")} />;
     }
     return (
-      <WorkspacesPage
-        sessions={sessions}
-        onStart={handleCreateSession}
-        onResume={handleResumeSession}
-        onDelete={handleDeleteSession}
-        metrics={workspaceMetrics}
-        starting={starting}
-        error={error}
-        onDismissError={() => setError(null)}
-        onBackToLanding={() => navigateHome("landing")}
-      />
+      <AuthGate>
+        {(user, _signOut, onUserUpdate) => (
+          <BetaGate user={user} onUserUpdate={onUserUpdate}>
+            <WorkspacesPage
+              sessions={sessions}
+              onStart={handleCreateSession}
+              onResume={handleResumeSession}
+              onDelete={handleDeleteSession}
+              metrics={workspaceMetrics}
+              starting={starting}
+              error={error}
+              onDismissError={() => setError(null)}
+              onBackToLanding={() => navigateHome("landing")}
+            />
+          </BetaGate>
+        )}
+      </AuthGate>
     );
   }
 
   const chatReady = discoveryStatus === "approved";
 
   return (
-    <>
-      <Shell
-        sidebar={
+    <AuthGate>
+      {(user, _signOut, onUserUpdate) => (
+        <BetaGate user={user} onUserUpdate={onUserUpdate}>
+          <Shell
+            sidebar={
           <WorkspaceSidebar
             session={session}
             files={files}
@@ -801,126 +807,76 @@ export function App() {
       </Shell>
       {error ? (
         <div className="pointer-events-none fixed inset-x-0 bottom-4 flex justify-center">
-          <div className="pointer-events-auto border border-ink bg-white px-3 py-2 font-mono text-xs text-red-600">
+          <div className="pointer-events-auto border border-night-watch bg-tidepaper px-3 py-2 font-mono text-xs text-red-600">
             {error}
             <button
               type="button"
               onClick={() => setError(null)}
-              className="ml-3 text-neutral-500 hover:text-ink"
+              className="ml-3 text-neutral-500 hover:text-night-watch"
             >
               {"\u00d7"}
             </button>
           </div>
         </div>
       ) : null}
-    </>
+        </BetaGate>
+      )}
+    </AuthGate>
   );
 }
 
 function LandingPage({
-  sessionCount,
   onEnter,
 }: {
-  sessionCount: number;
   onEnter: () => void;
 }) {
-  const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 });
+  const { user, loading } = useUser();
+  
+  useEffect(() => {
+    if (!loading && user && user.access_status === "granted") {
+      onEnter();
+    }
+  }, [user, loading, onEnter]);
 
-  const handlePointerMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    setPointer({
-      x: (e.clientX - rect.left) / rect.width,
-      y: (e.clientY - rect.top) / rect.height,
-    });
-  };
-
-  const asciiRows = [
-    "CERNO::DATA_MAP   raw rows -> headers -> relationships",
-    "schema guide / inline visuals / analyst chat",
-    "xlsx + csv ::::: profile ::::: approve ::::: inspect",
-    "joins: detected   caveats: written   charts: generated",
-    "source files -> shared meaning -> grounded answers",
-    "01000011 01000101 01010010 01001110 01001111",
-  ];
+  if (loading || (user && user.access_status === "granted")) {
+    return <div className="flex h-screen items-center justify-center bg-tidepaper text-night-watch">Loading…</div>;
+  }
 
   return (
-    <div
-      className="relative min-h-full overflow-hidden bg-paper text-ink"
-      onMouseMove={handlePointerMove}
-    >
-      <div className="pointer-events-none absolute inset-0">
-        <div
-          className="absolute inset-y-0 w-40 bg-ember/10 blur-3xl transition-transform duration-300 ease-out"
-          style={{
-            left: `${pointer.x * 100}%`,
-            transform: "translateX(-50%) skewX(-10deg)",
-          }}
-        />
-        <div
-          className="absolute inset-0 bg-[linear-gradient(115deg,transparent_0%,rgba(232,93,35,0.12)_var(--scan),transparent_calc(var(--scan)_+_16%))]"
-          style={{ "--scan": `${pointer.x * 100}%` } as React.CSSProperties}
-        />
-        <div className="absolute inset-0 flex select-none flex-col justify-around py-8 font-mono text-[10px] uppercase leading-loose text-ember/20 sm:text-xs lg:text-sm">
-          {Array.from({ length: 20 }).map((_, i) => {
-            const direction = i % 2 === 0 ? 1 : -1;
-            const driftX = (pointer.x - 0.5) * direction * (20 + (i % 4) * 5);
-            const driftY = (pointer.y - 0.5) * direction * 8;
-            return (
-              <div
-                key={i}
-                className="whitespace-nowrap transition-transform duration-300 ease-out"
-                style={{
-                  transform: `translate3d(${driftX}px, ${driftY}px, 0)`,
-                  opacity: 0.12 + (i % 5) * 0.035,
-                }}
-              >
-                {asciiRows[i % asciiRows.length]}{" "}
-                {asciiRows[(i + 2) % asciiRows.length]}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
+    <div className="relative min-h-full overflow-hidden bg-tidepaper text-night-watch">
       <main className="relative z-10 flex min-h-full flex-col">
-        <header className="flex items-center justify-between px-6 py-5 sm:px-10">
-          <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base text-ink" />
-          <button
-            type="button"
-            onClick={onEnter}
-            className="small-caps border border-ink bg-white/70 px-3 py-1.5 text-xs text-ink backdrop-blur transition hover:border-ember hover:text-ember"
+        <header className="flex items-center justify-between px-6 py-5 sm:px-10 border-b border-drift">
+          <CernoLockup markClassName="h-6 w-6 text-deep-sea" wordmarkClassName="text-base text-night-watch" />
+          <a
+            href={googleLoginUrl()}
+            className="small-caps border border-drift bg-tidepaper px-3 py-1.5 text-xs text-night-watch transition hover:bg-drift"
           >
-            sessions
-          </button>
+            login
+          </a>
         </header>
 
         <section className="flex flex-1 items-center px-6 pb-16 pt-8 sm:px-10">
-          <div className="max-w-5xl">
-            <div className="small-caps text-xs text-ember">private data workspace</div>
-            <h1 className="mt-5 flex max-w-4xl items-center gap-5 text-5xl leading-[1.02] text-ink sm:text-7xl lg:text-8xl">
-              <CernoMark className="h-14 w-14 shrink-0 sm:h-20 sm:w-20 lg:h-24 lg:w-24" />
-              <CernoWordmark />
+          <div className="max-w-5xl border-l border-drift pl-8">
+            <div className="small-caps text-xs text-deep-sea">measured & tactile</div>
+            <h1 className="mt-5 max-w-4xl font-serif text-5xl leading-[1.02] text-night-watch sm:text-7xl lg:text-8xl">
+              Research notebook meets observatory.
             </h1>
-            <p className="mt-5 max-w-2xl text-lg leading-8 text-neutral-600">
+            <p className="mt-5 max-w-2xl text-lg leading-8 text-night-watch/70">
               Upload spreadsheets, approve the data map, then work from a chat
               that understands the files before it answers.
             </p>
             <div className="mt-10 flex flex-wrap items-center gap-4">
-              <button
-                type="button"
-                onClick={onEnter}
-                className="small-caps bg-ember px-5 py-3 text-xs text-white transition hover:bg-ember-hover"
+              <a
+                href={googleLoginUrl()}
+                className="small-caps bg-night-watch px-5 py-3 text-xs text-tidepaper transition hover:bg-deep-sea"
               >
-                enter workspace
-              </button>
-              <div className="font-mono text-xs text-neutral-500">
-                {sessionCount} saved workspace{sessionCount === 1 ? "" : "s"}
-              </div>
+                sign in to continue
+              </a>
             </div>
           </div>
         </section>
 
-        <section className="relative z-10 grid border-t border-ink/10 bg-white/55 backdrop-blur md:grid-cols-3">
+        <section className="relative z-10 grid border-t border-drift bg-tidepaper md:grid-cols-3">
           <LandingFact
             index="01"
             title="Map first"
@@ -952,10 +908,10 @@ function LandingFact({
   body: string;
 }) {
   return (
-    <div className="border-b border-ink/10 px-6 py-5 md:border-b-0 md:border-r md:last:border-r-0 lg:px-10">
-      <div className="small-caps text-xs text-ember">{index}</div>
-      <h2 className="mt-2 font-mono text-lg text-ink">{title}</h2>
-      <p className="mt-2 max-w-sm text-sm leading-6 text-neutral-600">{body}</p>
+    <div className="border-b border-drift px-6 py-5 md:border-b-0 md:border-r md:last:border-r-0 lg:px-10">
+      <div className="small-caps text-xs text-deep-sea">{index}</div>
+      <h2 className="mt-2 font-mono text-lg text-night-watch">{title}</h2>
+      <p className="mt-2 max-w-sm text-sm leading-6 text-night-watch/70">{body}</p>
     </div>
   );
 }
@@ -1011,54 +967,31 @@ function WorkspacesPage({
   };
 
   return (
-    <div
-      className="relative flex min-h-full w-full overflow-hidden bg-[#fff8f1] px-7 py-10 text-ink"
-      onMouseMove={handlePointerMove}
-    >
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.92),transparent_34%),linear-gradient(180deg,rgba(255,247,238,0.95),rgba(250,246,238,0.88))]" />
-        <div
-          className="absolute h-72 w-72 rounded-full bg-ember/20 blur-3xl transition-transform duration-300 ease-out"
-          style={{
-            left: `${pointer.x * 100}%`,
-            top: `${pointer.y * 100}%`,
-            transform: "translate(-50%, -50%)",
-          }}
-        />
-        <div
-          className="absolute h-[28rem] w-[28rem] rounded-full bg-orange-200/25 blur-3xl transition-transform duration-500 ease-out"
-          style={{
-            left: `${100 - pointer.x * 45}%`,
-            top: `${18 + pointer.y * 24}%`,
-            transform: "translate(-50%, -50%)",
-          }}
-        />
-      </div>
-
+    <div className="relative flex min-h-full w-full overflow-hidden bg-tidepaper px-7 py-10 text-night-watch">
       <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-col py-4">
-        <header className="flex items-center justify-between gap-4">
+        <header className="flex items-center justify-between gap-4 border-b border-drift pb-4">
           <button
             type="button"
             onClick={onBackToLanding}
-            className="text-neutral-500 transition hover:text-ember"
+            className="text-night-watch/60 transition hover:text-deep-sea"
           >
             <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base" />
           </button>
-          <div className="small-caps text-sm text-neutral-500">workspaces</div>
+          <div className="small-caps text-sm text-night-watch/60">workspaces</div>
         </header>
 
         <section className="mt-16 grid gap-12 lg:grid-cols-[minmax(0,1.05fr)_minmax(25rem,0.95fr)]">
           <div>
-            <div className="small-caps text-sm text-ember">workspaces</div>
-            <h1 className="mt-3 max-w-4xl font-mono text-5xl leading-tight tracking-tight text-ink sm:text-6xl">
+            <div className="small-caps text-sm text-deep-sea">workspaces</div>
+            <h1 className="mt-3 max-w-4xl font-serif text-5xl leading-tight tracking-tight text-night-watch sm:text-6xl">
               Open a workspace or start with new files.
             </h1>
-            <p className="mt-6 max-w-3xl text-lg leading-8 text-neutral-600">
+            <p className="mt-6 max-w-3xl text-lg leading-8 text-night-watch/70">
               Upload Excel files, ask questions, generate insights, and save useful charts.
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-x-10 gap-y-7 border-y border-ink/10 bg-white/40 px-5 py-7 backdrop-blur">
+          <div className="grid grid-cols-2 gap-x-10 gap-y-7 border border-drift bg-drift/20 px-5 py-7">
             <WorkspaceStat label="workspaces" value={stats.workspaces} />
             <WorkspaceStat label="files uploaded" value={stats.filesUploaded} />
             <WorkspaceStat label="last activity" value={stats.lastActivity} />
@@ -1067,10 +1000,10 @@ function WorkspacesPage({
         </section>
 
         <section className="mx-auto mt-14 w-full max-w-5xl">
-          <div className="w-full border border-ember/50 bg-white/90 p-2 shadow-[0_24px_80px_rgba(232,93,35,0.18)] backdrop-blur">
+          <div className="w-full border border-drift bg-tidepaper p-2 shadow-sm">
             <div className="flex flex-col gap-2 sm:flex-row">
-              <label className="flex min-w-0 flex-1 items-center gap-4 bg-[#fffaf5] px-5 py-4 text-left text-ink">
-                <span className="small-caps shrink-0 text-sm text-neutral-500">
+              <label className="flex min-w-0 flex-1 items-center gap-4 bg-drift/20 px-5 py-4 text-left text-night-watch border border-drift">
+                <span className="small-caps shrink-0 text-sm text-night-watch/60">
                   What are you analyzing?
                 </span>
                 <input
@@ -1079,14 +1012,14 @@ function WorkspacesPage({
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={handleKey}
                   placeholder="Excel files, monthly sales, audit data..."
-                  className="min-w-0 flex-1 bg-transparent text-base text-ink placeholder:text-neutral-400 focus:outline-none"
+                  className="min-w-0 flex-1 bg-transparent font-mono text-base text-night-watch placeholder:text-night-watch/40 focus:outline-none"
                 />
               </label>
               <button
                 type="button"
                 onClick={handleStart}
                 disabled={starting}
-                className="small-caps bg-ember px-7 py-4 text-sm text-white transition hover:bg-ember-hover disabled:opacity-40"
+                className="small-caps bg-night-watch px-7 py-4 text-sm text-tidepaper transition hover:bg-deep-sea disabled:opacity-40"
               >
                 {starting ? "starting..." : "start workspace"}
               </button>
@@ -1094,12 +1027,12 @@ function WorkspacesPage({
           </div>
 
           {error ? (
-            <div className="mt-4 flex w-full items-start justify-between gap-3 border border-red-300 bg-white/90 px-3 py-2 font-mono text-xs text-red-600">
+            <div className="mt-4 flex w-full items-start justify-between gap-3 border border-red-300 bg-red-50 px-3 py-2 font-mono text-xs text-red-600">
               <span>{error}</span>
               <button
                 type="button"
                 onClick={onDismissError}
-                className="text-neutral-500 hover:text-ink"
+                className="text-red-500 hover:text-red-700"
               >
                 x
               </button>
@@ -1108,14 +1041,14 @@ function WorkspacesPage({
         </section>
 
         <section className="mx-auto mt-14 w-full max-w-5xl">
-          <div className="flex items-end justify-between gap-4 border-b border-ink/10 pb-4">
+          <div className="flex items-end justify-between gap-4 border-b border-drift pb-4">
             <div>
-              <div className="small-caps text-sm text-ember/80">current workspaces</div>
-              <h2 className="mt-2 font-mono text-2xl text-ink">
+              <div className="small-caps text-sm text-deep-sea">current workspaces</div>
+              <h2 className="mt-2 font-serif text-2xl text-night-watch">
                 Saved analysis rooms
               </h2>
             </div>
-            <span className="text-sm text-neutral-500">
+            <span className="text-sm text-night-watch/60">
               {sessions.length} saved
             </span>
           </div>
@@ -1133,7 +1066,7 @@ function WorkspacesPage({
               ))}
             </ul>
           ) : (
-            <div className="mt-5 border border-dashed border-ink/15 bg-white/70 px-5 py-8 text-base text-neutral-500">
+            <div className="mt-5 border border-dashed border-drift bg-tidepaper px-5 py-8 font-mono text-base text-night-watch/60">
               No saved workspaces yet.
             </div>
           )}
@@ -1175,20 +1108,20 @@ function WorkspaceRow({
 
   return (
     <li>
-      <div className="group grid gap-4 border border-ink/10 bg-white/90 px-5 py-5 shadow-[0_14px_45px_rgba(80,45,20,0.06)] backdrop-blur transition hover:border-ember/60 hover:bg-white md:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="group grid gap-4 border border-drift bg-tidepaper px-5 py-5 transition hover:border-deep-sea hover:bg-drift/30 md:grid-cols-[minmax(0,1fr)_auto]">
         <button
           type="button"
           onClick={onResume}
           className="min-w-0 text-left"
         >
           <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <span className="h-3 w-3 bg-ember shadow-[0_0_24px_rgba(232,93,35,0.45)]" />
-            <span className="truncate font-mono text-xl text-ink">{session.name}</span>
-            <span className="small-caps border border-neutral-200 bg-[#fff8f1] px-2 py-1 text-sm text-neutral-600">
+            <span className="h-3 w-3 bg-sea-glass" />
+            <span className="truncate font-mono text-xl text-night-watch">{session.name}</span>
+            <span className="small-caps border border-drift bg-tidepaper px-2 py-1 text-sm text-night-watch/70">
               {workspaceStatusLabel(session)}
             </span>
           </div>
-          <div className="mt-4 grid gap-4 text-sm text-neutral-600 sm:grid-cols-4">
+          <div className="mt-4 grid gap-4 font-mono text-sm text-night-watch/70 sm:grid-cols-4">
             <WorkspaceFact label="files" value={formatMaybeNumber(fileCount)} />
             <WorkspaceFact label="rows" value={formatMaybeNumber(rowCount)} />
             <WorkspaceFact label="last activity" value={formatActivity(activity)} />
@@ -1202,14 +1135,14 @@ function WorkspaceRow({
           <button
             type="button"
             onClick={onResume}
-            className="small-caps bg-ink px-4 py-2 text-sm text-white transition hover:bg-ember"
+            className="small-caps bg-night-watch px-4 py-2 text-sm text-tidepaper transition hover:bg-deep-sea"
           >
             open
           </button>
           <button
             type="button"
             onClick={onDelete}
-            className="small-caps border border-red-300/60 px-3 py-2 text-sm text-red-600 transition hover:border-red-300 hover:bg-red-50"
+            className="small-caps border border-red-900/20 bg-red-50 px-3 py-2 text-sm text-red-600 transition hover:border-red-900/40 hover:bg-red-100"
           >
             delete
           </button>
