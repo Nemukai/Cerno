@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from cerno.db import dumps_json, loads_json
@@ -28,6 +28,8 @@ from cerno.models import (
     MessageRole,
     ProcessingEvent,
     ProcessingEventKind,
+    ProcessingJob,
+    ProcessingJobKind,
     ReviewStatus,
     RunStatus,
     SchemaColumn,
@@ -35,6 +37,7 @@ from cerno.models import (
     SessionStatus,
     SourceAsset,
     TurnState,
+    UploadIntent,
     User,
     WorkspaceAsset,
     WorkspaceTable,
@@ -448,6 +451,287 @@ class WorkspaceTableRepository:
                WHERE legacy_file_id = ?""",
             (artifact_id, schema_version, row_count, legacy_file_id),
         )
+
+
+class UploadIntentRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def create(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        original_filename: str,
+        mime_type: str | None,
+        expected_size_bytes: int,
+        storage_backend: str,
+        object_key: str,
+        intent_id: str | None = None,
+    ) -> UploadIntent:
+        iid = intent_id or new_id()
+        created_at = _now()
+        self.conn.execute(
+            """INSERT INTO upload_intents
+               (id, user_id, session_id, original_filename, mime_type,
+                expected_size_bytes, storage_backend, object_key, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                iid,
+                user_id,
+                session_id,
+                original_filename,
+                mime_type,
+                expected_size_bytes,
+                storage_backend,
+                object_key,
+                "pending",
+                created_at.isoformat(),
+            ),
+        )
+        return UploadIntent(
+            id=iid,
+            user_id=user_id,
+            session_id=session_id,
+            original_filename=original_filename,
+            mime_type=mime_type,
+            expected_size_bytes=expected_size_bytes,
+            storage_backend=storage_backend,
+            object_key=object_key,
+            status="pending",
+            created_at=created_at,
+        )
+
+    def get(self, intent_id: str, user_id: str | None = None) -> UploadIntent | None:
+        if user_id is None:
+            row = self.conn.execute(
+                "SELECT * FROM upload_intents WHERE id = ?", (intent_id,)
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM upload_intents WHERE id = ? AND user_id = ?",
+                (intent_id, user_id),
+            ).fetchone()
+        return _row_to_upload_intent(row) if row else None
+
+    def mark_uploaded(self, intent_id: str, *, observed_size_bytes: int) -> None:
+        self.conn.execute(
+            """UPDATE upload_intents
+               SET status = 'uploaded', observed_size_bytes = ?, completed_at = ?
+               WHERE id = ?""",
+            (observed_size_bytes, _now().isoformat(), intent_id),
+        )
+
+    def mark_processing(self, intent_id: str) -> None:
+        self.conn.execute(
+            "UPDATE upload_intents SET status = 'processing' WHERE id = ?",
+            (intent_id,),
+        )
+
+    def mark_processed(self, intent_id: str, *, source_asset_id: str | None) -> None:
+        self.conn.execute(
+            """UPDATE upload_intents
+               SET status = 'processed', source_asset_id = ?, error_message = NULL
+               WHERE id = ?""",
+            (source_asset_id, intent_id),
+        )
+
+    def mark_failed(self, intent_id: str, message: str) -> None:
+        self.conn.execute(
+            "UPDATE upload_intents SET status = 'failed', error_message = ? WHERE id = ?",
+            (message[:1000], intent_id),
+        )
+
+
+class ProcessingJobRepository:
+    ACTIVE_STATUSES = ("queued", "running")
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def create(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        kind: ProcessingJobKind,
+        idempotency_key: str,
+        checkpoint_json: dict[str, Any] | None = None,
+        job_id: str | None = None,
+    ) -> ProcessingJob:
+        existing = self.get_by_idempotency_key(idempotency_key)
+        if existing is not None:
+            return existing
+        jid = job_id or new_id()
+        now = _now()
+        payload = checkpoint_json or {}
+        self.conn.execute(
+            """INSERT INTO processing_jobs
+               (id, user_id, session_id, kind, status, attempts, checkpoint_json,
+                idempotency_key, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)""",
+            (
+                jid,
+                user_id,
+                session_id,
+                kind,
+                dumps_json(payload),
+                idempotency_key,
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+        return ProcessingJob(
+            id=jid,
+            user_id=user_id,
+            session_id=session_id,
+            kind=kind,
+            status="queued",
+            checkpoint_json=payload,
+            idempotency_key=idempotency_key,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def get(self, job_id: str) -> ProcessingJob | None:
+        row = self.conn.execute("SELECT * FROM processing_jobs WHERE id = ?", (job_id,)).fetchone()
+        return _row_to_processing_job(row) if row else None
+
+    def get_by_idempotency_key(self, idempotency_key: str) -> ProcessingJob | None:
+        row = self.conn.execute(
+            "SELECT * FROM processing_jobs WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        return _row_to_processing_job(row) if row else None
+
+    def active_for_session(
+        self, *, session_id: str, kind: ProcessingJobKind
+    ) -> ProcessingJob | None:
+        row = self.conn.execute(
+            """SELECT * FROM processing_jobs
+               WHERE session_id = ? AND kind = ? AND status IN ('queued', 'running')
+               ORDER BY created_at DESC LIMIT 1""",
+            (session_id, kind),
+        ).fetchone()
+        return _row_to_processing_job(row) if row else None
+
+    def claim_next(
+        self, *, worker_id: str, lock_seconds: int = 600
+    ) -> ProcessingJob | None:
+        now = _now()
+        lock_until = now + timedelta(seconds=lock_seconds)
+        if self._is_postgres():
+            row = self.conn.execute(
+                """SELECT * FROM processing_jobs
+                   WHERE status = 'queued'
+                      OR (status = 'running' AND locked_until IS NOT NULL AND locked_until < ?)
+                   ORDER BY created_at
+                   FOR UPDATE SKIP LOCKED
+                   LIMIT 1""",
+                (now.isoformat(),),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                """SELECT * FROM processing_jobs
+                   WHERE status = 'queued'
+                      OR (status = 'running' AND locked_until IS NOT NULL AND locked_until < ?)
+                   ORDER BY created_at
+                   LIMIT 1""",
+                (now.isoformat(),),
+            ).fetchone()
+        if row is None:
+            return None
+        job = _row_to_processing_job(row)
+        self.conn.execute(
+            """UPDATE processing_jobs
+               SET status = 'running',
+                   attempts = attempts + 1,
+                   locked_by = ?,
+                   locked_until = ?,
+                   heartbeat_at = ?,
+                   started_at = COALESCE(started_at, ?),
+                   updated_at = ?
+               WHERE id = ?""",
+            (
+                worker_id,
+                lock_until.isoformat(),
+                now.isoformat(),
+                now.isoformat(),
+                now.isoformat(),
+                job.id,
+            ),
+        )
+        self.conn.commit()
+        claimed = self.get(job.id)
+        return claimed
+
+    def heartbeat(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        checkpoint_json: dict[str, Any] | None = None,
+        lock_seconds: int = 600,
+    ) -> None:
+        now = _now()
+        lock_until = now + timedelta(seconds=lock_seconds)
+        if checkpoint_json is None:
+            self.conn.execute(
+                """UPDATE processing_jobs
+                   SET heartbeat_at = ?, locked_until = ?, updated_at = ?
+                   WHERE id = ? AND locked_by = ?""",
+                (
+                    now.isoformat(),
+                    lock_until.isoformat(),
+                    now.isoformat(),
+                    job_id,
+                    worker_id,
+                ),
+            )
+        else:
+            self.conn.execute(
+                """UPDATE processing_jobs
+                   SET heartbeat_at = ?, locked_until = ?, checkpoint_json = ?, updated_at = ?
+                   WHERE id = ? AND locked_by = ?""",
+                (
+                    now.isoformat(),
+                    lock_until.isoformat(),
+                    dumps_json(checkpoint_json),
+                    now.isoformat(),
+                    job_id,
+                    worker_id,
+                ),
+            )
+
+    def mark_succeeded(self, job_id: str) -> None:
+        now = _now()
+        self.conn.execute(
+            """UPDATE processing_jobs
+               SET status = 'succeeded',
+                   locked_by = NULL,
+                   locked_until = NULL,
+                   finished_at = ?,
+                   updated_at = ?
+               WHERE id = ?""",
+            (now.isoformat(), now.isoformat(), job_id),
+        )
+
+    def mark_failed(self, job_id: str, message: str) -> None:
+        now = _now()
+        self.conn.execute(
+            """UPDATE processing_jobs
+               SET status = 'failed',
+                   locked_by = NULL,
+                   locked_until = NULL,
+                   error_message = ?,
+                   finished_at = ?,
+                   updated_at = ?
+               WHERE id = ?""",
+            (message[:1000], now.isoformat(), now.isoformat(), job_id),
+        )
+
+    def _is_postgres(self) -> bool:
+        return self.conn.__class__.__name__ == "PostgresCompatConnection"
 
 
 class SchemaRepository:
@@ -1017,13 +1301,33 @@ class ProcessingEventRepository:
         self.conn = conn
 
     def append(
-        self, *, session_id: str, kind: ProcessingEventKind, message: str
+        self,
+        *,
+        session_id: str,
+        kind: ProcessingEventKind,
+        message: str,
+        job_id: str | None = None,
+        step_key: str | None = None,
+        level: str | None = None,
+        progress: int | None = None,
+        details: dict[str, Any] | None = None,
     ) -> ProcessingEvent:
         created_at = _now()
         cursor = self.conn.execute(
-            """INSERT INTO processing_events (session_id, kind, message, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (session_id, kind, message, created_at.isoformat()),
+            """INSERT INTO processing_events
+               (session_id, kind, message, created_at, job_id, step_key, level, progress, details)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                kind,
+                message,
+                created_at.isoformat(),
+                job_id,
+                step_key,
+                level,
+                progress,
+                dumps_json(details or {}),
+            ),
         )
         try:
             self.conn.commit()
@@ -1035,6 +1339,11 @@ class ProcessingEventRepository:
             kind=kind,
             message=message,
             created_at=created_at,
+            job_id=job_id,
+            step_key=step_key,
+            level=level,
+            progress=progress,
+            details=details or {},
         )
 
     def list_for_session(self, session_id: str) -> list[ProcessingEvent]:
@@ -1123,13 +1432,65 @@ def _row_to_asset_artifact(row: sqlite3.Row) -> AssetArtifact:
     )
 
 
+def _row_to_upload_intent(row: sqlite3.Row) -> UploadIntent:
+    return UploadIntent(
+        id=row["id"],
+        user_id=row["user_id"],
+        session_id=row["session_id"],
+        original_filename=row["original_filename"],
+        mime_type=row["mime_type"],
+        expected_size_bytes=row["expected_size_bytes"],
+        observed_size_bytes=row["observed_size_bytes"],
+        storage_backend=row["storage_backend"],
+        object_key=row["object_key"],
+        status=row["status"],
+        source_asset_id=row["source_asset_id"],
+        error_message=row["error_message"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        completed_at=_parse_dt(row["completed_at"]),
+    )
+
+
+def _row_to_processing_job(row: sqlite3.Row) -> ProcessingJob:
+    checkpoint = loads_json(row["checkpoint_json"], {})
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+    return ProcessingJob(
+        id=row["id"],
+        user_id=row["user_id"],
+        session_id=row["session_id"],
+        kind=row["kind"],
+        status=row["status"],
+        attempts=row["attempts"],
+        locked_by=row["locked_by"],
+        locked_until=_parse_dt(row["locked_until"]),
+        heartbeat_at=_parse_dt(row["heartbeat_at"]),
+        checkpoint_json=checkpoint,
+        error_message=row["error_message"],
+        idempotency_key=row["idempotency_key"],
+        started_at=_parse_dt(row["started_at"]),
+        finished_at=_parse_dt(row["finished_at"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
 def _row_to_processing_event(row: sqlite3.Row) -> ProcessingEvent:
+    keys = row.keys()
+    details = loads_json(row["details"], {}) if "details" in keys else {}
+    if not isinstance(details, dict):
+        details = {}
     return ProcessingEvent(
         id=row["id"],
         session_id=row["session_id"],
         kind=row["kind"],
         message=row["message"],
         created_at=datetime.fromisoformat(row["created_at"]),
+        job_id=row["job_id"] if "job_id" in keys else None,
+        step_key=row["step_key"] if "step_key" in keys else None,
+        level=row["level"] if "level" in keys else None,
+        progress=row["progress"] if "progress" in keys else None,
+        details=details,
     )
 
 

@@ -51,18 +51,18 @@ const DIRECTIONS: LinkDirection[] = [
 
 const PHASES: { label: string; kinds: ProcessingEventKind[]; note: string }[] = [
   {
-    label: "Reading documents",
-    kinds: ["started", "reading_files"],
-    note: "Finding sheets, headers, and usable rows.",
+    label: "Preparing files",
+    kinds: ["queued", "uploading", "ingesting_file", "started", "loading_artifacts", "reading_files"],
+    note: "Uploading, loading, and reading sheets, headers, and usable rows.",
   },
   {
     label: "Finding meaning",
-    kinds: ["calling_llm", "parsing_response"],
+    kinds: ["python_analysis", "calling_llm", "parsing_response"],
     note: "Naming files, explaining columns, and checking how documents relate.",
   },
   {
     label: "Preparing review",
-    kinds: ["saving_schema", "done"],
+    kinds: ["saving_schema", "resolving_links", "done"],
     note: "Saving a draft map so you can inspect it.",
   },
 ];
@@ -503,13 +503,17 @@ function ProcessingCheckpoints({
   const latestError =
     [...events].reverse().find((event: ProcessingEvent) => event.kind === "error") ??
     null;
+  const latestEvent = events.at(-1) ?? null;
   const completedKinds = new Set(events.map((event) => event.kind));
   const currentPhase = completedKinds.has("done")
     ? 2
-    : completedKinds.has("calling_llm") || completedKinds.has("parsing_response")
+    : completedKinds.has("python_analysis") ||
+        completedKinds.has("calling_llm") ||
+        completedKinds.has("parsing_response")
       ? 1
       : 0;
-  const progress = completedKinds.has("done") ? 100 : currentPhase === 1 ? 58 : 24;
+  const progress =
+    latestEvent?.progress ?? (completedKinds.has("done") ? 100 : currentPhase === 1 ? 58 : 24);
   const current = PHASES[currentPhase] ?? PHASES[0]!;
 
   return (

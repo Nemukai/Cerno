@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     daily_token_cap: int = 200_000
 
     postgres_url: str = ""
+    log_level: str = "INFO"
+    worker_id: str = ""
+    worker_poll_interval_seconds: float = 2.0
+    worker_lock_seconds: int = 1800
+    upload_url_expires_seconds: int = 900
 
     r2_account_id: str = ""
     r2_access_key_id: str = ""

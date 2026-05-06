@@ -16,6 +16,7 @@ class StoredObject:
     backend: str
     object_key: str
     size_bytes: int
+    content_type: str | None = None
 
 
 class ObjectStore:
@@ -30,6 +31,14 @@ class ObjectStore:
     def delete(self, object_key: str) -> None:
         raise NotImplementedError
 
+    def head(self, object_key: str) -> StoredObject:
+        raise NotImplementedError
+
+    def presigned_put_url(
+        self, object_key: str, *, content_type: str, expires_seconds: int
+    ) -> str:
+        raise NotImplementedError
+
 
 class LocalObjectStore(ObjectStore):
     backend = "local"
@@ -38,7 +47,6 @@ class LocalObjectStore(ObjectStore):
         self.root = settings.data_root / "objects"
 
     def put_path(self, source: Path, object_key: str, *, content_type: str | None = None) -> StoredObject:
-        del content_type
         destination = self.root / object_key
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
@@ -46,6 +54,7 @@ class LocalObjectStore(ObjectStore):
             backend=self.backend,
             object_key=object_key,
             size_bytes=destination.stat().st_size,
+            content_type=content_type,
         )
 
     def get_to_path(self, object_key: str, destination: Path) -> Path:
@@ -58,6 +67,22 @@ class LocalObjectStore(ObjectStore):
 
     def delete(self, object_key: str) -> None:
         (self.root / object_key).unlink(missing_ok=True)
+
+    def head(self, object_key: str) -> StoredObject:
+        source = self.root / object_key
+        if not source.exists():
+            raise StorageError(f"object not found: {object_key}")
+        return StoredObject(
+            backend=self.backend,
+            object_key=object_key,
+            size_bytes=source.stat().st_size,
+        )
+
+    def presigned_put_url(
+        self, object_key: str, *, content_type: str, expires_seconds: int
+    ) -> str:
+        del object_key, content_type, expires_seconds
+        raise StorageError("direct upload intents require R2 storage")
 
 
 class R2ObjectStore(ObjectStore):
@@ -88,6 +113,7 @@ class R2ObjectStore(ObjectStore):
             backend=self.backend,
             object_key=object_key,
             size_bytes=source.stat().st_size,
+            content_type=content_type,
         )
 
     def get_to_path(self, object_key: str, destination: Path) -> Path:
@@ -97,6 +123,31 @@ class R2ObjectStore(ObjectStore):
 
     def delete(self, object_key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=object_key)
+
+    def head(self, object_key: str) -> StoredObject:
+        try:
+            response = self.client.head_object(Bucket=self.bucket, Key=object_key)
+        except Exception as exc:
+            raise StorageError(f"object not found: {object_key}") from exc
+        return StoredObject(
+            backend=self.backend,
+            object_key=object_key,
+            size_bytes=int(response.get("ContentLength") or 0),
+            content_type=response.get("ContentType"),
+        )
+
+    def presigned_put_url(
+        self, object_key: str, *, content_type: str, expires_seconds: int
+    ) -> str:
+        return self.client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": self.bucket,
+                "Key": object_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=expires_seconds,
+        )
 
 
 def get_object_store(settings: Settings) -> ObjectStore:
@@ -109,6 +160,12 @@ def source_object_key(user_id: str, asset_id: str, sha256: str, filename: str) -
     suffix = Path(filename).suffix.lower()
     name = f"{sha256}{suffix}" if suffix else sha256
     return f"users/{user_id}/assets/{asset_id}/source/{name}"
+
+
+def staging_upload_key(user_id: str, session_id: str, intent_id: str, filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    name = f"{intent_id}{suffix}" if suffix else intent_id
+    return f"users/{user_id}/sessions/{session_id}/uploads/{name}"
 
 
 def raw_artifact_key(user_id: str, asset_id: str, file_id: str) -> str:

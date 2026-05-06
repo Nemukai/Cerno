@@ -1,17 +1,16 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, GrantedUserDep, SettingsDep
 from cerno.config import Settings
-from cerno.db import connect
-from cerno.llm import LLMClient
 from cerno.models import (
     DataDoc,
     DataDocColumn,
@@ -19,6 +18,7 @@ from cerno.models import (
     DataDocRelationship,
     Link,
     ProcessingEvent,
+    ProcessingJob,
     Session,
 )
 from cerno.models import File as FileModel
@@ -27,15 +27,16 @@ from cerno.repositories import (
     DataDocRepository,
     FileRepository,
     LinkRepository,
-    LLMUsageRepository,
     ProcessingEventRepository,
+    ProcessingJobRepository,
     SchemaRepository,
     SessionRepository,
     SourceAssetRepository,
+    UploadIntentRepository,
     WorkspaceAssetRepository,
     WorkspaceTableRepository,
+    new_id,
 )
-from cerno.services.discovery import DiscoveryError, run_discovery
 from cerno.services.ingest import IngestedFile, IngestError, ingest_file
 from cerno.services.reingest import (
     ApprovalPayload,
@@ -46,9 +47,10 @@ from cerno.services.reingest import (
     apply_approval,
     preview_rows,
 )
-from cerno.storage import get_object_store
+from cerno.storage import StorageError, get_object_store, staging_upload_key
 
 router = APIRouter(tags=["sessions"])
+logger = logging.getLogger(__name__)
 
 
 def _user_storage_bytes(settings: Settings, user_id: str) -> int:
@@ -117,6 +119,175 @@ def delete_session(
 
 class FileUploadResponse(BaseModel):
     files: list[FileModel]
+
+
+class UploadIntentFileBody(BaseModel):
+    filename: str
+    size_bytes: int = Field(ge=0)
+    content_type: str | None = None
+
+
+class CreateUploadIntentsBody(BaseModel):
+    files: list[UploadIntentFileBody] = Field(min_length=1)
+
+
+class UploadIntentBody(BaseModel):
+    intent_id: str
+    object_key: str
+    upload_url: str
+    method: str = "PUT"
+    headers: dict[str, str]
+    expires_in_seconds: int
+
+
+class CreateUploadIntentsResponse(BaseModel):
+    intents: list[UploadIntentBody]
+
+
+class ProcessingJobBody(BaseModel):
+    job_id: str
+    session_id: str
+    kind: str
+    job_status: str
+    discovery_status: str
+    events: list[ProcessingEvent] = Field(default_factory=list)
+
+
+def _build_job_response(
+    *, conn: sqlite3.Connection, job: ProcessingJob, discovery_status: str
+) -> ProcessingJobBody:
+    return ProcessingJobBody(
+        job_id=job.id,
+        session_id=job.session_id,
+        kind=job.kind,
+        job_status=job.status,
+        discovery_status=discovery_status,
+        events=ProcessingEventRepository(conn).list_for_session(job.session_id),
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/upload-intents", response_model=CreateUploadIntentsResponse
+)
+def create_upload_intents(
+    session_id: str,
+    body: CreateUploadIntentsBody,
+    conn: ConnDep,
+    settings: SettingsDep,
+    user: GrantedUserDep,
+) -> CreateUploadIntentsResponse:
+    _require_session(conn, session_id, user.id)
+    object_store = get_object_store(settings)
+    if object_store.backend != "r2":
+        raise HTTPException(status_code=501, detail="direct uploads require R2 storage")
+
+    intents_repo = UploadIntentRepository(conn)
+    intents: list[UploadIntentBody] = []
+    for item in body.files:
+        if item.size_bytes > settings.per_user_quota_bytes():
+            raise HTTPException(status_code=413, detail=f"{item.filename}: file exceeds quota")
+        content_type = item.content_type or "application/octet-stream"
+        intent_id = new_id()
+        object_key = staging_upload_key(user.id, session_id, intent_id, item.filename)
+        intent = intents_repo.create(
+            user_id=user.id,
+            session_id=session_id,
+            original_filename=item.filename,
+            mime_type=item.content_type,
+            expected_size_bytes=item.size_bytes,
+            storage_backend=object_store.backend,
+            object_key=object_key,
+            intent_id=intent_id,
+        )
+        try:
+            upload_url = object_store.presigned_put_url(
+                object_key,
+                content_type=content_type,
+                expires_seconds=settings.upload_url_expires_seconds,
+            )
+        except StorageError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        intents.append(
+            UploadIntentBody(
+                intent_id=intent.id,
+                object_key=object_key,
+                upload_url=upload_url,
+                headers={"Content-Type": content_type},
+                expires_in_seconds=settings.upload_url_expires_seconds,
+            )
+        )
+    conn.commit()
+    logger.info(
+        "event=upload_intents.created user_id=%s session_id=%s count=%s",
+        user.id,
+        session_id,
+        len(intents),
+    )
+    return CreateUploadIntentsResponse(intents=intents)
+
+
+@router.post(
+    "/sessions/{session_id}/upload-intents/{intent_id}/complete",
+    response_model=ProcessingJobBody,
+)
+def complete_upload_intent(
+    session_id: str,
+    intent_id: str,
+    conn: ConnDep,
+    settings: SettingsDep,
+    user: GrantedUserDep,
+) -> ProcessingJobBody:
+    session = _require_session(conn, session_id, user.id)
+    intent_repo = UploadIntentRepository(conn)
+    intent = intent_repo.get(intent_id, user_id=user.id)
+    if intent is None or intent.session_id != session_id:
+        raise HTTPException(status_code=404, detail="upload intent not found")
+    jobs_repo = ProcessingJobRepository(conn)
+    idempotency_key = f"ingest_upload:{intent.id}"
+    existing_job = jobs_repo.get_by_idempotency_key(idempotency_key)
+    if existing_job is not None and intent.status in {"uploaded", "processing", "processed"}:
+        return _build_job_response(
+            conn=conn, job=existing_job, discovery_status=session.discovery_status
+        )
+    object_store = get_object_store(settings)
+    try:
+        stored = object_store.head(intent.object_key)
+    except StorageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if stored.size_bytes != intent.expected_size_bytes:
+        raise HTTPException(status_code=400, detail="uploaded object size did not match intent")
+
+    intent_repo.mark_uploaded(intent.id, observed_size_bytes=stored.size_bytes)
+    SessionRepository(conn).set_status(session_id, "ingesting")
+    events_repo = ProcessingEventRepository(conn)
+    events_repo.clear(session_id)
+    job = jobs_repo.create(
+        user_id=user.id,
+        session_id=session_id,
+        kind="ingest_upload",
+        idempotency_key=idempotency_key,
+        checkpoint_json={"upload_intent_id": intent.id},
+    )
+    events_repo.append(
+        session_id=session_id,
+        job_id=job.id,
+        kind="queued",
+        step_key="queued",
+        level="info",
+        progress=0,
+        message=f"{intent.original_filename} uploaded to R2 and queued for ingest",
+    )
+    conn.commit()
+    logger.info(
+        "event=upload_intent.completed user_id=%s session_id=%s intent_id=%s job_id=%s size_bytes=%s",
+        user.id,
+        session_id,
+        intent.id,
+        job.id,
+        stored.size_bytes,
+    )
+    fresh = SessionRepository(conn).get(session.id, user_id=user.id) or session
+    return _build_job_response(conn=conn, job=job, discovery_status=fresh.discovery_status)
 
 
 @router.post("/sessions/{session_id}/files", response_model=FileUploadResponse)
@@ -331,86 +502,54 @@ def _build_discovery_response(
     )
 
 
-@router.post("/sessions/{session_id}/process", response_model=DiscoveryResponse)
-async def post_process(
+@router.post("/sessions/{session_id}/process", response_model=ProcessingJobBody, status_code=202)
+def post_process(
     session_id: str,
-    background_tasks: BackgroundTasks,
     conn: ConnDep,
-    settings: SettingsDep,
     user: GrantedUserDep,
-) -> DiscoveryResponse:
+) -> ProcessingJobBody:
     session = _require_session(conn, session_id, user.id)
-    if session.discovery_status == "discovering":
-        return _build_discovery_response(session_id, conn, user.id)
     sessions_repo = SessionRepository(conn)
     files_repo = FileRepository(conn)
     events_repo = ProcessingEventRepository(conn)
+    jobs_repo = ProcessingJobRepository(conn)
+    active_job = jobs_repo.active_for_session(session_id=session_id, kind="discovery")
+    if active_job is not None:
+        return _build_job_response(
+            conn=conn, job=active_job, discovery_status=session.discovery_status
+        )
     if not files_repo.list_for_session(session_id):
         raise HTTPException(status_code=400, detail="no files in session")
 
     sessions_repo.set_discovery_status(session_id, "discovering")
     events_repo.clear(session_id)
+    job = jobs_repo.create(
+        user_id=user.id,
+        session_id=session_id,
+        kind="discovery",
+        idempotency_key=f"discovery:{session_id}:{datetime.now(UTC).isoformat()}",
+        checkpoint_json={},
+    )
     events_repo.append(
         session_id=session_id,
-        kind="started",
-        message="processing queued",
+        job_id=job.id,
+        kind="queued",
+        step_key="queued",
+        level="info",
+        progress=0,
+        message="schema discovery queued",
     )
     conn.commit()
-    background_tasks.add_task(
-        _run_discovery_background,
-        session_id=session_id,
-        user_id=user.id,
-        settings=settings,
+    logger.info(
+        "event=processing.enqueue user_id=%s session_id=%s job_id=%s kind=discovery file_count=%s",
+        user.id,
+        session_id,
+        job.id,
+        len(files_repo.list_for_session(session_id)),
     )
-    return _build_discovery_response(session_id, conn, user.id)
-
-
-async def _run_discovery_background(
-    *, session_id: str, user_id: str, settings: Settings
-) -> None:
-    conn = connect(settings)
-    try:
-        await run_discovery(
-            session_id=session_id,
-            settings=settings,
-            files_repo=FileRepository(conn),
-            sessions_repo=SessionRepository(conn),
-            links_repo=LinkRepository(conn),
-            data_docs_repo=DataDocRepository(conn),
-            events_repo=ProcessingEventRepository(conn),
-            llm_client=LLMClient(settings=settings).with_usage(
-                LLMUsageRepository(conn, auto_commit=True), user_id
-            ),
-            artifacts_repo=AssetArtifactRepository(conn),
-            object_store=get_object_store(settings),
-        )
-        conn.commit()
-    except DiscoveryError as exc:
-        _mark_processing_failed(conn, session_id, str(exc))
-    except Exception as exc:
-        _mark_processing_failed(conn, session_id, str(exc))
-    finally:
-        conn.close()
-
-
-def _mark_processing_failed(conn: sqlite3.Connection, session_id: str, message: str) -> None:
-    try:
-        conn.rollback()
-    except Exception:
-        pass
-    try:
-        SessionRepository(conn).set_discovery_status(session_id, "failed")
-        ProcessingEventRepository(conn).append(
-            session_id=session_id,
-            kind="error",
-            message=message[:1000],
-        )
-        conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+    return _build_job_response(
+        conn=conn, job=job, discovery_status="discovering"
+    )
 
 
 @router.get("/sessions/{session_id}/discovery", response_model=DiscoveryResponse)

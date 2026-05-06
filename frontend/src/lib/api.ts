@@ -13,6 +13,7 @@ import type {
   FileRecord,
   Link,
   ProcessingEvent,
+  ProcessingJobResponse,
   Session,
 } from "./types";
 
@@ -84,6 +85,67 @@ export async function deleteSession(id: string): Promise<void> {
 export function uploadFiles(
   sessionId: string,
   files: File[],
+): Promise<{ files: FileRecord[]; jobs: ProcessingJobResponse[] }> {
+  return uploadFilesDirect(sessionId, files).catch((err: Error) => {
+    if (!err.message.includes("501")) throw err;
+    return uploadFilesLegacy(sessionId, files).then((result) => ({
+      ...result,
+      jobs: [],
+    }));
+  });
+}
+
+async function uploadFilesDirect(
+  sessionId: string,
+  files: File[],
+): Promise<{ files: FileRecord[]; jobs: ProcessingJobResponse[] }> {
+  const intentResponse = await postJson<{
+    intents: {
+      intent_id: string;
+      object_key: string;
+      upload_url: string;
+      method: "PUT";
+      headers: Record<string, string>;
+      expires_in_seconds: number;
+    }[];
+  }>(
+    `/sessions/${sessionId}/upload-intents`,
+    {
+      files: files.map((file) => ({
+        filename: file.name,
+        size_bytes: file.size,
+        content_type: file.type || "application/octet-stream",
+      })),
+    },
+  );
+  const jobs: ProcessingJobResponse[] = [];
+  for (let i = 0; i < intentResponse.intents.length; i += 1) {
+    const intent = intentResponse.intents[i]!;
+    const file = files[i]!;
+    const uploadRes = await fetch(intent.upload_url, {
+      method: intent.method,
+      headers: intent.headers,
+      body: file,
+    });
+    if (!uploadRes.ok) {
+      const body = await uploadRes.text().catch(() => "");
+      throw new Error(
+        `R2 upload failed for ${file.name}: ${uploadRes.status} ${uploadRes.statusText} ${body}`.trim(),
+      );
+    }
+    jobs.push(
+      await postJson<ProcessingJobResponse>(
+        `/sessions/${sessionId}/upload-intents/${intent.intent_id}/complete`,
+        {},
+      ),
+    );
+  }
+  return { files: [], jobs };
+}
+
+function uploadFilesLegacy(
+  sessionId: string,
+  files: File[],
 ): Promise<{ files: FileRecord[] }> {
   const form = new FormData();
   for (const f of files) form.append("uploads", f, f.name);
@@ -114,8 +176,8 @@ export function getFilePreview(
   );
 }
 
-export function processSession(sessionId: string): Promise<DiscoveryResponse> {
-  return postJson<DiscoveryResponse>(`/sessions/${sessionId}/process`, {});
+export function processSession(sessionId: string): Promise<ProcessingJobResponse> {
+  return postJson<ProcessingJobResponse>(`/sessions/${sessionId}/process`, {});
 }
 
 export function getDiscovery(sessionId: string): Promise<DiscoveryResponse> {

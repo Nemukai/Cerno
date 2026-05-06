@@ -10,8 +10,8 @@ from typing import Any
 
 from cerno.config import Settings
 
-SCHEMA_VERSION = 9
-POSTGRES_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 10
+POSTGRES_SCHEMA_VERSION = 2
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 
 _MIGRATIONS: dict[int, list[str]] = {
@@ -355,6 +355,54 @@ _MIGRATIONS: dict[int, list[str]] = {
         """,
         "CREATE INDEX IF NOT EXISTS idx_chat_artifacts_turn ON chat_artifacts(turn_id, order_index)",
     ],
+    10: [
+        """
+        CREATE TABLE IF NOT EXISTS upload_intents (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            original_filename TEXT NOT NULL,
+            mime_type TEXT,
+            expected_size_bytes INTEGER NOT NULL,
+            observed_size_bytes INTEGER,
+            storage_backend TEXT NOT NULL,
+            object_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_asset_id TEXT REFERENCES source_assets(id) ON DELETE SET NULL,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_upload_intents_session ON upload_intents(session_id, created_at)",
+        """
+        CREATE TABLE IF NOT EXISTS processing_jobs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            locked_by TEXT,
+            locked_until TEXT,
+            heartbeat_at TEXT,
+            checkpoint_json TEXT NOT NULL DEFAULT '{}',
+            error_message TEXT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            started_at TEXT,
+            finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_processing_jobs_claim ON processing_jobs(status, locked_until, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_processing_jobs_session ON processing_jobs(session_id, kind, status)",
+        "ALTER TABLE processing_events ADD COLUMN job_id TEXT",
+        "ALTER TABLE processing_events ADD COLUMN step_key TEXT",
+        "ALTER TABLE processing_events ADD COLUMN level TEXT",
+        "ALTER TABLE processing_events ADD COLUMN progress INTEGER",
+        "ALTER TABLE processing_events ADD COLUMN details TEXT NOT NULL DEFAULT '{}'",
+    ],
 }
 
 
@@ -503,16 +551,76 @@ def _apply_postgres_migrations(conn: PostgresCompatConnection) -> None:
     )
     row = conn.execute("SELECT max(version) AS version FROM cerno_schema_migrations").fetchone()
     current = int(row["version"] or 0) if row else 0
-    if current >= POSTGRES_SCHEMA_VERSION:
-        conn.commit()
-        return
-    for statement in _POSTGRES_SCHEMA:
-        conn.execute(statement)
-    conn.execute(
-        "INSERT INTO cerno_schema_migrations (version, applied_at) VALUES (%s, %s)",
-        (POSTGRES_SCHEMA_VERSION, datetime.now().isoformat()),
-    )
+    if current == 0:
+        for statement in _POSTGRES_SCHEMA:
+            conn.execute(statement)
+        conn.execute(
+            "INSERT INTO cerno_schema_migrations (version, applied_at) VALUES (%s, %s)",
+            (1, datetime.now().isoformat()),
+        )
+        current = 1
+    for version in sorted(_POSTGRES_MIGRATIONS):
+        if version <= current:
+            continue
+        for statement in _POSTGRES_MIGRATIONS[version]:
+            conn.execute(statement)
+        conn.execute(
+            "INSERT INTO cerno_schema_migrations (version, applied_at) VALUES (%s, %s)",
+            (version, datetime.now().isoformat()),
+        )
     conn.commit()
+
+
+_POSTGRES_MIGRATIONS = {
+    2: [
+        """
+        CREATE TABLE IF NOT EXISTS upload_intents (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            original_filename TEXT NOT NULL,
+            mime_type TEXT,
+            expected_size_bytes INTEGER NOT NULL,
+            observed_size_bytes INTEGER,
+            storage_backend TEXT NOT NULL,
+            object_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_asset_id TEXT REFERENCES source_assets(id) ON DELETE SET NULL,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_upload_intents_session ON upload_intents(session_id, created_at)",
+        """
+        CREATE TABLE IF NOT EXISTS processing_jobs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            locked_by TEXT,
+            locked_until TEXT,
+            heartbeat_at TEXT,
+            checkpoint_json TEXT NOT NULL DEFAULT '{}',
+            error_message TEXT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            started_at TEXT,
+            finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_processing_jobs_claim ON processing_jobs(status, locked_until, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_processing_jobs_session ON processing_jobs(session_id, kind, status)",
+        "ALTER TABLE processing_events ADD COLUMN IF NOT EXISTS job_id TEXT",
+        "ALTER TABLE processing_events ADD COLUMN IF NOT EXISTS step_key TEXT",
+        "ALTER TABLE processing_events ADD COLUMN IF NOT EXISTS level TEXT",
+        "ALTER TABLE processing_events ADD COLUMN IF NOT EXISTS progress INTEGER",
+        "ALTER TABLE processing_events ADD COLUMN IF NOT EXISTS details TEXT NOT NULL DEFAULT '{}'",
+    ],
+}
 
 
 _POSTGRES_SCHEMA = [

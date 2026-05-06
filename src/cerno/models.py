@@ -8,16 +8,25 @@ from pydantic import BaseModel, Field
 SessionStatus = Literal["new", "ingesting", "analyzing", "ready", "archived"]
 DiscoveryStatus = Literal["empty", "discovering", "pending_review", "approved", "failed"]
 ProcessingEventKind = Literal[
+    "queued",
+    "uploading",
+    "ingesting_file",
     "started",
+    "loading_artifacts",
     "reading_files",
+    "python_analysis",
     "calling_llm",
     "parsing_response",
     "saving_schema",
+    "resolving_links",
     "applying_schema",
     "reingesting_file",
     "done",
     "error",
 ]
+ProcessingJobKind = Literal["ingest_upload", "discovery"]
+ProcessingJobStatus = Literal["queued", "running", "succeeded", "failed"]
+UploadIntentStatus = Literal["pending", "uploaded", "processing", "processed", "failed"]
 InferredKind = Literal["string", "int", "float", "date", "datetime", "bool", "category"]
 LinkDirection = Literal["many_to_one", "one_to_one", "many_to_many"]
 WidgetKind = Literal["kpi", "bar", "line", "pie", "table", "markdown"]
@@ -137,6 +146,42 @@ class WorkspaceTable(BaseModel):
     created_at: datetime
 
 
+class UploadIntent(BaseModel):
+    id: str
+    user_id: str
+    session_id: str
+    original_filename: str
+    mime_type: str | None = None
+    expected_size_bytes: int
+    observed_size_bytes: int | None = None
+    storage_backend: str
+    object_key: str
+    status: UploadIntentStatus
+    source_asset_id: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class ProcessingJob(BaseModel):
+    id: str
+    user_id: str
+    session_id: str
+    kind: ProcessingJobKind
+    status: ProcessingJobStatus
+    attempts: int = 0
+    locked_by: str | None = None
+    locked_until: datetime | None = None
+    heartbeat_at: datetime | None = None
+    checkpoint_json: dict[str, Any] = Field(default_factory=dict)
+    error_message: str | None = None
+    idempotency_key: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class SchemaColumn(BaseModel):
     file_id: str
     schema_version: int
@@ -207,6 +252,11 @@ class ProcessingEvent(BaseModel):
     kind: ProcessingEventKind
     message: str
     created_at: datetime
+    job_id: str | None = None
+    step_key: str | None = None
+    level: str | None = None
+    progress: int | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class Link(BaseModel):

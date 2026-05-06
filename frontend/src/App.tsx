@@ -49,6 +49,22 @@ type WorkspaceMetric = {
   loaded: boolean;
 };
 
+function hasActiveProcessingEvents(events: ProcessingEvent[]): boolean {
+  const stateByJob = new Map<string, ProcessingEvent["kind"]>();
+  let latestUnscoped: ProcessingEvent["kind"] | null = null;
+  for (const event of events) {
+    if (event.job_id) {
+      stateByJob.set(event.job_id, event.kind);
+    } else {
+      latestUnscoped = event.kind;
+    }
+  }
+  if ([...stateByJob.values()].some((kind) => kind !== "done" && kind !== "error")) {
+    return true;
+  }
+  return latestUnscoped !== null && latestUnscoped !== "done" && latestUnscoped !== "error";
+}
+
 export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [homeView, setHomeView] = useState<"landing" | "sessions">("landing");
@@ -201,7 +217,9 @@ export function App() {
   ]);
 
   useEffect(() => {
-    const shouldPollProcessing = processing || discovery?.status === "discovering";
+    const hasActiveEvent = hasActiveProcessingEvents(events);
+    const shouldPollProcessing =
+      processing || uploading || discovery?.status === "discovering" || hasActiveEvent;
     if (!session || !shouldPollProcessing) {
       if (pollRef.current !== null) {
         window.clearInterval(pollRef.current);
@@ -211,10 +229,12 @@ export function App() {
     }
     const id = session.id;
     pollRef.current = window.setInterval(() => {
-      Promise.all([refreshEvents(id), getDiscovery(id)])
-        .then(([, nextDiscovery]) => {
+      Promise.all([getProcessingEvents(id), getDiscovery(id)])
+        .then(([nextEvents, nextDiscovery]) => {
+          setEvents(nextEvents);
           setDiscovery(nextDiscovery);
-          if (nextDiscovery.status === "discovering") return;
+          const nextHasActiveEvent = hasActiveProcessingEvents(nextEvents);
+          if (nextDiscovery.status === "discovering" || nextHasActiveEvent) return;
           setProcessing(false);
           return Promise.all([
             refreshFiles(id),
@@ -234,8 +254,9 @@ export function App() {
   }, [
     session,
     processing,
+    uploading,
     discovery?.status,
-    refreshEvents,
+    events,
     refreshFiles,
     refreshLinks,
     refreshSchemaGuide,
@@ -330,14 +351,20 @@ export function App() {
       setUploading(true);
       setActiveTab("files");
       try {
-        await uploadFiles(session.id, deduped);
+        const result = await uploadFiles(session.id, deduped);
+        const queuedEvents = result.jobs.flatMap((job) => job.events);
+        if (queuedEvents.length > 0) {
+          setEvents(queuedEvents);
+          setProcessing(true);
+        } else {
+          setEvents([]);
+        }
         setPages([]);
         setCellsByPage({});
         setDashboardLoadedFor(session.id);
         setDiscovery(null);
         setLinks([]);
         setDataDoc(null);
-        setEvents([]);
         await Promise.all([
           refreshFiles(session.id),
           refreshSessions(),
@@ -399,27 +426,25 @@ export function App() {
     setDashboardLoadedFor(session.id);
     try {
       const result = await processSession(session.id);
-      setDiscovery(result);
+      setEvents(result.events);
       await Promise.all([
         refreshFiles(session.id),
-        refreshLinks(session.id),
+        refreshDiscovery(session.id),
         refreshEvents(session.id),
-        refreshSchemaGuide(session.id),
+        refreshSessions(),
       ]);
     } catch (err) {
       setError((err as Error).message);
       await refreshDiscovery(session.id).catch(() => undefined);
       await refreshEvents(session.id).catch(() => undefined);
-    } finally {
       setProcessing(false);
     }
   }, [
     session,
     refreshFiles,
-    refreshLinks,
     refreshDiscovery,
     refreshEvents,
-    refreshSchemaGuide,
+    refreshSessions,
   ]);
 
   const handleApprove = useCallback(

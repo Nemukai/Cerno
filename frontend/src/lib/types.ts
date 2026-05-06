@@ -12,11 +12,17 @@ export type RunStatus = "ok" | "error" | "stale";
 export type TurnState = "pending" | "tool_running" | "rendering" | "complete" | "failed";
 export type MessageRole = "user" | "assistant" | "tool" | "system";
 export type ProcessingEventKind =
+  | "queued"
+  | "uploading"
+  | "ingesting_file"
   | "started"
+  | "loading_artifacts"
   | "reading_files"
+  | "python_analysis"
   | "calling_llm"
   | "parsing_response"
   | "saving_schema"
+  | "resolving_links"
   | "applying_schema"
   | "reingesting_file"
   | "done"
@@ -53,6 +59,20 @@ export type ProcessingEvent = {
   kind: ProcessingEventKind;
   message: string;
   created_at: string;
+  job_id: string | null;
+  step_key: string | null;
+  level: string | null;
+  progress: number | null;
+  details: Record<string, unknown>;
+};
+
+export type ProcessingJobResponse = {
+  job_id: string;
+  session_id: string;
+  kind: string;
+  job_status: string;
+  discovery_status: DiscoveryStatus;
+  events: ProcessingEvent[];
 };
 
 export type DiscoveredColumn = {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -39,6 +40,7 @@ DISCOVERY_REASONING_EFFORT = "high"
 DISCOVERY_REASONING_SUMMARY = "auto"
 SAMPLE_ROWS = 10
 LINK_VALUE_SAMPLE_LIMIT = 10_000
+logger = logging.getLogger(__name__)
 
 
 class DiscoveryError(RuntimeError):
@@ -803,18 +805,53 @@ async def run_discovery(
     llm_client: LLMClient,
     artifacts_repo: AssetArtifactRepository | None = None,
     object_store: ObjectStore | None = None,
+    job_id: str | None = None,
+    user_id: str | None = None,
+    clear_events: bool = True,
 ) -> DiscoveryResult:
     if not settings.llm_api_key:
         raise DiscoveryError("discovery requires an LLM — set CERNO_LLM_API_KEY")
 
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=start model=%s reasoning=%s progress=5",
+        user_id,
+        session_id,
+        job_id,
+        DISCOVERY_MODEL,
+        DISCOVERY_REASONING_EFFORT,
+    )
     sessions_repo.set_discovery_status(session_id, "discovering")
-    events_repo.clear(session_id)
-    events_repo.append(session_id=session_id, kind="started", message="processing started")
+    if clear_events:
+        events_repo.clear(session_id)
+    events_repo.append(
+        session_id=session_id,
+        job_id=job_id,
+        kind="started",
+        step_key="started",
+        level="info",
+        progress=5,
+        message="processing started",
+    )
 
     files = files_repo.list_for_session(session_id)
     if not files:
         raise DiscoveryError("no files in session")
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=files_loaded file_count=%s row_count=%s progress=10",
+        user_id,
+        session_id,
+        job_id,
+        len(files),
+        sum(f.row_count for f in files),
+    )
     if artifacts_repo and object_store:
+        logger.info(
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=loading_artifacts file_count=%s progress=15",
+            user_id,
+            session_id,
+            job_id,
+            len(files),
+        )
         for f in files:
             cached = ensure_file_artifact_cached(
                 file=f,
@@ -826,14 +863,37 @@ async def run_discovery(
             )
             if cached:
                 f.raw_parquet_path = cached
+        logger.info(
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=loading_artifacts_done progress=20",
+            user_id,
+            session_id,
+            job_id,
+        )
 
     events_repo.append(
         session_id=session_id,
+        job_id=job_id,
         kind="reading_files",
+        step_key="reading_files",
+        level="info",
+        progress=25,
         message=f"reading first {SAMPLE_ROWS} rows of {len(files)} file(s)",
     )
 
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=reading_files progress=25",
+        user_id,
+        session_id,
+        job_id,
+    )
     raw_tables, raw_catalog = _load_raw_tables(files)
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=reading_files_done table_count=%s progress=35",
+        user_id,
+        session_id,
+        job_id,
+        len(raw_tables),
+    )
     file_payload: list[dict[str, Any]] = []
     for f in files:
         if not f.raw_parquet_path:
@@ -850,18 +910,46 @@ async def run_discovery(
 
     events_repo.append(
         session_id=session_id,
-        kind="calling_llm",
+        job_id=job_id,
+        kind="python_analysis",
+        step_key="python_analysis",
+        level="info",
+        progress=45,
         message="analyzing full files with Python",
     )
     try:
+        logger.info(
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=python_analysis progress=45",
+            user_id,
+            session_id,
+            job_id,
+        )
         analysis = await _analyze_with_python(
             llm_client=llm_client,
             raw_tables=raw_tables,
             catalog=raw_catalog,
         )
+        logger.info(
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=python_analysis_done progress=55",
+            user_id,
+            session_id,
+            job_id,
+        )
     except Exception as exc:
+        logger.exception(
+            "event=processing.failed user_id=%s session_id=%s job_id=%s phase=python_analysis",
+            user_id,
+            session_id,
+            job_id,
+        )
         events_repo.append(
-            session_id=session_id, kind="error", message=f"Python analysis failed: {exc}"
+            session_id=session_id,
+            job_id=job_id,
+            kind="error",
+            step_key="error",
+            level="error",
+            progress=100,
+            message=f"Python analysis failed: {exc}",
         )
         sessions_repo.set_discovery_status(session_id, "failed")
         raise DiscoveryError(f"Python analysis failed: {exc}") from exc
@@ -869,11 +957,22 @@ async def run_discovery(
     user_prompt = _build_prompt(file_payload, analysis)
     events_repo.append(
         session_id=session_id,
+        job_id=job_id,
         kind="calling_llm",
+        step_key="llm_schema",
+        level="info",
+        progress=65,
         message=f"asking {DISCOVERY_MODEL} (reasoning={DISCOVERY_REASONING_EFFORT}). this can take a few minutes.",
     )
 
     try:
+        logger.info(
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=llm_schema model=%s progress=65",
+            user_id,
+            session_id,
+            job_id,
+            DISCOVERY_MODEL,
+        )
         response = await llm_client.respond(
             input=[{"role": "user", "content": user_prompt}],
             instructions=SYSTEM_PROMPT,
@@ -887,27 +986,84 @@ async def run_discovery(
                 "strict": True,
             },
         )
+        logger.info(
+            "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=llm_schema_done progress=72",
+            user_id,
+            session_id,
+            job_id,
+        )
     except Exception as exc:
-        events_repo.append(session_id=session_id, kind="error", message=f"LLM call failed: {exc}")
+        logger.exception(
+            "event=processing.failed user_id=%s session_id=%s job_id=%s phase=llm_schema",
+            user_id,
+            session_id,
+            job_id,
+        )
+        events_repo.append(
+            session_id=session_id,
+            job_id=job_id,
+            kind="error",
+            step_key="error",
+            level="error",
+            progress=100,
+            message=f"LLM call failed: {exc}",
+        )
         sessions_repo.set_discovery_status(session_id, "failed")
         raise DiscoveryError(f"LLM call failed: {exc}") from exc
 
     events_repo.append(
-        session_id=session_id, kind="parsing_response", message="parsing LLM response"
+        session_id=session_id,
+        job_id=job_id,
+        kind="parsing_response",
+        step_key="parsing_response",
+        level="info",
+        progress=75,
+        message="parsing LLM response",
+    )
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=parsing_response progress=75",
+        user_id,
+        session_id,
+        job_id,
     )
     payload = _parse_json_block(response.content)
     result = _parse_response(payload)
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=parsing_response_done file_count=%s link_count=%s progress=82",
+        user_id,
+        session_id,
+        job_id,
+        len(result.files),
+        len(result.links),
+    )
 
     valid_ids = {f.id for f in files}
     result.files = [df for df in result.files if df.file_id in valid_ids]
     if not result.files:
+        logger.warning(
+            "event=processing.failed user_id=%s session_id=%s job_id=%s phase=no_valid_schema_files",
+            user_id,
+            session_id,
+            job_id,
+        )
         sessions_repo.set_discovery_status(session_id, "failed")
         raise DiscoveryError("LLM did not return schema for any uploaded file")
 
     events_repo.append(
         session_id=session_id,
+        job_id=job_id,
         kind="saving_schema",
+        step_key="saving_schema",
+        level="info",
+        progress=85,
         message=f"saving discovered schema for {len(result.files)} file(s)",
+    )
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=saving_schema file_count=%s progress=85",
+        user_id,
+        session_id,
+        job_id,
+        len(result.files),
     )
 
     for df in result.files:
@@ -922,6 +1078,14 @@ async def run_discovery(
         files=files, discovered_files=result.files, settings=settings
     )
     result.links = _merge_links(result.links, candidates)
+    logger.info(
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=resolving_links candidate_count=%s link_count=%s progress=92",
+        user_id,
+        session_id,
+        job_id,
+        len(candidates),
+        len(result.links),
+    )
 
     links_repo.delete_for_session(session_id)
     for link in result.links:
@@ -945,7 +1109,19 @@ async def run_discovery(
     sessions_repo.set_discovery_status(session_id, "pending_review")
     events_repo.append(
         session_id=session_id,
+        job_id=job_id,
         kind="done",
+        step_key="done",
+        level="info",
+        progress=100,
         message="discovery complete - review the schema then approve",
+    )
+    logger.info(
+        "event=processing.complete user_id=%s session_id=%s job_id=%s file_count=%s link_count=%s progress=100",
+        user_id,
+        session_id,
+        job_id,
+        len(result.files),
+        len(result.links),
     )
     return result
