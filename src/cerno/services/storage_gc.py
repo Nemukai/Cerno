@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from dataclasses import dataclass, field
 
 from cerno.config import Settings
+from cerno.db import DbConnection
 from cerno.storage import get_object_store
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ class StorageCleanupResult:
 
 
 def cleanup_unused_storage_for_user(
-    conn: sqlite3.Connection,
+    conn: DbConnection,
     settings: Settings,
     user_id: str,
 ) -> StorageCleanupResult:
@@ -68,7 +68,7 @@ def cleanup_unused_storage_for_user(
 
 
 def _live_object_keys(
-    conn: sqlite3.Connection,
+    conn: DbConnection,
     user_id: str,
     storage_backend: str,
 ) -> set[str]:
@@ -140,7 +140,7 @@ def _live_object_key_queries(
 
 
 def _prune_unreferenced_source_assets(
-    conn: sqlite3.Connection,
+    conn: DbConnection,
     user_id: str,
 ) -> list[str]:
     """Delete source asset DB rows that no live workspace references."""

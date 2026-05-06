@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, HTTPException
 
 from cerno.api.deps import ConnDep, GrantedUserDep
+from cerno.db import DbConnection
 from cerno.models import Anomaly
 from cerno.repositories import (
     AnomalyRepository,
@@ -14,7 +13,7 @@ from cerno.repositories import (
 router = APIRouter(tags=["insights"])
 
 
-def _require_session_owned(conn: sqlite3.Connection, session_id: str, user_id: str) -> None:
+def _require_session_owned(conn: DbConnection, session_id: str, user_id: str) -> None:
     if SessionRepository(conn).get(session_id, user_id=user_id) is None:
         raise HTTPException(status_code=404, detail="session not found")
 

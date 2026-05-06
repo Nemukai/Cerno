@@ -60,7 +60,7 @@ flowchart TB
   API --> OpenAI["OpenAI Responses API"]
   Worker --> OpenAI
 
-  API --> Cache["Local ephemeral cache<br/>downloaded parquet for DuckDB/pandas"]
+  API --> Cache["Local ephemeral cache<br/>downloaded parquet for pandas/Polars"]
   Worker --> Cache
 
   API --> APILogs["Dokploy API logs<br/>requests, auth, enqueue, polling"]
@@ -134,7 +134,7 @@ verifies the object with `HEAD`, and the worker processes the object from R2.
 ### Local Cache
 
 API and worker services can use local ephemeral disk as a cache for object-store
-data needed by pandas, Polars, DuckDB, or Python tools.
+data needed by pandas, Polars, or Python tools.
 
 The cache is not authoritative. If a cache file is missing, it should be fetched
 or regenerated from R2/Postgres metadata.
@@ -396,7 +396,7 @@ Initial scaling:
 Current chat is synchronous:
 
 - `POST /sessions/{session_id}/chat` runs inside the API.
-- `run_chat_turn` loads processed parquet, registers DuckDB/Pandas tables,
+- `run_chat_turn` loads the Postgres table catalog, fetches processed parquet from R2 for pandas,
   runs the LLM tool loop, persists messages, and optionally spawns dashboard
   widgets.
 

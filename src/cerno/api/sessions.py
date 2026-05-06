@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -11,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, GrantedUserDep, SettingsDep
 from cerno.config import Settings
-from cerno.db import session_scope
+from cerno.db import DbConnection, session_scope
 from cerno.models import (
     ChatArtifact,
     ChatMessage,
@@ -60,21 +59,7 @@ router = APIRouter(tags=["sessions"])
 logger = logging.getLogger(__name__)
 
 
-def _user_storage_bytes(settings: Settings, user_id: str) -> int:
-    root = settings.user_dir(user_id)
-    if not root.exists():
-        return 0
-    total = 0
-    for path in root.rglob("*"):
-        if path.is_file():
-            try:
-                total += path.stat().st_size
-            except OSError:
-                continue
-    return total
-
-
-def _require_session(conn: sqlite3.Connection, session_id: str, user_id: str) -> Session:
+def _require_session(conn: DbConnection, session_id: str, user_id: str) -> Session:
     session = SessionRepository(conn).get(session_id, user_id=user_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
@@ -82,7 +67,7 @@ def _require_session(conn: sqlite3.Connection, session_id: str, user_id: str) ->
 
 
 def _require_file_for_user(
-    conn: sqlite3.Connection, file_id: str, user_id: str
+    conn: DbConnection, file_id: str, user_id: str
 ) -> tuple[FileModel, Session]:
     file = FileRepository(conn).get(file_id)
     if file is None:
@@ -185,7 +170,7 @@ class ProcessingJobBody(BaseModel):
 
 
 def _build_job_response(
-    *, conn: sqlite3.Connection, job: ProcessingJob, discovery_status: str
+    *, conn: DbConnection, job: ProcessingJob, discovery_status: str
 ) -> ProcessingJobBody:
     return ProcessingJobBody(
         job_id=job.id,
@@ -213,10 +198,13 @@ def create_upload_intents(
         raise HTTPException(status_code=501, detail="direct uploads require R2 storage")
 
     intents_repo = UploadIntentRepository(conn)
+    source_assets_repo = SourceAssetRepository(conn)
+    current_usage = source_assets_repo.total_size_for_user(user.id)
     intents: list[UploadIntentBody] = []
     for item in body.files:
-        if item.size_bytes > settings.per_user_quota_bytes():
+        if current_usage + item.size_bytes > settings.per_user_quota_bytes():
             raise HTTPException(status_code=413, detail=f"{item.filename}: file exceeds quota")
+        current_usage += item.size_bytes
         content_type = item.content_type or "application/octet-stream"
         intent_id = new_id()
         object_key = staging_upload_key(user.id, session_id, intent_id, item.filename)
@@ -351,7 +339,7 @@ def upload_files(
         with tmp_path.open("wb") as dest:
             shutil.copyfileobj(upload.file, dest)
         upload_size = tmp_path.stat().st_size
-        current_usage = max(0, _user_storage_bytes(settings, user.id) - upload_size)
+        current_usage = source_assets_repo.total_size_for_user(user.id)
         if current_usage + upload_size > settings.per_user_quota_bytes():
             tmp_path.unlink(missing_ok=True)
             raise HTTPException(status_code=413, detail="per-user storage quota exceeded")
@@ -425,11 +413,22 @@ class FilePreviewResponse(BaseModel):
 
 @router.get("/files/{file_id}/preview", response_model=FilePreviewResponse)
 def get_file_preview(
-    file_id: str, conn: ConnDep, user: GrantedUserDep, limit: int = 100
+    file_id: str,
+    conn: ConnDep,
+    settings: SettingsDep,
+    user: GrantedUserDep,
+    limit: int = 100,
 ) -> FilePreviewResponse:
     _require_file_for_user(conn, file_id, user.id)
     try:
-        data = preview_rows(file_id=file_id, limit=limit, files_repo=FileRepository(conn))
+        data = preview_rows(
+            file_id=file_id,
+            limit=limit,
+            files_repo=FileRepository(conn),
+            settings=settings,
+            artifacts_repo=AssetArtifactRepository(conn),
+            object_store=get_object_store(settings),
+        )
     except ReingestError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FilePreviewResponse(**data)
@@ -495,7 +494,7 @@ _INFERRED_TO_SIMPLE = {
 
 
 def _build_discovery_response(
-    session_id: str, conn: sqlite3.Connection, user_id: str
+    session_id: str, conn: DbConnection, user_id: str
 ) -> DiscoveryResponse:
     sessions_repo = SessionRepository(conn)
     files_repo = FileRepository(conn)
@@ -754,7 +753,7 @@ def _synthesize_docs_from_current_schema(
     *,
     session_id: str,
     user_id: str,
-    conn: sqlite3.Connection,
+    conn: DbConnection,
     data_docs_repo: DataDocRepository,
 ) -> None:
     discovery = _build_discovery_response(session_id, conn, user_id=user_id)
@@ -830,7 +829,7 @@ def _refresh_docs_from_approval(
                         name=col.name,
                         dtype=col.dtype,
                         meaning=col.description,
-                        role=(old_cols.get(col.name).role if old_cols.get(col.name) else None),
+                        role=old_col.role if (old_col := old_cols.get(col.name)) else None,
                     )
                     for col in spec.columns
                 ],

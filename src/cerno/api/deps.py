@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterator
 from typing import Annotated
 
@@ -8,7 +7,7 @@ from fastapi import Depends, HTTPException, Request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from cerno.config import Settings, get_settings
-from cerno.db import connect
+from cerno.db import DbConnection, connect
 from cerno.llm import LLMClient
 from cerno.models import User
 from cerno.repositories import UserRepository
@@ -16,7 +15,7 @@ from cerno.repositories import UserRepository
 
 def get_conn(
     settings: Annotated[Settings, Depends(get_settings)],
-) -> Iterator[sqlite3.Connection]:
+) -> Iterator[DbConnection]:
     conn = connect(settings)
     try:
         yield conn
@@ -38,7 +37,7 @@ def cookie_serializer(settings: Settings) -> URLSafeTimedSerializer:
 
 def get_current_user(
     request: Request,
-    conn: Annotated[sqlite3.Connection, Depends(get_conn)],
+    conn: Annotated[DbConnection, Depends(get_conn)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> User:
     token = request.cookies.get(settings.session_cookie_name)
@@ -70,7 +69,7 @@ def get_granted_user(
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
-ConnDep = Annotated[sqlite3.Connection, Depends(get_conn)]
+ConnDep = Annotated[DbConnection, Depends(get_conn)]
 LLMDep = Annotated[LLMClient, Depends(get_llm_client)]
 UserDep = Annotated[User, Depends(get_current_user)]
 GrantedUserDep = Annotated[User, Depends(get_granted_user)]

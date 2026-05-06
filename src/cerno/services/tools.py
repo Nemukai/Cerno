@@ -7,15 +7,23 @@ import pandas as pd
 
 from cerno.llm import Tool, ToolRegistry
 from cerno.models import DataDoc, Widget
-from cerno.services.engine import DuckDBEngine
 from cerno.services.sandbox import run_python
+
+
+@dataclass
+class ToolTable:
+    name: str
+    display_name: str
+    row_count: int
+    columns: list[dict[str, Any]]
+    dataframe: pd.DataFrame | None = None
+    load_error: str | None = None
 
 
 @dataclass
 class ToolContext:
     session_id: str
-    engine: DuckDBEngine
-    tables: dict[str, pd.DataFrame]
+    tables: dict[str, ToolTable]
     data_doc: DataDoc | None = None
     rendered_widgets: list[Widget] = field(default_factory=list)
 
@@ -25,28 +33,17 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
     available_table_names = sorted(ctx.tables)
 
     async def list_tables(_args: dict[str, Any]) -> dict[str, Any]:
-        tables = []
-        for info in ctx.engine.list_tables():
-            described = ctx.engine.describe_table(info.name)
-            tables.append(
-                {
-                    "name": info.name,
-                    "row_count": info.row_count,
-                    "columns": [c["column"] for c in described],
-                }
-            )
-        known = {table["name"] for table in tables}
-        for name in available_table_names:
-            if name in known:
-                continue
-            frame = ctx.tables[name]
-            tables.append(
-                {
-                    "name": name,
-                    "row_count": len(frame),
-                    "columns": list(map(str, frame.columns)),
-                }
-            )
+        tables = [
+            {
+                "name": table.name,
+                "display_name": table.display_name,
+                "row_count": table.row_count,
+                "columns": [column["name"] for column in table.columns],
+                "analysis_ready": table.dataframe is not None,
+                "load_error": table.load_error,
+            }
+            for table in (ctx.tables[name] for name in available_table_names)
+        ]
         return {
             "ok": bool(tables),
             "table_count": len(tables),
@@ -60,44 +57,38 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
         }
 
     async def describe_table(args: dict[str, Any]) -> dict[str, Any]:
-        table = str(args["table"])
-        try:
-            described = ctx.engine.describe_table(table)
-        except Exception:
-            frame = ctx.tables.get(table)
-            if frame is None:
-                return {
-                    "ok": False,
-                    "error": f"Unknown table: {table}",
-                    "available_tables": available_table_names,
-                }
+        table_name = str(args["table"])
+        table = ctx.tables.get(table_name)
+        if table is None:
             return {
-                "ok": True,
-                "table": table,
-                "row_count": len(frame),
-                "columns": [
-                    {"name": str(name), "type": str(dtype), "nullable": bool(frame[name].isna().any())}
-                    for name, dtype in frame.dtypes.items()
-                ],
+                "ok": False,
+                "error": f"Unknown table: {table_name}",
+                "available_tables": available_table_names,
             }
         return {
             "ok": True,
-            "table": table,
-            "columns": [
-                {"name": c["column"], "type": c["type"], "nullable": c["nullable"]}
-                for c in described
-            ]
+            "table": table.name,
+            "display_name": table.display_name,
+            "row_count": table.row_count,
+            "analysis_ready": table.dataframe is not None,
+            "load_error": table.load_error,
+            "columns": table.columns,
         }
 
     async def run_python_handler(args: dict[str, Any]) -> dict[str, Any]:
-        if not ctx.tables:
+        dataframes = {
+            name: table.dataframe
+            for name, table in ctx.tables.items()
+            if table.dataframe is not None
+        }
+        if not dataframes:
             return {
                 "ok": False,
-                "error": "No pandas DataFrames are currently available.",
-                "available_tables": [],
+                "error": "No pandas DataFrames are currently available from processed R2 artifacts.",
+                "available_tables": available_table_names,
             }
         code = str(args["code"])
-        return run_python(code, tables=ctx.tables).to_dict()
+        return run_python(code, tables=dataframes).to_dict()
 
     async def render_widget(args: dict[str, Any]) -> dict[str, Any]:
         widget = Widget(
@@ -121,13 +112,17 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 ),
                 "fallback_tables": available_table_names,
             }
-        return {"ok": True, "schema_guide": ctx.data_doc.model_dump(mode="json")}
+        return {
+            "ok": True,
+            "schema_guide": ctx.data_doc.model_dump(mode="json"),
+            "available_tables": available_table_names,
+        }
 
     registry.register(
         Tool(
             name="list_tables",
             description=(
-                "List every table/dataframe available for analysis in this session. "
+                "List every Postgres-registered table available for analysis in this session. "
                 "Use the returned python_dataframe_names exactly when writing run_python code."
             ),
             parameters={"type": "object", "properties": {}, "additionalProperties": False},

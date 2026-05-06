@@ -18,12 +18,11 @@ from __future__ import annotations
 import argparse
 import re
 import secrets
-import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 
 from cerno.config import get_settings
-from cerno.db import connect
+from cerno.db import DbConnection, connect
 from cerno.repositories import BetaCodeRepository, UserRepository
 from cerno.services.storage_gc import cleanup_unused_storage_for_user
 
@@ -55,7 +54,7 @@ def _parse_duration(spec: str) -> datetime:
     return datetime.now(UTC) + delta
 
 
-def _open_conn() -> sqlite3.Connection:
+def _open_conn() -> DbConnection:
     settings = get_settings()
     return connect(settings)
 

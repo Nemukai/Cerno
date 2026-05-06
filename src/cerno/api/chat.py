@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -10,6 +9,7 @@ from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
 from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
+from cerno.db import DbConnection
 from cerno.models import ChatArtifact, ChatMessage, ChatTurn, Widget
 from cerno.repositories import (
     AssetArtifactRepository,
@@ -26,12 +26,12 @@ from cerno.services.chat import run_chat_turn, stream_chat_turn
 router = APIRouter(tags=["chat"])
 
 
-def _require_session_owned(conn: sqlite3.Connection, session_id: str, user_id: str) -> None:
+def _require_session_owned(conn: DbConnection, session_id: str, user_id: str) -> None:
     if SessionRepository(conn).get(session_id, user_id=user_id) is None:
         raise HTTPException(status_code=404, detail="session not found")
 
 
-def _require_turn_owned(conn: sqlite3.Connection, turn_id: str, user_id: str) -> ChatTurn:
+def _require_turn_owned(conn: DbConnection, turn_id: str, user_id: str) -> ChatTurn:
     turn = ChatRepository(conn).get_turn(turn_id)
     if turn is None:
         raise HTTPException(status_code=404, detail="turn not found")

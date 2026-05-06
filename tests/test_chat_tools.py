@@ -5,22 +5,27 @@ import unittest
 
 import pandas as pd
 
-from cerno.services.engine import DuckDBEngine
-from cerno.services.tools import ToolContext, build_tool_registry
+from cerno.services.tools import ToolContext, ToolTable, build_tool_registry
 
 
 class ChatToolRegistryTests(unittest.TestCase):
-    def test_list_tables_falls_back_to_bound_dataframes(self) -> None:
+    def test_list_tables_uses_postgres_catalog_entries(self) -> None:
         ctx = ToolContext(
             session_id="s1",
-            engine=DuckDBEngine(),
-            tables={"orders": pd.DataFrame({"order_id": [1, 2], "amount": [10.0, 20.0]})},
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=2,
+                    columns=[
+                        {"name": "order_id", "type": "int", "nullable": False},
+                        {"name": "amount", "type": "float", "nullable": False},
+                    ],
+                )
+            },
         )
-        try:
-            tool = build_tool_registry(ctx).get("list_tables")
-            result = asyncio.run(tool.handler({}))
-        finally:
-            ctx.engine.close()
+        tool = build_tool_registry(ctx).get("list_tables")
+        result = asyncio.run(tool.handler({}))
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["table_count"], 1)
@@ -30,31 +35,40 @@ class ChatToolRegistryTests(unittest.TestCase):
     def test_read_schema_guide_returns_actionable_fallback_when_missing(self) -> None:
         ctx = ToolContext(
             session_id="s1",
-            engine=DuckDBEngine(),
-            tables={"orders": pd.DataFrame({"order_id": [1]})},
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=1,
+                    columns=[{"name": "order_id", "type": "int", "nullable": False}],
+                )
+            },
         )
-        try:
-            tool = build_tool_registry(ctx).get("read_schema_guide")
-            result = asyncio.run(tool.handler({}))
-        finally:
-            ctx.engine.close()
+        tool = build_tool_registry(ctx).get("read_schema_guide")
+        result = asyncio.run(tool.handler({}))
 
         self.assertFalse(result["ok"])
         self.assertIsNone(result["schema_guide"])
         self.assertEqual(result["fallback_tables"], ["orders"])
         self.assertIn("list_tables", result["message"])
 
-    def test_describe_table_uses_bound_dataframe_fallback(self) -> None:
+    def test_describe_table_uses_catalog_metadata(self) -> None:
         ctx = ToolContext(
             session_id="s1",
-            engine=DuckDBEngine(),
-            tables={"orders": pd.DataFrame({"order_id": [1], "amount": [12.5]})},
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=1,
+                    columns=[
+                        {"name": "order_id", "type": "int", "nullable": False},
+                        {"name": "amount", "type": "float", "nullable": False},
+                    ],
+                )
+            },
         )
-        try:
-            tool = build_tool_registry(ctx).get("describe_table")
-            result = asyncio.run(tool.handler({"table": "orders"}))
-        finally:
-            ctx.engine.close()
+        tool = build_tool_registry(ctx).get("describe_table")
+        result = asyncio.run(tool.handler({"table": "orders"}))
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["table"], "orders")
@@ -64,14 +78,21 @@ class ChatToolRegistryTests(unittest.TestCase):
     def test_run_python_executes_against_bound_dataframe(self) -> None:
         ctx = ToolContext(
             session_id="s1",
-            engine=DuckDBEngine(),
-            tables={"orders": pd.DataFrame({"order_id": [1, 2], "amount": [10.0, 20.0]})},
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=2,
+                    columns=[
+                        {"name": "order_id", "type": "int", "nullable": False},
+                        {"name": "amount", "type": "float", "nullable": False},
+                    ],
+                    dataframe=pd.DataFrame({"order_id": [1, 2], "amount": [10.0, 20.0]}),
+                )
+            },
         )
-        try:
-            tool = build_tool_registry(ctx).get("run_python")
-            result = asyncio.run(tool.handler({"code": "orders['amount'].sum()"}))
-        finally:
-            ctx.engine.close()
+        tool = build_tool_registry(ctx).get("run_python")
+        result = asyncio.run(tool.handler({"code": "orders['amount'].sum()"}))
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["result_preview"], {"value": 30.0})
@@ -80,39 +101,64 @@ class ChatToolRegistryTests(unittest.TestCase):
     def test_render_widget_records_widget_for_chat_turn(self) -> None:
         ctx = ToolContext(
             session_id="s1",
-            engine=DuckDBEngine(),
-            tables={"orders": pd.DataFrame({"order_id": [1]})},
-        )
-        try:
-            tool = build_tool_registry(ctx).get("render_widget")
-            result = asyncio.run(
-                tool.handler(
-                    {
-                        "kind": "kpi",
-                        "title": "Orders",
-                        "data": {"value": 1},
-                        "options": {},
-                        "caption": "Total orders",
-                    }
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=1,
+                    columns=[{"name": "order_id", "type": "int", "nullable": False}],
                 )
+            },
+        )
+        tool = build_tool_registry(ctx).get("render_widget")
+        result = asyncio.run(
+            tool.handler(
+                {
+                    "kind": "kpi",
+                    "title": "Orders",
+                    "data": {"value": 1},
+                    "options": {},
+                    "caption": "Total orders",
+                }
             )
-        finally:
-            ctx.engine.close()
+        )
 
         self.assertEqual(len(ctx.rendered_widgets), 1)
         self.assertEqual(result["widget"]["kind"], "kpi")
         self.assertEqual(result["widget"]["title"], "Orders")
 
+    def test_run_python_requires_loaded_dataframe(self) -> None:
+        ctx = ToolContext(
+            session_id="s1",
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=1,
+                    columns=[{"name": "order_id", "type": "int", "nullable": False}],
+                )
+            },
+        )
+        tool = build_tool_registry(ctx).get("run_python")
+        result = asyncio.run(tool.handler({"code": "orders.head()"}))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["available_tables"], ["orders"])
+
     def test_run_python_description_lists_allowed_environment(self) -> None:
         ctx = ToolContext(
             session_id="s1",
-            engine=DuckDBEngine(),
-            tables={"orders": pd.DataFrame({"order_id": [1]})},
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=1,
+                    columns=[{"name": "order_id", "type": "int", "nullable": False}],
+                    dataframe=pd.DataFrame({"order_id": [1]}),
+                )
+            },
         )
-        try:
-            tool = build_tool_registry(ctx).get("run_python")
-        finally:
-            ctx.engine.close()
+        tool = build_tool_registry(ctx).get("run_python")
 
         self.assertIn("Available pandas DataFrames: orders", tool.description)
         self.assertIn("pd (pandas) and np (numpy)", tool.description)

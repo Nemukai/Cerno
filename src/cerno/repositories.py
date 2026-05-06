@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from cerno.db import dumps_json, loads_json
+from cerno.db import DbConnection, DbRow, dumps_json, loads_json
 from cerno.models import (
     AccessStatus,
     Anomaly,
@@ -61,7 +60,7 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 class SessionRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(self, name: str, user_id: str, session_id: str | None = None) -> Session:
@@ -117,7 +116,7 @@ class SessionRepository:
 
 
 class FileRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(
@@ -239,7 +238,7 @@ class FileRepository:
 
 
 class SourceAssetRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def get_by_hash(self, user_id: str, sha256: str) -> SourceAsset | None:
@@ -248,6 +247,13 @@ class SourceAssetRepository:
             (user_id, sha256),
         ).fetchone()
         return _row_to_source_asset(row) if row else None
+
+    def total_size_for_user(self, user_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(size_bytes), 0) AS total FROM source_assets WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return int(row["total"] or 0) if row else 0
 
     def create(
         self,
@@ -294,7 +300,7 @@ class SourceAssetRepository:
 
 
 class WorkspaceAssetRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def get(self, session_id: str, source_asset_id: str) -> WorkspaceAsset | None:
@@ -330,7 +336,7 @@ class WorkspaceAssetRepository:
 
 
 class AssetArtifactRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(
@@ -385,6 +391,13 @@ class AssetArtifactRepository:
             created_at=created_at,
         )
 
+    def get(self, artifact_id: str) -> AssetArtifact | None:
+        row = self.conn.execute(
+            "SELECT * FROM asset_artifacts WHERE id = ?",
+            (artifact_id,),
+        ).fetchone()
+        return _row_to_asset_artifact(row) if row else None
+
     def latest_for_file(self, file_id: str, artifact_type: str) -> AssetArtifact | None:
         row = self.conn.execute(
             """SELECT * FROM asset_artifacts
@@ -396,7 +409,7 @@ class AssetArtifactRepository:
 
 
 class WorkspaceTableRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(
@@ -442,6 +455,13 @@ class WorkspaceTableRepository:
             created_at=created_at,
         )
 
+    def list_for_session(self, session_id: str) -> list[WorkspaceTable]:
+        rows = self.conn.execute(
+            "SELECT * FROM tables WHERE session_id = ? ORDER BY table_index, created_at",
+            (session_id,),
+        ).fetchall()
+        return [_row_to_workspace_table(row) for row in rows]
+
     def set_processed_artifact(
         self, *, legacy_file_id: str, artifact_id: str, schema_version: int, row_count: int
     ) -> None:
@@ -454,7 +474,7 @@ class WorkspaceTableRepository:
 
 
 class UploadIntentRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(
@@ -546,7 +566,7 @@ class UploadIntentRepository:
 class ProcessingJobRepository:
     ACTIVE_STATUSES = ("queued", "running")
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(
@@ -735,7 +755,7 @@ class ProcessingJobRepository:
 
 
 class SchemaRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def replace(self, schema: FileSchema) -> None:
@@ -779,7 +799,7 @@ class SchemaRepository:
 
 
 class LinkRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(
@@ -880,7 +900,7 @@ class LinkRepository:
 
 
 class AnomalyRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(self, anomaly: Anomaly) -> Anomaly:
@@ -942,7 +962,7 @@ class AnomalyRepository:
 
 
 class DashboardRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(self, session_id: str, dashboard_id: str | None = None) -> Dashboard:
@@ -1019,7 +1039,7 @@ class DashboardRepository:
 
 
 class DashboardCellRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def add_cell(self, cell: DashboardCell) -> DashboardCell:
@@ -1073,7 +1093,7 @@ class DashboardCellRepository:
 
 
 class ChatRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create_turn(
@@ -1222,7 +1242,7 @@ class ChatRepository:
 
 
 class ChatArtifactRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(
@@ -1305,7 +1325,7 @@ class ChatArtifactRepository:
 
 
 class AuditRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def log(
@@ -1331,7 +1351,7 @@ class AuditRepository:
 
 
 class DataDocRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def get(self, session_id: str) -> DataDoc | None:
@@ -1362,7 +1382,7 @@ class DataDocRepository:
 
 
 class ProcessingEventRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def append(
@@ -1396,7 +1416,7 @@ class ProcessingEventRepository:
         )
         try:
             self.conn.commit()
-        except sqlite3.OperationalError as exc:
+        except Exception as exc:
             logger.warning("processing_events commit failed: %s", exc)
         return ProcessingEvent(
             id=cursor.lastrowid,
@@ -1422,7 +1442,7 @@ class ProcessingEventRepository:
         self.conn.execute("DELETE FROM processing_events WHERE session_id = ?", (session_id,))
 
 
-def _row_to_session(row: sqlite3.Row) -> Session:
+def _row_to_session(row: DbRow) -> Session:
     keys = row.keys()
     return Session(
         id=row["id"],
@@ -1435,7 +1455,7 @@ def _row_to_session(row: sqlite3.Row) -> Session:
     )
 
 
-def _row_to_file(row: sqlite3.Row) -> File:
+def _row_to_file(row: DbRow) -> File:
     keys = row.keys()
     return File(
         id=row["id"],
@@ -1456,7 +1476,7 @@ def _row_to_file(row: sqlite3.Row) -> File:
     )
 
 
-def _row_to_source_asset(row: sqlite3.Row) -> SourceAsset:
+def _row_to_source_asset(row: DbRow) -> SourceAsset:
     return SourceAsset(
         id=row["id"],
         user_id=row["user_id"],
@@ -1470,7 +1490,7 @@ def _row_to_source_asset(row: sqlite3.Row) -> SourceAsset:
     )
 
 
-def _row_to_workspace_asset(row: sqlite3.Row) -> WorkspaceAsset:
+def _row_to_workspace_asset(row: DbRow) -> WorkspaceAsset:
     return WorkspaceAsset(
         id=row["id"],
         session_id=row["session_id"],
@@ -1480,7 +1500,23 @@ def _row_to_workspace_asset(row: sqlite3.Row) -> WorkspaceAsset:
     )
 
 
-def _row_to_asset_artifact(row: sqlite3.Row) -> AssetArtifact:
+def _row_to_workspace_table(row: DbRow) -> WorkspaceTable:
+    return WorkspaceTable(
+        id=row["id"],
+        session_id=row["session_id"],
+        workspace_asset_id=row["workspace_asset_id"],
+        legacy_file_id=row["legacy_file_id"],
+        sheet_name=row["sheet_name"],
+        table_index=row["table_index"],
+        display_name=row["display_name"],
+        row_count=row["row_count"],
+        current_schema_version=row["current_schema_version"],
+        processed_artifact_id=row["processed_artifact_id"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_asset_artifact(row: DbRow) -> AssetArtifact:
     return AssetArtifact(
         id=row["id"],
         user_id=row["user_id"],
@@ -1497,7 +1533,7 @@ def _row_to_asset_artifact(row: sqlite3.Row) -> AssetArtifact:
     )
 
 
-def _row_to_upload_intent(row: sqlite3.Row) -> UploadIntent:
+def _row_to_upload_intent(row: DbRow) -> UploadIntent:
     return UploadIntent(
         id=row["id"],
         user_id=row["user_id"],
@@ -1516,7 +1552,7 @@ def _row_to_upload_intent(row: sqlite3.Row) -> UploadIntent:
     )
 
 
-def _row_to_processing_job(row: sqlite3.Row) -> ProcessingJob:
+def _row_to_processing_job(row: DbRow) -> ProcessingJob:
     checkpoint = loads_json(row["checkpoint_json"], {})
     if not isinstance(checkpoint, dict):
         checkpoint = {}
@@ -1540,7 +1576,7 @@ def _row_to_processing_job(row: sqlite3.Row) -> ProcessingJob:
     )
 
 
-def _row_to_processing_event(row: sqlite3.Row) -> ProcessingEvent:
+def _row_to_processing_event(row: DbRow) -> ProcessingEvent:
     keys = row.keys()
     details = loads_json(row["details"], {}) if "details" in keys else {}
     if not isinstance(details, dict):
@@ -1559,7 +1595,7 @@ def _row_to_processing_event(row: sqlite3.Row) -> ProcessingEvent:
     )
 
 
-def _row_to_data_doc(row: sqlite3.Row) -> DataDoc:
+def _row_to_data_doc(row: DbRow) -> DataDoc:
     content = loads_json(row["content"])
     if not isinstance(content, dict):
         content = {}
@@ -1569,7 +1605,7 @@ def _row_to_data_doc(row: sqlite3.Row) -> DataDoc:
     return DataDoc.model_validate(content)
 
 
-def _row_to_user(row: sqlite3.Row) -> User:
+def _row_to_user(row: DbRow) -> User:
     keys = row.keys()
     return User(
         id=row["id"],
@@ -1587,7 +1623,7 @@ def _row_to_user(row: sqlite3.Row) -> User:
     )
 
 
-def _row_to_beta_code(row: sqlite3.Row) -> BetaCode:
+def _row_to_beta_code(row: DbRow) -> BetaCode:
     return BetaCode(
         code=row["code"],
         note=row["note"],
@@ -1599,7 +1635,7 @@ def _row_to_beta_code(row: sqlite3.Row) -> BetaCode:
 
 
 class UserRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def upsert_from_google(
@@ -1641,6 +1677,8 @@ class UserRepository:
                 ),
             )
             row = self.conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+            if row is None:
+                raise LookupError(f"user not found after create: {uid}")
             return _row_to_user(row)
         # Existing user: refresh profile + last_seen, and promote to granted if
         # they're now in the operator list (operator_emails can change).
@@ -1662,6 +1700,8 @@ class UserRepository:
                 (email, name, picture, now, existing["id"]),
             )
         row = self.conn.execute("SELECT * FROM users WHERE id = ?", (existing["id"],)).fetchone()
+        if row is None:
+            raise LookupError(f"user not found after profile refresh: {existing['id']}")
         return _row_to_user(row)
 
     def get(self, user_id: str) -> User | None:
@@ -1705,7 +1745,7 @@ class UserRepository:
 
 
 class BetaCodeRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
     def create(
@@ -1783,7 +1823,7 @@ class BetaCodeRepository:
 
 
 class LLMUsageRepository:
-    def __init__(self, conn: sqlite3.Connection, *, auto_commit: bool = False) -> None:
+    def __init__(self, conn: DbConnection, *, auto_commit: bool = False) -> None:
         self.conn = conn
         self.auto_commit = auto_commit
 
@@ -1806,7 +1846,7 @@ class LLMUsageRepository:
         return self.get(user_id, day)
 
 
-def _row_to_schema_column(row: sqlite3.Row) -> SchemaColumn:
+def _row_to_schema_column(row: DbRow) -> SchemaColumn:
     keys = row.keys()
     return SchemaColumn(
         file_id=row["file_id"],
@@ -1821,7 +1861,7 @@ def _row_to_schema_column(row: sqlite3.Row) -> SchemaColumn:
     )
 
 
-def _row_to_link(row: sqlite3.Row) -> Link:
+def _row_to_link(row: DbRow) -> Link:
     return Link(
         id=row["id"],
         session_id=row["session_id"],
@@ -1838,7 +1878,7 @@ def _row_to_link(row: sqlite3.Row) -> Link:
     )
 
 
-def _row_to_anomaly(row: sqlite3.Row) -> Anomaly:
+def _row_to_anomaly(row: DbRow) -> Anomaly:
     return Anomaly(
         id=row["id"],
         session_id=row["session_id"],
@@ -1858,7 +1898,7 @@ def _row_to_anomaly(row: sqlite3.Row) -> Anomaly:
     )
 
 
-def _row_to_page(row: sqlite3.Row) -> DashboardPage:
+def _row_to_page(row: DbRow) -> DashboardPage:
     return DashboardPage(
         id=row["id"],
         dashboard_id=row["dashboard_id"],
@@ -1871,7 +1911,7 @@ def _row_to_page(row: sqlite3.Row) -> DashboardPage:
     )
 
 
-def _row_to_cell(row: sqlite3.Row) -> DashboardCell:
+def _row_to_cell(row: DbRow) -> DashboardCell:
     return DashboardCell(
         id=row["id"],
         page_id=row["page_id"],
@@ -1888,7 +1928,7 @@ def _row_to_cell(row: sqlite3.Row) -> DashboardCell:
     )
 
 
-def _row_to_turn(row: sqlite3.Row) -> ChatTurn:
+def _row_to_turn(row: DbRow) -> ChatTurn:
     title = row["title"] if "title" in row.keys() else None
     metadata = loads_json(row["metadata"], default={}) if "metadata" in row.keys() else {}
     return ChatTurn(
@@ -1904,7 +1944,7 @@ def _row_to_turn(row: sqlite3.Row) -> ChatTurn:
     )
 
 
-def _row_to_message(row: sqlite3.Row) -> ChatMessage:
+def _row_to_message(row: DbRow) -> ChatMessage:
     return ChatMessage(
         id=row["id"],
         turn_id=row["turn_id"],
@@ -1917,7 +1957,7 @@ def _row_to_message(row: sqlite3.Row) -> ChatMessage:
     )
 
 
-def _row_to_chat_artifact(row: sqlite3.Row) -> ChatArtifact:
+def _row_to_chat_artifact(row: DbRow) -> ChatArtifact:
     return ChatArtifact(
         id=row["id"],
         session_id=row["session_id"],

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from cerno.config import Settings
 
@@ -20,7 +20,7 @@ class StoredObject:
 
 
 class ObjectStore:
-    backend = "local"
+    backend = "r2"
 
     def put_path(self, source: Path, object_key: str, *, content_type: str | None = None) -> StoredObject:
         raise NotImplementedError
@@ -44,68 +44,12 @@ class ObjectStore:
         raise NotImplementedError
 
 
-class LocalObjectStore(ObjectStore):
-    backend = "local"
-
-    def __init__(self, settings: Settings) -> None:
-        self.root = settings.data_root / "objects"
-
-    def put_path(self, source: Path, object_key: str, *, content_type: str | None = None) -> StoredObject:
-        destination = self.root / object_key
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-        return StoredObject(
-            backend=self.backend,
-            object_key=object_key,
-            size_bytes=destination.stat().st_size,
-            content_type=content_type,
-        )
-
-    def get_to_path(self, object_key: str, destination: Path) -> Path:
-        source = self.root / object_key
-        if not source.exists():
-            raise StorageError(f"object not found: {object_key}")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-        return destination
-
-    def delete(self, object_key: str) -> None:
-        (self.root / object_key).unlink(missing_ok=True)
-
-    def list_keys(self, prefix: str) -> list[str]:
-        """List local object keys under the provided storage prefix."""
-        root = self.root / prefix
-        if not root.exists():
-            return []
-        return [
-            str(path.relative_to(self.root))
-            for path in root.rglob("*")
-            if path.is_file()
-        ]
-
-    def head(self, object_key: str) -> StoredObject:
-        source = self.root / object_key
-        if not source.exists():
-            raise StorageError(f"object not found: {object_key}")
-        return StoredObject(
-            backend=self.backend,
-            object_key=object_key,
-            size_bytes=source.stat().st_size,
-        )
-
-    def presigned_put_url(
-        self, object_key: str, *, content_type: str, expires_seconds: int
-    ) -> str:
-        del object_key, content_type, expires_seconds
-        raise StorageError("direct upload intents require R2 storage")
-
-
 class R2ObjectStore(ObjectStore):
     backend = "r2"
 
     def __init__(self, settings: Settings) -> None:
         try:
-            import boto3
+            import boto3  # type: ignore[import-untyped]
         except ImportError as exc:
             raise RuntimeError("R2 is configured but boto3 is not installed. Run `uv sync` first.") from exc
 
@@ -162,21 +106,24 @@ class R2ObjectStore(ObjectStore):
     def presigned_put_url(
         self, object_key: str, *, content_type: str, expires_seconds: int
     ) -> str:
-        return self.client.generate_presigned_url(
-            "put_object",
-            Params={
-                "Bucket": self.bucket,
-                "Key": object_key,
-                "ContentType": content_type,
-            },
-            ExpiresIn=expires_seconds,
+        return cast(
+            str,
+            self.client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.bucket,
+                    "Key": object_key,
+                    "ContentType": content_type,
+                },
+                ExpiresIn=expires_seconds,
+            ),
         )
 
 
 def get_object_store(settings: Settings) -> ObjectStore:
     if settings.use_r2():
         return R2ObjectStore(settings)
-    raise RuntimeError("CERNO_R2_* settings must be set; local object storage is no longer supported")
+    raise RuntimeError("CERNO_R2_* settings must be set")
 
 
 def source_object_key(user_id: str, asset_id: str, sha256: str, filename: str) -> str:

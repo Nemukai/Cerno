@@ -12,8 +12,8 @@ class ProcessingConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = load_processing_config(Path(tmp) / "config.toml")
 
-        self.assertEqual(config.discovery.model, "gpt-5.4")
-        self.assertEqual(config.discovery.reasoning_effort, "high")
+        self.assertEqual(config.discovery.model, "gpt-5.5")
+        self.assertEqual(config.discovery.reasoning_effort, "medium")
         self.assertEqual(config.discovery.reasoning_summary, "auto")
 
     def test_valid_config_overrides_discovery_processing_settings(self) -> None:

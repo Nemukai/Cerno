@@ -39,7 +39,7 @@ Still pending before a serious MVP:
 
 ## Stack
 
-- **Backend:** Python 3.12, FastAPI, Postgres, Polars, pandas, DuckDB,
+- **Backend:** Python 3.12, FastAPI, Postgres, Polars, pandas,
   python-calamine, pyarrow, Authlib, OpenAI Responses API.
 - **Frontend:** Vite, React, TypeScript, Tailwind, ECharts.
 - **Package managers:** `uv` for Python, `bun` for the frontend.

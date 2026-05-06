@@ -799,7 +799,6 @@ async def run_discovery(
             cached = ensure_file_artifact_cached(
                 file=f,
                 artifact_type="raw_parquet",
-                local_path=f.raw_parquet_path,
                 settings=settings,
                 artifacts_repo=artifacts_repo,
                 object_store=object_store,
@@ -1072,4 +1071,3 @@ async def run_discovery(
         len(result.links),
     )
     return result
-

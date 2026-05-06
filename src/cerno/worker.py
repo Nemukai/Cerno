@@ -4,12 +4,11 @@ import asyncio
 import logging
 import os
 import socket
-import sqlite3
 import time
 from pathlib import Path
 
 from cerno.config import Settings, get_settings
-from cerno.db import connect
+from cerno.db import DbConnection, connect
 from cerno.llm import LLMClient
 from cerno.models import ProcessingJob
 from cerno.repositories import (
@@ -254,7 +253,7 @@ async def _run_discovery(settings: Settings, job: ProcessingJob) -> None:
         conn.close()
 
 
-def _mark_discovery_failed(conn: sqlite3.Connection, job: ProcessingJob, message: str) -> None:
+def _mark_discovery_failed(conn: DbConnection, job: ProcessingJob, message: str) -> None:
     sessions_repo = SessionRepository(conn)
     events_repo = ProcessingEventRepository(conn)
     jobs_repo = ProcessingJobRepository(conn)

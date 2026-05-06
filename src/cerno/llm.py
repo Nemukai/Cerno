@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -221,7 +221,7 @@ class LLMClient:
         prompt_cache_key: str | None = None,
         prompt_cache_retention: str | None = None,
         store: bool = True,
-    ):
+    ) -> AsyncIterator[dict[str, Any]]:
         body = self._response_body(
             input=input,
             instructions=instructions,
@@ -359,7 +359,7 @@ class LLMClient:
         assert last_error is not None
         raise LLMError(f"http error after {max_retries} retries: {last_error}") from last_error
 
-    async def _stream_sse(self, url: str, body: dict[str, Any]):
+    async def _stream_sse(self, url: str, body: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         buffer: list[str] = []
         async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
             async with client.stream("POST", url, json=body, headers=self._headers()) as response:

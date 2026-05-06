@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -145,23 +144,22 @@ def reingest_file(
     object_store: ObjectStore | None = None,
 ) -> None:
     file = files_repo.get(file_id)
-    if file is None or not file.raw_parquet_path:
-        raise ReingestError(f"file {file_id} missing raw parquet")
+    if file is None:
+        raise ReingestError(f"file not found: {file_id}")
+    if not artifacts_repo or not tables_repo or not object_store:
+        raise ReingestError("Postgres/R2 artifact repositories are required")
 
     if not spec.columns:
         logger.warning("skipping reingest for %s: no columns in spec", file_id)
         return
 
-    raw_path = file.raw_parquet_path
-    if artifacts_repo and object_store:
-        raw_path = ensure_file_artifact_cached(
-            file=file,
-            artifact_type="raw_parquet",
-            local_path=file.raw_parquet_path,
-            settings=settings,
-            artifacts_repo=artifacts_repo,
-            object_store=object_store,
-        )
+    raw_path = ensure_file_artifact_cached(
+        file=file,
+        artifact_type="raw_parquet",
+        settings=settings,
+        artifacts_repo=artifacts_repo,
+        object_store=object_store,
+    )
     if not raw_path:
         raise ReingestError(f"file {file_id} missing raw parquet")
     raw = pl.read_parquet(raw_path)
@@ -202,40 +200,39 @@ def reingest_file(
     processed_path = settings.parquet_path(user_id, file.session_id, file.id)
     frame.write_parquet(processed_path)
     processed_artifact_id: str | None = None
-    if artifacts_repo and tables_repo and object_store:
-        key = processed_artifact_key(user_id, file.session_id, file.id, file.schema_version)
-        stored = object_store.put_path(
-            processed_path,
-            key,
-            content_type="application/vnd.apache.parquet",
-        )
-        artifact = artifacts_repo.create(
-            user_id=user_id,
-            session_id=file.session_id,
-            file_id=file.id,
-            artifact_type="processed_parquet",
-            storage_backend=stored.backend,
-            object_key=stored.object_key,
-            size_bytes=stored.size_bytes,
-            mime_type="application/vnd.apache.parquet",
-        )
-        processed_artifact_id = artifact.id
+    key = processed_artifact_key(user_id, file.session_id, file.id, file.schema_version)
+    stored = object_store.put_path(
+        processed_path,
+        key,
+        content_type="application/vnd.apache.parquet",
+    )
+    artifact = artifacts_repo.create(
+        user_id=user_id,
+        session_id=file.session_id,
+        file_id=file.id,
+        artifact_type="processed_parquet",
+        storage_backend=stored.backend,
+        object_key=stored.object_key,
+        size_bytes=stored.size_bytes,
+        mime_type="application/vnd.apache.parquet",
+    )
+    processed_artifact_id = artifact.id
+    processed_path.unlink(missing_ok=True)
 
     files_repo.update_processed(
         file_id=file.id,
-        parquet_path=str(processed_path),
+        parquet_path="",
         row_count=frame.height,
         header_row=spec.header_row,
         friendly_name=spec.friendly_name,
         description=spec.description,
     )
-    if processed_artifact_id is not None:
-        tables_repo.set_processed_artifact(
-            legacy_file_id=file.id,
-            artifact_id=processed_artifact_id,
-            schema_version=file.schema_version,
-            row_count=frame.height,
-        )
+    tables_repo.set_processed_artifact(
+        legacy_file_id=file.id,
+        artifact_id=processed_artifact_id,
+        schema_version=file.schema_version,
+        row_count=frame.height,
+    )
 
     schema = FileSchema(
         file_id=file.id,
@@ -321,16 +318,35 @@ def apply_approval(
     )
 
 
-def preview_rows(*, file_id: str, limit: int, files_repo: FileRepository) -> dict[str, Any]:
+def preview_rows(
+    *,
+    file_id: str,
+    limit: int,
+    files_repo: FileRepository,
+    settings: Settings,
+    artifacts_repo: AssetArtifactRepository,
+    object_store: ObjectStore,
+) -> dict[str, Any]:
     file = files_repo.get(file_id)
     if file is None:
         raise ReingestError(f"file not found: {file_id}")
-    path = file.parquet_path
-    if not path or not Path(path).exists():
-        if file.raw_parquet_path and Path(file.raw_parquet_path).exists():
-            path = file.raw_parquet_path
-        else:
-            raise ReingestError(f"no parquet available for file {file_id}")
+    path = ensure_file_artifact_cached(
+        file=file,
+        artifact_type="processed_parquet",
+        settings=settings,
+        artifacts_repo=artifacts_repo,
+        object_store=object_store,
+    )
+    if not path:
+        path = ensure_file_artifact_cached(
+            file=file,
+            artifact_type="raw_parquet",
+            settings=settings,
+            artifacts_repo=artifacts_repo,
+            object_store=object_store,
+        )
+    if not path:
+        raise ReingestError(f"no R2 parquet artifact available for file {file_id}")
     frame = pl.read_parquet(path).head(limit)
     columns = frame.columns
     rows = frame.to_dicts()

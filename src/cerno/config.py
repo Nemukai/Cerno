@@ -158,9 +158,6 @@ class Settings(BaseSettings):
     def object_cache_path(self, object_key: str) -> Path:
         return self.cache_dir() / object_key
 
-    def db_path(self) -> Path:
-        return self.data_root / "cerno.sqlite"
-
 
 def load_processing_config(path: Path) -> ProcessingConfig:
     if not path.exists():

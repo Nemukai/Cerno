@@ -9,7 +9,7 @@ import pandas as pd
 
 from cerno.config import Settings
 from cerno.llm import LLMClient, ToolCall, conversation_context_options, run_tool_loop
-from cerno.models import ChatTurn, Widget
+from cerno.models import AssetArtifact, ChatTurn, File, FileSchema, Widget, WorkspaceTable
 from cerno.repositories import (
     AssetArtifactRepository,
     ChatArtifactRepository,
@@ -17,17 +17,16 @@ from cerno.repositories import (
     DataDocRepository,
     FileRepository,
     SchemaRepository,
+    WorkspaceTableRepository,
 )
-from cerno.services.artifact_cache import ensure_file_artifact_cached
-from cerno.services.engine import DuckDBEngine
 from cerno.services.ingest import slugify_table_name
-from cerno.services.tools import ToolContext, build_tool_registry
+from cerno.services.tools import ToolContext, ToolTable, build_tool_registry
 from cerno.storage import get_object_store
 
 SYSTEM_PROMPT = (
     "You are Cerno, a plain-English data analyst. You are chatting with a non-technical "
-    "user about data they just uploaded. Every ingested file is available as a table "
-    "(DuckDB view + pandas DataFrame named after the slugified filename). "
+    "user about data they just uploaded. Every processed table is registered in Postgres "
+    "and made available to run_python as a pandas DataFrame named after the slugified filename. "
     "Back every numeric claim by calling run_python — never guess numbers. "
     "Use read_schema_guide when you need to understand what the data contains, where "
     "fields live, caveats, relationships, or good ways to answer the user's question. "
@@ -53,7 +52,6 @@ class ChatTurnResult:
 class ChatRuntime:
     turn: ChatTurn
     conversation_id: str
-    engine: DuckDBEngine
     registry: Any
     ctx: ToolContext
 
@@ -84,64 +82,61 @@ async def run_chat_turn(
         data_docs_repo=data_docs_repo,
         schemas_repo=schemas_repo,
     )
-    try:
-        def on_message(message: dict[str, Any]) -> None:
-            _persist_loop_message(chat_repo, runtime.turn.id, message)
-            chat_repo.conn.commit()
-
-        try:
-            context_options = conversation_context_options(session_id, runtime.turn.id)
-            result = await run_tool_loop(
-                client=llm_client,
-                registry=runtime.registry,
-                input=[{"role": "user", "content": user_message}],
-                instructions=SYSTEM_PROMPT,
-                conversation=runtime.conversation_id,
-                **context_options,
-                reasoning_effort=settings.llm_reasoning_effort,
-                reasoning_summary=settings.llm_reasoning_summary,
-                max_calls=settings.chat_max_llm_calls,
-                on_message=on_message,
-            )
-        except Exception:
-            chat_repo.set_turn_state(runtime.turn.id, "failed")
-            chat_repo.conn.commit()
-            raise
-
-        if runtime.ctx.rendered_widgets:
-            _persist_widget_artifacts(
-                chat_artifacts_repo=chat_artifacts_repo,
-                session_id=session_id,
-                turn_id=runtime.turn.id,
-                widgets=runtime.ctx.rendered_widgets,
-            )
-
-        chat_repo.complete_turn(
-            turn_id=runtime.turn.id,
-            assistant_message=result.final_message,
-            spawned_page_id=None,
-        )
-        _update_turn_metadata(
-            chat_repo,
-            runtime.turn,
-            {
-                "openai_conversation_id": runtime.conversation_id,
-                "last_response_id": result.response_id,
-                "version": 2,
-            },
-        )
+    def on_message(message: dict[str, Any]) -> None:
+        _persist_loop_message(chat_repo, runtime.turn.id, message)
         chat_repo.conn.commit()
-        saved_turn = chat_repo.get_turn(runtime.turn.id) or runtime.turn
 
-        return ChatTurnResult(
-            turn=saved_turn,
-            assistant_message=result.final_message,
-            spawned_page_id=None,
-            widgets=list(runtime.ctx.rendered_widgets),
-            tool_calls=result.call_count,
+    try:
+        context_options = conversation_context_options(session_id, runtime.turn.id)
+        result = await run_tool_loop(
+            client=llm_client,
+            registry=runtime.registry,
+            input=[{"role": "user", "content": user_message}],
+            instructions=SYSTEM_PROMPT,
+            conversation=runtime.conversation_id,
+            **context_options,
+            reasoning_effort=settings.llm_reasoning_effort,
+            reasoning_summary=settings.llm_reasoning_summary,
+            max_calls=settings.chat_max_llm_calls,
+            on_message=on_message,
         )
-    finally:
-        runtime.engine.close()
+    except Exception:
+        chat_repo.set_turn_state(runtime.turn.id, "failed")
+        chat_repo.conn.commit()
+        raise
+
+    if runtime.ctx.rendered_widgets:
+        _persist_widget_artifacts(
+            chat_artifacts_repo=chat_artifacts_repo,
+            session_id=session_id,
+            turn_id=runtime.turn.id,
+            widgets=runtime.ctx.rendered_widgets,
+        )
+
+    chat_repo.complete_turn(
+        turn_id=runtime.turn.id,
+        assistant_message=result.final_message,
+        spawned_page_id=None,
+    )
+    _update_turn_metadata(
+        chat_repo,
+        runtime.turn,
+        {
+            "openai_conversation_id": runtime.conversation_id,
+            "last_response_id": result.response_id,
+            "version": 2,
+        },
+    )
+    chat_repo.conn.commit()
+    saved_turn = chat_repo.get_turn(runtime.turn.id) or runtime.turn
+
+    return ChatTurnResult(
+        turn=saved_turn,
+        assistant_message=result.final_message,
+        spawned_page_id=None,
+        widgets=list(runtime.ctx.rendered_widgets),
+        tool_calls=result.call_count,
+    )
 
 
 async def stream_chat_turn(
@@ -336,8 +331,6 @@ async def stream_chat_turn(
         chat_repo.set_turn_state(runtime.turn.id, "failed")
         chat_repo.conn.commit()
         yield {"type": "error", "turn_id": runtime.turn.id, "message": str(exc)}
-    finally:
-        runtime.engine.close()
 
 
 async def _prepare_chat_runtime(
@@ -353,7 +346,6 @@ async def _prepare_chat_runtime(
     data_docs_repo: DataDocRepository,
     schemas_repo: SchemaRepository,
 ) -> ChatRuntime:
-    del schemas_repo  # reserved for future schema-aware prompts
     turn = chat_repo.get_turn(turn_id) if turn_id else None
     if turn is not None and turn.session_id != session_id:
         raise ValueError("chat turn does not belong to this session")
@@ -384,42 +376,147 @@ async def _prepare_chat_runtime(
     chat_repo.append_message(turn_id=turn.id, role="user", content=user_message)
     chat_repo.conn.commit()
 
-    files = files_repo.list_for_session(session_id)
-    engine = DuckDBEngine()
     object_store = get_object_store(settings)
-    tables: dict[str, pd.DataFrame] = {}
-    for file in files:
-        table_name = slugify_table_name(file.filename)
-        parquet_path = ensure_file_artifact_cached(
-            file=file,
-            artifact_type="processed_parquet",
-            local_path=file.parquet_path,
-            settings=settings,
-            artifacts_repo=artifacts_repo,
-            object_store=object_store,
-        )
-        if not parquet_path:
-            continue
-        engine.register_file(
-            table_name=table_name,
-            parquet_path=parquet_path,
-            row_count=file.row_count,
-        )
-        tables[table_name] = engine.to_pandas(table_name)
+    tables = _load_chat_tables(
+        session_id=session_id,
+        settings=settings,
+        files_repo=files_repo,
+        schemas_repo=schemas_repo,
+        artifacts_repo=artifacts_repo,
+        object_store=object_store,
+    )
 
     ctx = ToolContext(
         session_id=session_id,
-        engine=engine,
         tables=tables,
         data_doc=data_docs_repo.get(session_id),
     )
     return ChatRuntime(
         turn=turn,
         conversation_id=conversation_id,
-        engine=engine,
         registry=build_tool_registry(ctx),
         ctx=ctx,
     )
+
+
+def _load_chat_tables(
+    *,
+    session_id: str,
+    settings: Settings,
+    files_repo: FileRepository,
+    schemas_repo: SchemaRepository,
+    artifacts_repo: AssetArtifactRepository,
+    object_store: Any,
+) -> dict[str, ToolTable]:
+    files = files_repo.list_for_session(session_id)
+    files_by_id = {file.id: file for file in files}
+    workspace_tables = WorkspaceTableRepository(files_repo.conn).list_for_session(session_id)
+    if not workspace_tables:
+        workspace_tables = [
+            WorkspaceTable(
+                id=file.id,
+                session_id=session_id,
+                legacy_file_id=file.id,
+                display_name=file.friendly_name or file.filename,
+                row_count=file.row_count,
+                current_schema_version=file.schema_version,
+                created_at=file.created_at,
+            )
+            for file in files
+        ]
+
+    seen_names: set[str] = set()
+    tables: dict[str, ToolTable] = {}
+    for workspace_table in workspace_tables:
+        file = files_by_id.get(workspace_table.legacy_file_id or "")
+        if file is None:
+            continue
+        table_name = _unique_table_name(slugify_table_name(file.filename), seen_names)
+        schema = schemas_repo.get(file.id, workspace_table.current_schema_version)
+        artifact = _processed_artifact_for_table(workspace_table, file, artifacts_repo)
+        dataframe, load_error = _load_processed_dataframe(
+            artifact=artifact,
+            settings=settings,
+            object_store=object_store,
+        )
+        columns = _columns_from_schema(schema)
+        if dataframe is not None and not columns:
+            columns = _columns_from_dataframe(dataframe)
+        tables[table_name] = ToolTable(
+            name=table_name,
+            display_name=workspace_table.display_name or file.friendly_name or file.filename,
+            row_count=workspace_table.row_count or file.row_count,
+            columns=columns,
+            dataframe=dataframe,
+            load_error=load_error,
+        )
+    return tables
+
+
+def _processed_artifact_for_table(
+    table: WorkspaceTable,
+    file: File,
+    artifacts_repo: AssetArtifactRepository,
+) -> AssetArtifact | None:
+    if table.processed_artifact_id:
+        artifact = artifacts_repo.get(table.processed_artifact_id)
+        if artifact is not None:
+            return artifact
+    return artifacts_repo.latest_for_file(file.id, "processed_parquet")
+
+
+def _load_processed_dataframe(
+    *,
+    artifact: AssetArtifact | None,
+    settings: Settings,
+    object_store: Any,
+) -> tuple[pd.DataFrame | None, str | None]:
+    if artifact is None:
+        return None, "processed R2 artifact is not registered"
+    if artifact.storage_backend != object_store.backend:
+        return None, f"processed artifact is stored in {artifact.storage_backend}, not {object_store.backend}"
+    try:
+        destination = settings.object_cache_path(artifact.object_key)
+        object_store.get_to_path(artifact.object_key, destination)
+        return pd.read_parquet(destination), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _columns_from_schema(schema: FileSchema | None) -> list[dict[str, Any]]:
+    if schema is None:
+        return []
+    return [
+        {
+            "name": column.name,
+            "type": column.dtype,
+            "nullable": None,
+            "kind": column.inferred_kind,
+            "description": column.description,
+        }
+        for column in schema.columns
+    ]
+
+
+def _columns_from_dataframe(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": str(name),
+            "type": str(dtype),
+            "nullable": bool(frame[name].isna().any()),
+        }
+        for name, dtype in frame.dtypes.items()
+    ]
+
+
+def _unique_table_name(base: str, seen: set[str]) -> str:
+    name = base
+    index = 2
+    while name in seen:
+        name = f"{base}_{index}"
+        index += 1
+    seen.add(name)
+    return name
 
 
 def _persist_loop_message(chat_repo: ChatRepository, turn_id: str, message: dict[str, Any]) -> None:

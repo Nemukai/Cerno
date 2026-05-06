@@ -9,12 +9,15 @@ from cerno.config import Settings
 from cerno.models import Anomaly, File, FileSchema
 from cerno.repositories import (
     AnomalyRepository,
+    AssetArtifactRepository,
     FileRepository,
     LinkRepository,
     SchemaRepository,
     new_id,
 )
+from cerno.services.artifact_cache import ensure_file_artifact_cached
 from cerno.services.ingest import slugify_table_name
+from cerno.storage import ObjectStore
 
 RARE_VALUE_KINDS = {"category", "string", "bool"}
 NUMERIC_KINDS = {"int", "float"}
@@ -32,8 +35,23 @@ class AnomalyDraft:
     source_code: str
 
 
-def _load_frame(file: File) -> pl.DataFrame:
-    return pl.read_parquet(file.parquet_path)
+def _load_frame(
+    *,
+    file: File,
+    settings: Settings,
+    artifacts_repo: AssetArtifactRepository,
+    object_store: ObjectStore,
+) -> pl.DataFrame:
+    path = ensure_file_artifact_cached(
+        file=file,
+        artifact_type="processed_parquet",
+        settings=settings,
+        artifacts_repo=artifacts_repo,
+        object_store=object_store,
+    )
+    if not path:
+        raise RuntimeError(f"file {file.id} missing processed R2 artifact")
+    return pl.read_parquet(path)
 
 
 def _detect_numeric_mad(
@@ -165,6 +183,8 @@ def _detect_key_overlap(
     links_repo: LinkRepository,
     settings: Settings,
     session_id: str,
+    artifacts_repo: AssetArtifactRepository,
+    object_store: ObjectStore,
 ) -> list[AnomalyDraft]:
     drafts: list[AnomalyDraft] = []
     all_links = links_repo.list_for_session(session_id)
@@ -179,16 +199,26 @@ def _detect_key_overlap(
     if not confirmed_incoming:
         return drafts
 
-    b_frame = _load_frame(file)
+    b_frame = _load_frame(
+        file=file,
+        settings=settings,
+        artifacts_repo=artifacts_repo,
+        object_store=object_store,
+    )
     for link in confirmed_incoming:
         file_a = files_by_id.get(link.file_a)
         if file_a is None:
             continue
-        if link.col_a not in _load_frame(file_a).columns:
+        a_frame = _load_frame(
+            file=file_a,
+            settings=settings,
+            artifacts_repo=artifacts_repo,
+            object_store=object_store,
+        )
+        if link.col_a not in a_frame.columns:
             continue
         if link.col_b not in b_frame.columns:
             continue
-        a_frame = _load_frame(file_a)
         b_values = set(b_frame[link.col_b].drop_nulls().cast(pl.String).to_list())
         a_col = a_frame[link.col_a]
         a_strings = a_col.cast(pl.String).to_list()
@@ -233,6 +263,8 @@ def detect_anomalies(
     files_repo: FileRepository,
     schemas_repo: SchemaRepository,
     links_repo: LinkRepository,
+    artifacts_repo: AssetArtifactRepository,
+    object_store: ObjectStore,
 ) -> list[AnomalyDraft]:
     files = files_repo.list_for_session(session_id)
     files_by_id = {f.id: f for f in files}
@@ -241,7 +273,12 @@ def detect_anomalies(
         schema = schemas_repo.get(file.id, file.schema_version)
         if schema is None:
             continue
-        frame = _load_frame(file)
+        frame = _load_frame(
+            file=file,
+            settings=settings,
+            artifacts_repo=artifacts_repo,
+            object_store=object_store,
+        )
         drafts.extend(_detect_numeric_mad(file=file, schema=schema, frame=frame, settings=settings))
         drafts.extend(_detect_rare_value(file=file, schema=schema, frame=frame, settings=settings))
         drafts.extend(
@@ -251,6 +288,8 @@ def detect_anomalies(
                 links_repo=links_repo,
                 settings=settings,
                 session_id=session_id,
+                artifacts_repo=artifacts_repo,
+                object_store=object_store,
             )
         )
     return drafts
