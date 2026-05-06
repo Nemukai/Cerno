@@ -273,7 +273,13 @@ async def stream_chat_turn(
                         "arguments": tool_call.arguments,
                     }
                     tool = runtime.registry.get(tool_call.name)
-                    result = await tool.handler(tool_call.arguments)
+                    try:
+                        result = await tool.handler(tool_call.arguments)
+                    except Exception as exc:
+                        result = {
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
                     payload = json.dumps(result)
                     chat_repo.append_message(
                         turn_id=runtime.turn.id,

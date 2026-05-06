@@ -57,7 +57,14 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
         }
 
     async def describe_table(args: dict[str, Any]) -> dict[str, Any]:
-        table_name = str(args["table"])
+        table_arg = args.get("table")
+        if table_arg is None:
+            return {
+                "ok": False,
+                "error": "describe_table missing required field: table",
+                "available_tables": available_table_names,
+            }
+        table_name = str(table_arg)
         table = ctx.tables.get(table_name)
         if table is None:
             return {
@@ -87,10 +94,20 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 "error": "No pandas DataFrames are currently available from processed R2 artifacts.",
                 "available_tables": available_table_names,
             }
-        code = str(args["code"])
+        code_arg = args.get("code")
+        if code_arg is None:
+            return {"ok": False, "error": "run_python missing required field: code"}
+        code = str(code_arg)
         return run_python(code, tables=dataframes).to_dict()
 
     async def render_widget(args: dict[str, Any]) -> dict[str, Any]:
+        missing = [key for key in ("kind", "title", "data") if key not in args]
+        if missing:
+            return {
+                "ok": False,
+                "error": f"render_widget missing required field(s): {', '.join(missing)}",
+                "received_fields": sorted(args),
+            }
         widget = Widget(
             kind=args["kind"],
             title=str(args["title"]),

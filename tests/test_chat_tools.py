@@ -152,6 +152,34 @@ class ChatToolRegistryTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["available_tables"], ["orders"])
 
+    def test_tool_handlers_return_clear_errors_for_missing_required_args(self) -> None:
+        ctx = ToolContext(
+            session_id="s1",
+            tables={
+                "orders": ToolTable(
+                    name="orders",
+                    display_name="Orders",
+                    row_count=1,
+                    columns=[{"name": "order_id", "type": "int", "nullable": False}],
+                    dataframe=pd.DataFrame({"order_id": [1]}),
+                )
+            },
+        )
+        registry = build_tool_registry(ctx)
+
+        describe_result = asyncio.run(registry.get("describe_table").handler({}))
+        python_result = asyncio.run(registry.get("run_python").handler({}))
+        widget_result = asyncio.run(
+            registry.get("render_widget").handler({"kind": "table", "title": "Orders"})
+        )
+
+        self.assertFalse(describe_result["ok"])
+        self.assertIn("table", describe_result["error"])
+        self.assertFalse(python_result["ok"])
+        self.assertIn("code", python_result["error"])
+        self.assertFalse(widget_result["ok"])
+        self.assertIn("data", widget_result["error"])
+
     def test_run_python_description_lists_allowed_environment(self) -> None:
         ctx = ToolContext(
             session_id="s1",
