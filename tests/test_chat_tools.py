@@ -205,6 +205,7 @@ class ChatToolRegistryTests(unittest.TestCase):
         ctx = ToolContext(session_id="s1", tables={})
         tool = build_tool_registry(ctx).get("render_widget")
 
+        self.assertIn("Prioritize this for analytical answers", tool.description)
         self.assertIn("data field is required", tool.description)
         self.assertIn("must be an object", tool.description)
         self.assertIn("columns", tool.description)

@@ -190,7 +190,8 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
             name="render_widget",
             description=(
                 "Emit a widget for this chat turn. "
-                "Call this for every chart, KPI, or table you want the user to see. "
+                "Prioritize this for analytical answers: KPI totals, grouped result tables, rankings, comparisons, distributions, and time trends should be rendered as widgets, not only described in text. "
+                "Call this for every chart, KPI, or table you want the user to see before writing the final answer. "
                 "The data field is required and must be an object, never a raw list. "
                 "For table, bar, line, and pie widgets, use data={columns: [...], rows: [[...], ...]}."
             ),

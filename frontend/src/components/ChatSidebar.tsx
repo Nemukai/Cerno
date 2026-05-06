@@ -150,18 +150,21 @@ export function ChatSidebar({
               .filter(
                 ({ message }) => message.role === "assistant" && message.tool_name,
               );
+            const visibleMessages = messages.filter(
+              (message) => message.role !== "tool" && !message.tool_name,
+            );
+            const userMessages = visibleMessages.filter(
+              (message) => message.role === "user",
+            );
+            const assistantMessages = visibleMessages.filter(
+              (message) => message.role === "assistant",
+            );
 
             return (
               <div key={turn.id} className="hairline border-b py-4">
-                {messages
-                  .filter((message) => message.role !== "tool" && !message.tool_name)
-                  .map((message) =>
-                    message.role === "user" ? (
-                      <UserBubble key={message.id} text={message.content} />
-                    ) : (
-                      <AssistantBubble key={message.id} text={message.content} />
-                    ),
-                  )}
+                {userMessages.map((message) => (
+                  <UserBubble key={message.id} text={message.content} />
+                ))}
                 {traceItems.length > 0 ? (
                   <TraceDisclosure
                     open={Boolean(openTraceByTurn[turn.id])}
@@ -170,6 +173,9 @@ export function ChatSidebar({
                   />
                 ) : null}
                 {messages.length === 0 && turn.state !== "complete" ? <ThinkingIndicator /> : null}
+                {assistantMessages.map((message) => (
+                  <AssistantBubble key={message.id} text={message.content} />
+                ))}
                 {widgets.length > 0 ? (
                   <div className="mt-4 grid gap-3">
                     {widgets.map((widget, index) => (
