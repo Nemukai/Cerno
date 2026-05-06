@@ -31,7 +31,7 @@ import type {
   Session,
 } from "./lib/types";
 import { ChatSidebar } from "./components/ChatSidebar";
-import { CernoLockup, CernoMark, CernoWordmark } from "./components/Brand";
+import { CernoLockup } from "./components/Brand";
 import {
   FilesPanel,
   InsightsPanel,
@@ -938,7 +938,6 @@ function WorkspacesPage({
   onBackToLanding: () => void;
 }) {
   const [name, setName] = useState("");
-  const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 });
   const stats = buildWorkspaceStats(sessions, metrics);
 
   const handleStart = () => {
@@ -956,14 +955,6 @@ function WorkspacesPage({
       `Delete workspace "${s.name}"? Files, links, insights, and chat history will be removed. This cannot be undone.`,
     );
     if (ok) onDelete(s.id);
-  };
-
-  const handlePointerMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    setPointer({
-      x: (e.clientX - rect.left) / rect.width,
-      y: (e.clientY - rect.top) / rect.height,
-    });
   };
 
   return (
