@@ -9,15 +9,15 @@ body,
 }
 
 body {
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  color: #0E0E0E;
-  background: #FAFAFA;
+  font-family: "Satoshi", system-ui, sans-serif;
+  color: #2C3338;
+  background: #F5F1E8;
 }
 
 .cerno-wordmark {
-  font-family: "Inter", "IBM Plex Sans", system-ui, sans-serif;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-family: "Newsreader", "Georgia", serif;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 .small-caps {
@@ -27,7 +27,7 @@ body {
 }
 
 .hairline {
-  border-color: #E5E5E5;
+  border-color: #E2DDD1;
 }
 
 .text-\[10px\],
