@@ -5,11 +5,13 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
+from cerno.api.deps import ConnDep, GrantedUserDep, SettingsDep
 from cerno.config import Settings
+from cerno.db import connect
+from cerno.llm import LLMClient
 from cerno.models import (
     DataDoc,
     DataDocColumn,
@@ -332,72 +334,63 @@ def _build_discovery_response(
 @router.post("/sessions/{session_id}/process", response_model=DiscoveryResponse)
 async def post_process(
     session_id: str,
+    background_tasks: BackgroundTasks,
     conn: ConnDep,
     settings: SettingsDep,
-    llm_client: LLMDep,
     user: GrantedUserDep,
 ) -> DiscoveryResponse:
-    _require_session(conn, session_id, user.id)
+    session = _require_session(conn, session_id, user.id)
+    if session.discovery_status == "discovering":
+        return _build_discovery_response(session_id, conn, user.id)
     sessions_repo = SessionRepository(conn)
     files_repo = FileRepository(conn)
-    links_repo = LinkRepository(conn)
     events_repo = ProcessingEventRepository(conn)
+    if not files_repo.list_for_session(session_id):
+        raise HTTPException(status_code=400, detail="no files in session")
 
+    sessions_repo.set_discovery_status(session_id, "discovering")
+    events_repo.clear(session_id)
+    events_repo.append(
+        session_id=session_id,
+        kind="started",
+        message="processing queued",
+    )
+    conn.commit()
+    background_tasks.add_task(
+        _run_discovery_background,
+        session_id=session_id,
+        user_id=user.id,
+        settings=settings,
+    )
+    return _build_discovery_response(session_id, conn, user.id)
+
+
+async def _run_discovery_background(
+    *, session_id: str, user_id: str, settings: Settings
+) -> None:
+    conn = connect(settings)
     try:
-        result = await run_discovery(
+        await run_discovery(
             session_id=session_id,
             settings=settings,
-            files_repo=files_repo,
-            sessions_repo=sessions_repo,
-            links_repo=links_repo,
+            files_repo=FileRepository(conn),
+            sessions_repo=SessionRepository(conn),
+            links_repo=LinkRepository(conn),
             data_docs_repo=DataDocRepository(conn),
-            events_repo=events_repo,
-            llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
+            events_repo=ProcessingEventRepository(conn),
+            llm_client=LLMClient(settings=settings).with_usage(
+                LLMUsageRepository(conn, auto_commit=True), user_id
+            ),
             artifacts_repo=AssetArtifactRepository(conn),
             object_store=get_object_store(settings),
         )
+        conn.commit()
     except DiscoveryError as exc:
         _mark_processing_failed(conn, session_id, str(exc))
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         _mark_processing_failed(conn, session_id, str(exc))
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    conn.commit()
-    return DiscoveryResponse(
-        session_id=session_id,
-        status="pending_review",
-        files=[
-            DiscoveredFileBody(
-                file_id=df.file_id,
-                friendly_name=df.friendly_name,
-                description=df.description,
-                header_row=df.header_row,
-                columns=[
-                    DiscoveredColumnBody(
-                        column_id=c.column_id,
-                        name=c.name,
-                        description=c.description,
-                        dtype=c.dtype,
-                    )
-                    for c in df.columns
-                ],
-            )
-            for df in result.files
-        ],
-        links=[
-            DiscoveredLinkBody(
-                file_a_id=link.file_a_id,
-                col_a=link.col_a,
-                file_b_id=link.file_b_id,
-                col_b=link.col_b,
-                direction=link.direction,
-                summary=link.summary,
-            )
-            for link in result.links
-        ],
-        overview=result.overview,
-    )
+    finally:
+        conn.close()
 
 
 def _mark_processing_failed(conn: sqlite3.Connection, session_id: str, message: str) -> None:
