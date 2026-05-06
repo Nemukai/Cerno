@@ -37,9 +37,9 @@ import { ChatSidebar } from "./components/ChatSidebar";
 import { CernoLockup } from "./components/Brand";
 import {
   FilesPanel,
-  InsightsPanel,
   WorkspaceSidebar,
 } from "./components/SessionPanels";
+import { SchemaTab } from "./components/SchemaTab";
 import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
 import { AuthGate } from "./components/AuthGate";
@@ -920,17 +920,17 @@ export function App() {
           />
         ) : null}
         {files.length > 0 && activeTab === "insights" ? (
-          <InsightsPanel
+          <SchemaTab
             files={files}
             links={links}
             discovery={discovery}
-            dataDoc={dataDoc}
+            doc={dataDoc}
             events={events}
             processing={processing}
             approving={approving}
+            canProcess={files.length > 0}
             onProcess={handleProcess}
             onApprove={handleApprove}
-            onOpenFiles={() => handleTabChange("files")}
           />
         ) : null}
         {files.length > 0 && activeTab === "files" ? (
