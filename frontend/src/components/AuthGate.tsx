@@ -18,7 +18,7 @@ export function AuthGate({ children }: AuthGateProps) {
 
   if (loading && !override) {
     return (
-      <div className="flex h-screen items-center justify-center bg-neutral-950 text-neutral-400">
+      <div className="flex h-screen items-center justify-center bg-tidepaper text-night-watch/60">
         Loading…
       </div>
     );
@@ -26,7 +26,7 @@ export function AuthGate({ children }: AuthGateProps) {
 
   if (error && !override) {
     return (
-      <div className="flex h-screen items-center justify-center bg-neutral-950 text-red-400">
+      <div className="flex h-screen items-center justify-center bg-tidepaper text-red-600">
         Failed to load session: {error}
       </div>
     );
@@ -47,21 +47,21 @@ export function AuthGate({ children }: AuthGateProps) {
 
 function SignInScreen() {
   return (
-    <div className="flex h-screen items-center justify-center bg-neutral-950 text-neutral-100">
-      <div className="flex flex-col items-center gap-6 rounded-lg border border-neutral-800 bg-neutral-900 px-10 py-12 shadow-xl">
+    <div className="flex h-screen items-center justify-center bg-tidepaper text-night-watch">
+      <div className="flex flex-col items-center gap-6 border border-drift bg-drift/10 px-10 py-12 shadow-sm">
         <div className="text-center">
           <CernoLockup
             className="justify-center"
-            markClassName="h-8 w-8"
-            wordmarkClassName="text-2xl text-neutral-100"
+            markClassName="h-8 w-8 text-deep-sea"
+            wordmarkClassName="text-2xl text-night-watch"
           />
-          <p className="mt-1 text-sm text-neutral-400">
+          <p className="mt-1 text-sm text-night-watch/70">
             Link-aware data analysis. Sign in to begin.
           </p>
         </div>
         <a
           href={googleLoginUrl()}
-          className="rounded-md bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-100"
+          className="bg-night-watch px-4 py-2 text-sm font-medium text-tidepaper hover:bg-deep-sea"
         >
           Continue with Google
         </a>

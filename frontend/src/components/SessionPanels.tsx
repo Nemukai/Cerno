@@ -70,7 +70,7 @@ export function WorkspaceSidebar({
         <button
           type="button"
           onClick={() => onSelectTab("files")}
-          className="flex w-full items-center justify-between rounded-lg bg-neutral-50 px-3 py-2 text-left transition hover:bg-neutral-100"
+          className="flex w-full items-center justify-between bg-neutral-50 px-3 py-2 text-left transition hover:bg-neutral-100"
         >
           <span className="text-sm font-medium text-ink">Files</span>
           <span className="font-mono text-sm text-neutral-500">
@@ -99,7 +99,7 @@ export function WorkspaceSidebar({
                   event.preventDefault();
                   setMenu({ turn, x: event.clientX, y: event.clientY });
                 }}
-                className={`min-w-0 rounded-lg px-3 py-2 text-left transition ${
+                className={`min-w-0 px-3 py-2 text-left transition ${
                   activeTurnId === turn.id
                     ? "bg-orange-50 text-ember"
                     : "hover:bg-orange-50"
@@ -126,21 +126,21 @@ export function WorkspaceSidebar({
         </div>
         {menu ? (
           <div
-            className="fixed z-50 w-36 rounded-md border border-neutral-200 bg-white p-1 shadow-lg"
+            className="fixed z-50 w-36 border border-neutral-200 bg-white p-1 shadow-lg"
             style={{ left: menu.x, top: menu.y }}
             onClick={(event) => event.stopPropagation()}
           >
             <button
               type="button"
               onClick={() => renameTurn(menu.turn)}
-              className="block w-full rounded px-2 py-1.5 text-left text-sm text-ink hover:bg-neutral-50"
+              className="block w-full px-2 py-1.5 text-left text-sm text-ink hover:bg-neutral-50"
             >
               Edit name
             </button>
             <button
               type="button"
               onClick={() => deleteTurn(menu.turn)}
-              className="block w-full rounded px-2 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
+              className="block w-full px-2 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
             >
               Delete
             </button>
@@ -252,7 +252,7 @@ export function InsightsPanel({
 
       {isProcessingState ? (
         <div className="flex flex-col items-center justify-center py-24 text-center">
-          <div className="mb-6 h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-ember"></div>
+          <div className="mb-6 h-10 w-10 animate-spin border-2 border-neutral-200 border-t-ember"></div>
           <h3 className="font-mono text-lg text-ink">Analyzing your workspace...</h3>
           {events.length > 0 && (
              <p className="mt-2 text-sm text-neutral-500 animate-pulse">
@@ -302,12 +302,12 @@ export function InsightsPanel({
             {relationshipCards.length > 0 ? (
               <div className="mt-3 flex flex-col gap-3">
                 {relationshipCards.map((rel, idx) => (
-                  <div key={idx} className="rounded-md border border-neutral-100 bg-neutral-50 p-3">
+                  <div key={idx} className="border border-neutral-100 bg-neutral-50 p-3">
                     <div className="flex items-center gap-2 text-sm">
-                      <span className="font-mono text-ink bg-white px-1 border border-neutral-200 rounded">{nameForFile(rel.leftFileId, files)}</span>
+                      <span className="font-mono text-ink bg-white px-1 border border-neutral-200">{nameForFile(rel.leftFileId, files)}</span>
                       <span className="text-neutral-500">.{rel.leftColumn}</span>
                       <span className="text-ember px-1">→</span>
-                      <span className="font-mono text-ink bg-white px-1 border border-neutral-200 rounded">{nameForFile(rel.rightFileId, files)}</span>
+                      <span className="font-mono text-ink bg-white px-1 border border-neutral-200">{nameForFile(rel.rightFileId, files)}</span>
                       <span className="text-neutral-500">.{rel.rightColumn}</span>
                     </div>
                     {rel.explanation && (

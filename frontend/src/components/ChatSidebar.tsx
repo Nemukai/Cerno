@@ -242,15 +242,15 @@ function ThinkingIndicator() {
     <div className="flex items-center gap-3 py-2">
       <div className="flex items-center gap-1">
         <span
-          className="inline-block h-1.5 w-1.5 rounded-full bg-ember animate-bounce"
+          className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
           style={{ animationDelay: "0ms", animationDuration: "1s" }}
         />
         <span
-          className="inline-block h-1.5 w-1.5 rounded-full bg-ember animate-bounce"
+          className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
           style={{ animationDelay: "150ms", animationDuration: "1s" }}
         />
         <span
-          className="inline-block h-1.5 w-1.5 rounded-full bg-ember animate-bounce"
+          className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
           style={{ animationDelay: "300ms", animationDuration: "1s" }}
         />
       </div>
