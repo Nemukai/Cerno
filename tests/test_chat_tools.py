@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import tempfile
 import unittest
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 
+from cerno.config import Settings
+from cerno.models import AssetArtifact, File, WorkspaceTable
+from cerno.services.chat import _file_spec_from_raw_header
 from cerno.services.tools import ToolContext, ToolTable, build_tool_registry
 
 
@@ -163,6 +170,67 @@ class ChatToolRegistryTests(unittest.TestCase):
         self.assertIn("Available pandas DataFrames: orders", tool.description)
         self.assertIn("pd (pandas) and np (numpy)", tool.description)
         self.assertIn("Not allowed: imports", tool.description)
+
+    def test_raw_header_fallback_builds_reingest_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_path = root / "raw.parquet"
+            pd.DataFrame(
+                {
+                    "c0": ["Report", "FOR DATE", "2026-03-16", "2026-03-16"],
+                    "c1": ["", "SHIFT", "1", "2"],
+                    "c2": ["", "Rate", "50.5", "75.0"],
+                }
+            ).to_parquet(raw_path, index=False)
+            settings = Settings(data_root=root, _env_file=None)
+            spec = _file_spec_from_raw_header(
+                file=File(
+                    id="file-1",
+                    session_id="session-1",
+                    filename="tolls.xlsx",
+                    parquet_path="",
+                    row_count=2,
+                    schema_version=1,
+                    header_row=1,
+                    created_at=datetime.now(UTC),
+                ),
+                table=WorkspaceTable(
+                    id="table-1",
+                    session_id="session-1",
+                    legacy_file_id="file-1",
+                    display_name="Tolls",
+                    row_count=2,
+                    created_at=datetime.now(UTC),
+                ),
+                raw_artifact=AssetArtifact(
+                    id="artifact-1",
+                    user_id="user-1",
+                    session_id="session-1",
+                    file_id="file-1",
+                    artifact_type="raw_parquet",
+                    storage_backend="r2",
+                    object_key="raw.parquet",
+                    created_at=datetime.now(UTC),
+                ),
+                settings=settings,
+                object_store=FakeObjectStore(raw_path),
+            )
+
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        self.assertEqual([column.name for column in spec.columns], ["FOR DATE", "SHIFT", "Rate"])
+        self.assertEqual([column.dtype for column in spec.columns], ["date", "int", "float"])
+
+class FakeObjectStore:
+    backend = "r2"
+
+    def __init__(self, source: Path) -> None:
+        self.source = source
+
+    def get_to_path(self, object_key: str, destination: Path) -> Path:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.source, destination)
+        return destination
 
 
 if __name__ == "__main__":

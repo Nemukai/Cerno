@@ -198,6 +198,7 @@ def reingest_file(
             frame = frame.with_columns(casted.alias(name))
 
     processed_path = settings.parquet_path(user_id, file.session_id, file.id)
+    processed_path.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(processed_path)
     processed_artifact_id: str | None = None
     key = processed_artifact_key(user_id, file.session_id, file.id, file.schema_version)

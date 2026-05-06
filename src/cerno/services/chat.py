@@ -9,7 +9,16 @@ import pandas as pd
 
 from cerno.config import Settings
 from cerno.llm import LLMClient, ToolCall, conversation_context_options, run_tool_loop
-from cerno.models import AssetArtifact, ChatTurn, File, FileSchema, Widget, WorkspaceTable
+from cerno.models import (
+    AssetArtifact,
+    ChatTurn,
+    DataDoc,
+    DataDocFile,
+    File,
+    FileSchema,
+    Widget,
+    WorkspaceTable,
+)
 from cerno.repositories import (
     AssetArtifactRepository,
     ChatArtifactRepository,
@@ -20,8 +29,9 @@ from cerno.repositories import (
     WorkspaceTableRepository,
 )
 from cerno.services.ingest import slugify_table_name
+from cerno.services.reingest import ColumnSpec, FileSpec, ReingestError, reingest_file
 from cerno.services.tools import ToolContext, ToolTable, build_tool_registry
-from cerno.storage import get_object_store
+from cerno.storage import ObjectStore, get_object_store
 
 SYSTEM_PROMPT = (
     "You are Cerno, a plain-English data analyst. You are chatting with a non-technical "
@@ -95,6 +105,7 @@ async def run_chat_turn(
             instructions=SYSTEM_PROMPT,
             conversation=runtime.conversation_id,
             **context_options,
+            model=settings.chat_model,
             reasoning_effort=settings.llm_reasoning_effort,
             reasoning_summary=settings.llm_reasoning_summary,
             max_calls=settings.chat_max_llm_calls,
@@ -192,6 +203,7 @@ async def stream_chat_turn(
                 context_management=context_options["context_management"],
                 prompt_cache_key=context_options["prompt_cache_key"],
                 prompt_cache_retention=context_options["prompt_cache_retention"],
+                model=settings.chat_model,
                 reasoning_effort=settings.llm_reasoning_effort,
                 reasoning_summary=settings.llm_reasoning_summary,
             ):
@@ -377,6 +389,7 @@ async def _prepare_chat_runtime(
     chat_repo.conn.commit()
 
     object_store = get_object_store(settings)
+    data_doc = data_docs_repo.get(session_id)
     tables = _load_chat_tables(
         session_id=session_id,
         settings=settings,
@@ -384,12 +397,13 @@ async def _prepare_chat_runtime(
         schemas_repo=schemas_repo,
         artifacts_repo=artifacts_repo,
         object_store=object_store,
+        data_doc=data_doc,
     )
 
     ctx = ToolContext(
         session_id=session_id,
         tables=tables,
-        data_doc=data_docs_repo.get(session_id),
+        data_doc=data_doc,
     )
     return ChatRuntime(
         turn=turn,
@@ -406,11 +420,13 @@ def _load_chat_tables(
     files_repo: FileRepository,
     schemas_repo: SchemaRepository,
     artifacts_repo: AssetArtifactRepository,
-    object_store: Any,
+    object_store: ObjectStore,
+    data_doc: DataDoc | None,
 ) -> dict[str, ToolTable]:
     files = files_repo.list_for_session(session_id)
     files_by_id = {file.id: file for file in files}
-    workspace_tables = WorkspaceTableRepository(files_repo.conn).list_for_session(session_id)
+    tables_repo = WorkspaceTableRepository(files_repo.conn)
+    workspace_tables = tables_repo.list_for_session(session_id)
     if not workspace_tables:
         workspace_tables = [
             WorkspaceTable(
@@ -427,19 +443,39 @@ def _load_chat_tables(
 
     seen_names: set[str] = set()
     tables: dict[str, ToolTable] = {}
+    doc_files = {file.file_id: file for file in data_doc.files} if data_doc else {}
     for workspace_table in workspace_tables:
         file = files_by_id.get(workspace_table.legacy_file_id or "")
         if file is None:
             continue
         table_name = _unique_table_name(slugify_table_name(file.filename), seen_names)
         schema = schemas_repo.get(file.id, workspace_table.current_schema_version)
+        doc_file = doc_files.get(file.id)
         artifact = _processed_artifact_for_table(workspace_table, file, artifacts_repo)
+        if artifact is None:
+            artifact, materialize_error = _materialize_processed_artifact(
+                file=file,
+                table=workspace_table,
+                schema=schema,
+                doc_file=doc_file,
+                settings=settings,
+                files_repo=files_repo,
+                schemas_repo=schemas_repo,
+                artifacts_repo=artifacts_repo,
+                tables_repo=tables_repo,
+                object_store=object_store,
+            )
+        else:
+            materialize_error = None
         dataframe, load_error = _load_processed_dataframe(
             artifact=artifact,
             settings=settings,
             object_store=object_store,
         )
+        load_error = materialize_error or load_error
         columns = _columns_from_schema(schema)
+        if not columns:
+            columns = _columns_from_data_doc(doc_file)
         if dataframe is not None and not columns:
             columns = _columns_from_dataframe(dataframe)
         tables[table_name] = ToolTable(
@@ -465,11 +501,151 @@ def _processed_artifact_for_table(
     return artifacts_repo.latest_for_file(file.id, "processed_parquet")
 
 
+def _materialize_processed_artifact(
+    *,
+    file: File,
+    table: WorkspaceTable,
+    schema: FileSchema | None,
+    doc_file: DataDocFile | None,
+    settings: Settings,
+    files_repo: FileRepository,
+    schemas_repo: SchemaRepository,
+    artifacts_repo: AssetArtifactRepository,
+    tables_repo: WorkspaceTableRepository,
+    object_store: ObjectStore,
+) -> tuple[AssetArtifact | None, str | None]:
+    raw_artifact = artifacts_repo.latest_for_file(file.id, "raw_parquet")
+    if raw_artifact is None:
+        return None, "raw R2 artifact is not registered"
+    spec = _file_spec_for_materialization(file=file, table=table, schema=schema, doc_file=doc_file)
+    if spec is None:
+        spec = _file_spec_from_raw_header(
+            file=file,
+            table=table,
+            raw_artifact=raw_artifact,
+            settings=settings,
+            object_store=object_store,
+        )
+    if spec is None:
+        return None, "processed R2 artifact is not registered and raw header could not be inferred"
+    try:
+        reingest_file(
+            file_id=file.id,
+            spec=spec,
+            user_id=raw_artifact.user_id,
+            settings=settings,
+            files_repo=files_repo,
+            schemas_repo=schemas_repo,
+            artifacts_repo=artifacts_repo,
+            tables_repo=tables_repo,
+            object_store=object_store,
+        )
+        files_repo.conn.commit()
+    except ReingestError as exc:
+        files_repo.conn.rollback()
+        return None, f"processed R2 artifact could not be rebuilt: {exc}"
+    except Exception as exc:
+        files_repo.conn.rollback()
+        return None, f"processed R2 artifact could not be rebuilt: {exc}"
+    return artifacts_repo.latest_for_file(file.id, "processed_parquet"), None
+
+
+def _file_spec_for_materialization(
+    *,
+    file: File,
+    table: WorkspaceTable,
+    schema: FileSchema | None,
+    doc_file: DataDocFile | None,
+) -> FileSpec | None:
+    columns: list[ColumnSpec] = []
+    if schema is not None and schema.columns:
+        columns = [
+            ColumnSpec(
+                column_id=column.column_id or column.name,
+                name=column.name,
+                dtype=_simple_dtype(column.inferred_kind or column.dtype),
+                description=column.description or "",
+            )
+            for column in schema.columns
+        ]
+    elif doc_file is not None and doc_file.columns:
+        columns = [
+            ColumnSpec(
+                column_id=column.name,
+                name=column.name,
+                dtype=_simple_dtype(column.dtype),
+                description=column.meaning or "",
+            )
+            for column in doc_file.columns
+        ]
+    if not columns:
+        return None
+    return FileSpec(
+        file_id=file.id,
+        header_row=file.header_row or 0,
+        friendly_name=(
+            table.display_name
+            or file.friendly_name
+            or (doc_file.name if doc_file is not None else "")
+            or file.filename
+        ),
+        description=file.description or (doc_file.description if doc_file is not None else ""),
+        columns=columns,
+    )
+
+
+def _file_spec_from_raw_header(
+    *,
+    file: File,
+    table: WorkspaceTable,
+    raw_artifact: AssetArtifact,
+    settings: Settings,
+    object_store: ObjectStore,
+) -> FileSpec | None:
+    try:
+        destination = settings.object_cache_path(raw_artifact.object_key)
+        object_store.get_to_path(raw_artifact.object_key, destination)
+        raw = pd.read_parquet(destination)
+    except Exception:
+        return None
+    if raw.empty:
+        return None
+    header_row = file.header_row or 0
+    if header_row >= len(raw.index):
+        return None
+    header_values = raw.iloc[header_row].tolist()
+    if not header_values:
+        return None
+    names = _dedupe_column_names(
+        [
+            str(value).strip() if not _is_blank(value) else f"column_{index + 1}"
+            for index, value in enumerate(header_values)
+        ]
+    )
+    sample = raw.iloc[header_row + 1 : header_row + 1001]
+    columns = [
+        ColumnSpec(
+            column_id=f"{slugify_table_name(name)}_{index + 1}",
+            name=name,
+            dtype=_infer_simple_dtype(name, sample.iloc[:, index].tolist()),
+            description="",
+        )
+        for index, name in enumerate(names)
+    ]
+    return FileSpec(
+        file_id=file.id,
+        header_row=header_row,
+        friendly_name=table.display_name or file.friendly_name or file.filename,
+        description=file.description or "",
+        columns=columns,
+    )
+
+
 def _load_processed_dataframe(
     *,
     artifact: AssetArtifact | None,
     settings: Settings,
-    object_store: Any,
+    object_store: ObjectStore,
 ) -> tuple[pd.DataFrame | None, str | None]:
     if artifact is None:
         return None, "processed R2 artifact is not registered"
@@ -496,6 +672,87 @@ def _columns_from_schema(schema: FileSchema | None) -> list[dict[str, Any]]:
         }
         for column in schema.columns
     ]
+
+
+def _columns_from_data_doc(doc_file: DataDocFile | None) -> list[dict[str, Any]]:
+    if doc_file is None:
+        return []
+    return [
+        {
+            "name": column.name,
+            "type": _simple_dtype(column.dtype),
+            "nullable": None,
+            "kind": _simple_dtype(column.dtype),
+            "description": column.meaning,
+        }
+        for column in doc_file.columns
+    ]
+
+
+def _simple_dtype(dtype: str) -> str:
+    normalized = dtype.strip().lower()
+    if normalized in {"int", "integer", "int64", "long"}:
+        return "int"
+    if normalized in {"float", "float64", "double", "decimal", "number", "numeric"}:
+        return "float"
+    if normalized in {"bool", "boolean"}:
+        return "bool"
+    if normalized in {"date"}:
+        return "date"
+    if normalized in {"datetime", "timestamp"}:
+        return "datetime"
+    if normalized in {"category", "categorical"}:
+        return "category"
+    return "string"
+
+
+def _dedupe_column_names(headers: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    names: list[str] = []
+    for header in headers:
+        base = header.strip() or "column"
+        if base not in seen:
+            seen[base] = 0
+            names.append(base)
+            continue
+        seen[base] += 1
+        names.append(f"{base}_{seen[base]}")
+    return names
+
+
+def _infer_simple_dtype(name: str, values: list[Any]) -> str:
+    lower_name = name.lower()
+    if "date" in lower_name:
+        return "date"
+    cleaned = [str(value).strip() for value in values if not _is_blank(value)]
+    if not cleaned:
+        return "string"
+    lowered = {value.lower() for value in cleaned}
+    if lowered <= {"true", "false", "yes", "no", "y", "n", "1", "0", "t", "f"}:
+        return "bool"
+    numeric = pd.to_numeric(pd.Series(cleaned), errors="coerce")
+    if float(numeric.notna().mean()) >= 0.9:
+        non_null = numeric.dropna()
+        if bool(((non_null % 1) == 0).all()):
+            return "int"
+        return "float"
+    parsed_dates = pd.to_datetime(pd.Series(cleaned), errors="coerce")
+    if float(parsed_dates.notna().mean()) >= 0.9:
+        return "datetime"
+    if len(lowered) <= max(20, len(cleaned) // 20):
+        return "category"
+    return "string"
+
+
+def _is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        return False
+    return isinstance(value, str) and not value.strip()
 
 
 def _columns_from_dataframe(frame: pd.DataFrame) -> list[dict[str, Any]]:

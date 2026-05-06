@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
-import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -173,22 +171,6 @@ class LLMClient:
         self._ensure_token_budget()
         response = await self._call_with_retry(url, body)
         parsed = _parse_response(response)
-
-        try:
-            os.makedirs("logs", exist_ok=True)
-            log_data = {
-                "timestamp": datetime.now(UTC).isoformat(),
-                "model": body.get("model"),
-                "input": body.get("input"),
-                "instructions": body.get("instructions"),
-                "tools": [t.get("name") for t in body.get("tools", [])] if body.get("tools") else None,
-                "raw_response": parsed.raw
-            }
-            log_file = f"logs/llm_call_{int(time.time()*1000)}.json"
-            with open(log_file, "w", encoding="utf-8") as f:
-                json.dump(log_data, f, indent=2)
-        except Exception:
-            pass
 
         self._record_token_usage(parsed.usage_total_tokens)
         return parsed

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
     llm_model: str = "gpt-5.5"
+    chat_model: str = "gpt-5.4-mini"
     llm_timeout_seconds: float = 300.0
     link_max_llm_candidates: int = 30
     llm_site_url: str = "http://localhost"

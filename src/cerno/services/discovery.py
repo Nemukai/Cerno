@@ -20,7 +20,10 @@ from cerno.models import (
     DataDocGlossaryItem,
     DataDocRelationship,
     File,
+    FileSchema,
+    InferredKind,
     LinkDirection,
+    SchemaColumn,
 )
 from cerno.repositories import (
     AssetArtifactRepository,
@@ -28,6 +31,7 @@ from cerno.repositories import (
     FileRepository,
     LinkRepository,
     ProcessingEventRepository,
+    SchemaRepository,
     SessionRepository,
 )
 from cerno.services.artifact_cache import ensure_file_artifact_cached
@@ -37,6 +41,21 @@ from cerno.storage import ObjectStore
 SAMPLE_ROWS = 10
 LINK_VALUE_SAMPLE_LIMIT = 5_000
 logger = logging.getLogger(__name__)
+
+SIMPLE_DTYPE_TO_INFERRED_KIND: dict[str, InferredKind] = {
+    "string": "string",
+    "int": "int",
+    "integer": "int",
+    "float": "float",
+    "number": "float",
+    "numeric": "float",
+    "date": "date",
+    "datetime": "datetime",
+    "timestamp": "datetime",
+    "bool": "bool",
+    "boolean": "bool",
+    "category": "category",
+}
 
 
 class DiscoveryError(RuntimeError):
@@ -752,6 +771,7 @@ async def run_discovery(
     data_docs_repo: DataDocRepository,
     events_repo: ProcessingEventRepository,
     llm_client: LLMClient,
+    schemas_repo: SchemaRepository | None = None,
     artifacts_repo: AssetArtifactRepository | None = None,
     object_store: ObjectStore | None = None,
     job_id: str | None = None,
@@ -1012,6 +1032,7 @@ async def run_discovery(
         sessions_repo.set_discovery_status(session_id, "failed")
         raise DiscoveryError("LLM did not return schema for any uploaded file")
 
+    schema_writer = schemas_repo or SchemaRepository(files_repo.conn)
     for df in result.files:
         files_repo.set_metadata(
             file_id=df.file_id,
@@ -1019,6 +1040,9 @@ async def run_discovery(
             friendly_name=df.friendly_name,
             description=df.description,
         )
+        file = next((f for f in files if f.id == df.file_id), None)
+        if file is not None:
+            schema_writer.replace(_schema_from_discovered_file(df, file.schema_version))
 
     candidates = _find_overlap_candidates(
         files=files, discovered_files=result.files, settings=settings
@@ -1071,3 +1095,35 @@ async def run_discovery(
         len(result.links),
     )
     return result
+
+
+def _schema_from_discovered_file(
+    discovered: DiscoveredFile, schema_version: int
+) -> FileSchema:
+    return FileSchema(
+        file_id=discovered.file_id,
+        schema_version=schema_version,
+        columns=[
+            SchemaColumn(
+                file_id=discovered.file_id,
+                schema_version=schema_version,
+                name=column.name,
+                dtype=_normalize_simple_dtype(column.dtype),
+                inferred_kind=_inferred_kind_for_dtype(column.dtype),
+                confidence=1.0,
+                position=index,
+                column_id=column.column_id or column.name,
+                description=column.description,
+            )
+            for index, column in enumerate(discovered.columns)
+        ],
+    )
+
+
+def _normalize_simple_dtype(dtype: str) -> str:
+    kind = _inferred_kind_for_dtype(dtype)
+    return "int" if kind == "int" else kind
+
+
+def _inferred_kind_for_dtype(dtype: str) -> InferredKind:
+    return SIMPLE_DTYPE_TO_INFERRED_KIND.get(dtype.strip().lower(), "string")

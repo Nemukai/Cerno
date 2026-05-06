@@ -13,6 +13,7 @@ class ProcessingConfigTests(unittest.TestCase):
             config = load_processing_config(Path(tmp) / "config.toml")
 
         self.assertEqual(config.discovery.model, "gpt-5.5")
+        self.assertEqual(Settings(_env_file=None).chat_model, "gpt-5.4-mini")
         self.assertEqual(config.discovery.reasoning_effort, "medium")
         self.assertEqual(config.discovery.reasoning_summary, "auto")
 
