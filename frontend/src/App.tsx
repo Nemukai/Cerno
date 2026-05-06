@@ -43,7 +43,7 @@ import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
 import { AuthGate } from "./components/AuthGate";
 import { BetaGate } from "./components/BetaGate";
-import { useUser, googleLoginUrl } from "./lib/auth";
+import { useUser, googleLoginUrl, type CurrentUser } from "./lib/auth";
 
 type WorkspaceMetric = {
   fileCount: number;
@@ -695,9 +695,10 @@ export function App() {
     }
     return (
       <AuthGate>
-        {(user, _signOut, onUserUpdate) => (
+        {(user, signOut, onUserUpdate) => (
           <BetaGate user={user} onUserUpdate={onUserUpdate}>
             <WorkspacesPage
+              user={user}
               sessions={sessions}
               onStart={handleCreateSession}
               onResume={handleResumeSession}
@@ -707,6 +708,10 @@ export function App() {
               error={error}
               onDismissError={() => setError(null)}
               onBackToLanding={() => navigateHome("landing")}
+              onSignOut={async () => {
+                await signOut();
+                navigateHome("landing");
+              }}
             />
           </BetaGate>
         )}
@@ -1023,6 +1028,7 @@ function LandingFact({
 }
 
 function WorkspacesPage({
+  user,
   sessions,
   onStart,
   onResume,
@@ -1032,7 +1038,9 @@ function WorkspacesPage({
   error,
   onDismissError,
   onBackToLanding,
+  onSignOut,
 }: {
+  user: CurrentUser;
   sessions: Session[];
   onStart: (name: string) => void;
   onResume: (session: Session) => void;
@@ -1042,6 +1050,7 @@ function WorkspacesPage({
   error: string | null;
   onDismissError: () => void;
   onBackToLanding: () => void;
+  onSignOut: () => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const stats = buildWorkspaceStats(sessions, metrics);
@@ -1077,100 +1086,173 @@ function WorkspacesPage({
           <div className="small-caps text-sm text-night-watch/60">workspaces</div>
         </header>
 
-        <section className="mt-16 grid gap-12 lg:grid-cols-[minmax(0,1.05fr)_minmax(25rem,0.95fr)]">
-          <div>
-            <div className="small-caps text-sm text-deep-sea">workspaces</div>
-            <h1 className="mt-3 max-w-4xl font-serif text-5xl leading-tight tracking-tight text-night-watch sm:text-6xl">
-              Open a workspace or start with new files.
-            </h1>
-            <p className="mt-6 max-w-3xl text-lg leading-8 text-night-watch/70">
-              Upload Excel files, ask questions, generate insights, and save useful charts.
-            </p>
-          </div>
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="min-w-0">
+            <section className="mt-16 grid gap-12 lg:grid-cols-[minmax(0,1.05fr)_minmax(25rem,0.95fr)]">
+              <div>
+                <div className="small-caps text-sm text-deep-sea">workspaces</div>
+                <h1 className="mt-3 max-w-4xl font-serif text-5xl leading-tight tracking-tight text-night-watch sm:text-6xl">
+                  Open a workspace or start with new files.
+                </h1>
+                <p className="mt-6 max-w-3xl text-lg leading-8 text-night-watch/70">
+                  Upload Excel files, ask questions, generate insights, and save useful charts.
+                </p>
+              </div>
 
-          <div className="grid grid-cols-2 gap-x-10 gap-y-7 border border-drift bg-drift/20 px-5 py-7">
-            <WorkspaceStat label="workspaces" value={stats.workspaces} />
-            <WorkspaceStat label="files uploaded" value={stats.filesUploaded} />
-            <WorkspaceStat label="last activity" value={stats.lastActivity} />
-            <WorkspaceStat label="total rows" value={stats.totalRows} />
-          </div>
-        </section>
+              <div className="grid grid-cols-2 gap-x-10 gap-y-7 border border-drift bg-drift/20 px-5 py-7">
+                <WorkspaceStat label="workspaces" value={stats.workspaces} />
+                <WorkspaceStat label="files uploaded" value={stats.filesUploaded} />
+                <WorkspaceStat label="last activity" value={stats.lastActivity} />
+                <WorkspaceStat label="total rows" value={stats.totalRows} />
+              </div>
+            </section>
 
-        <section className="mx-auto mt-14 w-full max-w-5xl">
-          <div className="w-full border border-drift bg-tidepaper p-2 shadow-sm">
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <label className="flex min-w-0 flex-1 items-center gap-4 bg-drift/20 px-5 py-4 text-left text-night-watch border border-drift">
-                <span className="small-caps shrink-0 text-sm text-night-watch/60">
-                  What are you analyzing?
+            <section className="mx-auto mt-14 w-full max-w-5xl">
+              <div className="w-full border border-drift bg-tidepaper p-2 shadow-sm">
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <label className="flex min-w-0 flex-1 items-center gap-4 border border-drift bg-drift/20 px-5 py-4 text-left text-night-watch">
+                    <span className="small-caps shrink-0 text-sm text-night-watch/60">
+                      What are you analyzing?
+                    </span>
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      onKeyDown={handleKey}
+                      placeholder="Excel files, monthly sales, audit data..."
+                      className="min-w-0 flex-1 bg-transparent font-mono text-base text-night-watch placeholder:text-night-watch/40 focus:outline-none"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleStart}
+                    disabled={starting}
+                    className="small-caps bg-night-watch px-7 py-4 text-sm text-tidepaper transition hover:bg-deep-sea disabled:opacity-40"
+                  >
+                    {starting ? "starting..." : "start workspace"}
+                  </button>
+                </div>
+              </div>
+
+              {error ? (
+                <div className="mt-4 flex w-full items-start justify-between gap-3 border border-red-300 bg-red-50 px-3 py-2 font-mono text-xs text-red-600">
+                  <span>{error}</span>
+                  <button
+                    type="button"
+                    onClick={onDismissError}
+                    className="text-red-500 hover:text-red-700"
+                  >
+                    x
+                  </button>
+                </div>
+              ) : null}
+            </section>
+
+            <section className="mx-auto mt-14 w-full max-w-5xl">
+              <div className="flex items-end justify-between gap-4 border-b border-drift pb-4">
+                <div>
+                  <div className="small-caps text-sm text-deep-sea">current workspaces</div>
+                  <h2 className="mt-2 font-serif text-2xl text-night-watch">
+                    Saved analysis rooms
+                  </h2>
+                </div>
+                <span className="text-sm text-night-watch/60">
+                  {sessions.length} saved
                 </span>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  onKeyDown={handleKey}
-                  placeholder="Excel files, monthly sales, audit data..."
-                  className="min-w-0 flex-1 bg-transparent font-mono text-base text-night-watch placeholder:text-night-watch/40 focus:outline-none"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={handleStart}
-                disabled={starting}
-                className="small-caps bg-night-watch px-7 py-4 text-sm text-tidepaper transition hover:bg-deep-sea disabled:opacity-40"
-              >
-                {starting ? "starting..." : "start workspace"}
-              </button>
-            </div>
+              </div>
+
+              {sessions.length > 0 ? (
+                <ul className="mt-5 grid gap-4">
+                  {sessions.map((s) => (
+                    <WorkspaceRow
+                      key={s.id}
+                      session={s}
+                      metric={metrics[s.id]}
+                      onResume={() => onResume(s)}
+                      onDelete={() => handleDelete(s)}
+                    />
+                  ))}
+                </ul>
+              ) : (
+                <div className="mt-5 border border-dashed border-drift bg-tidepaper px-5 py-8 font-mono text-base text-night-watch/60">
+                  No saved workspaces yet.
+                </div>
+              )}
+            </section>
           </div>
 
-          {error ? (
-            <div className="mt-4 flex w-full items-start justify-between gap-3 border border-red-300 bg-red-50 px-3 py-2 font-mono text-xs text-red-600">
-              <span>{error}</span>
-              <button
-                type="button"
-                onClick={onDismissError}
-                className="text-red-500 hover:text-red-700"
-              >
-                x
-              </button>
-            </div>
-          ) : null}
-        </section>
-
-        <section className="mx-auto mt-14 w-full max-w-5xl">
-          <div className="flex items-end justify-between gap-4 border-b border-drift pb-4">
-            <div>
-              <div className="small-caps text-sm text-deep-sea">current workspaces</div>
-              <h2 className="mt-2 font-serif text-2xl text-night-watch">
-                Saved analysis rooms
-              </h2>
-            </div>
-            <span className="text-sm text-night-watch/60">
-              {sessions.length} saved
-            </span>
-          </div>
-
-          {sessions.length > 0 ? (
-            <ul className="mt-5 grid gap-4">
-              {sessions.map((s) => (
-                <WorkspaceRow
-                  key={s.id}
-                  session={s}
-                  metric={metrics[s.id]}
-                  onResume={() => onResume(s)}
-                  onDelete={() => handleDelete(s)}
-                />
-              ))}
-            </ul>
-          ) : (
-            <div className="mt-5 border border-dashed border-drift bg-tidepaper px-5 py-8 font-mono text-base text-night-watch/60">
-              No saved workspaces yet.
-            </div>
-          )}
-        </section>
+          <UserProfilePanel user={user} onSignOut={onSignOut} />
+        </div>
       </main>
     </div>
   );
+}
+
+function UserProfilePanel({
+  user,
+  onSignOut,
+}: {
+  user: CurrentUser;
+  onSignOut: () => Promise<void>;
+}) {
+  const displayName = userDisplayName(user);
+
+  return (
+    <aside className="mt-16 h-fit border border-drift bg-drift/20 p-4 lg:sticky lg:top-10">
+      <div className="flex items-center gap-3 border-b border-drift pb-4">
+        {user.picture ? (
+          <img
+            src={user.picture}
+            alt=""
+            className="h-12 w-12 border border-drift object-cover"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <div className="flex h-12 w-12 items-center justify-center border border-drift bg-tidepaper font-mono text-base text-deep-sea">
+            {userInitials(displayName)}
+          </div>
+        )}
+        <div className="min-w-0">
+          <div className="truncate font-mono text-base text-night-watch">{displayName}</div>
+          <div className="truncate text-sm text-night-watch/55">{user.email}</div>
+        </div>
+      </div>
+
+      <section className="border-b border-drift py-5">
+        <div className="small-caps text-sm text-night-watch/60">usage stats</div>
+        <div className="mt-4 h-24 border border-dashed border-drift bg-tidepaper/60" />
+      </section>
+
+      <div className="grid gap-2 pt-4">
+        <button
+          type="button"
+          className="small-caps border border-deep-sea/30 bg-tidepaper px-4 py-3 text-sm text-deep-sea transition hover:border-deep-sea hover:bg-sea-glass/10"
+        >
+          upgrade plan
+        </button>
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="small-caps border border-red-900/20 bg-red-50 px-4 py-3 text-sm text-red-600 transition hover:border-red-900/40 hover:bg-red-100"
+        >
+          sign out
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function userDisplayName(user: CurrentUser): string {
+  return user.name?.trim() || user.email.split("@")[0] || "Cerno user";
+}
+
+function userInitials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
 }
 
 function WorkspaceStat({
