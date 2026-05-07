@@ -356,16 +356,6 @@ function ToolCallCard({
               <MarkdownText text={message.content} compact />
             </div>
           ) : null}
-          {message.tool_args ? (
-            <div className="mt-2 text-[11px] leading-5 text-neutral-600">
-              {summarizeRecord(message.tool_args)}
-            </div>
-          ) : null}
-          {result?.tool_result ? (
-            <div className="mt-2 border-t border-neutral-200 pt-2 text-[11px] leading-5 text-neutral-500">
-              {summarizeToolResult(result.tool_result)}
-            </div>
-          ) : null}
         </div>
       </div>
     </div>
