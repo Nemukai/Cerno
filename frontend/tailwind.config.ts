@@ -11,11 +11,15 @@ const config: Config = {
       },
       colors: {
         tidepaper: "#F5F1E8",
+        paper: "#F5F1E8",
         drift: "#E2DDD1",
         "deep-sea": "#345A67",
         "sea-glass": "#2F8C8F",
         clay: "#C97E52",
         "night-watch": "#2C3338",
+        ink: "#2C3338",
+        ember: "#C97E52",
+        "ember-hover": "#B86F45",
       },
       borderRadius: {
         none: "0",

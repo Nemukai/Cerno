@@ -540,14 +540,9 @@ export function App() {
       setActiveTab("files");
       navigateSessionTab(session.id, "files");
       try {
-        const result = await uploadFiles(session.id, deduped);
-        const queuedEvents = result.jobs.flatMap((job) => job.events);
-        if (queuedEvents.length > 0) {
-          setEvents(queuedEvents);
-          setProcessing(true);
-        } else {
-          setEvents([]);
-        }
+        await uploadFiles(session.id, deduped);
+        setEvents([]);
+        setProcessing(false);
         setDiscovery(null);
         setLinks([]);
         setDataDoc(null);

@@ -118,6 +118,9 @@ export function SchemaTab({
   }, [files, draftFiles]);
 
   const status = discovery?.status ?? "empty";
+  const showProcessingCheckpoints =
+    events.length > 0 &&
+    (processing || status === "discovering" || status === "failed");
   const summary = useMemo(
     () => buildSummary(files, draftFiles, draftLinks, status),
     [files, draftFiles, draftLinks, status],
@@ -321,12 +324,12 @@ export function SchemaTab({
         </div>
       </header>
 
-      {processing || events.length > 0 ? (
+      {showProcessingCheckpoints ? (
         <ProcessingCheckpoints events={events} processing={processing} />
       ) : null}
 
       {status === "empty" && !processing ? (
-        <EmptyState canProcess={canProcess} />
+        <EmptyState canProcess={canProcess} onProcess={onProcess} />
       ) : null}
 
       {discovery && (status === "pending_review" || status === "approved") ? (
@@ -469,15 +472,34 @@ function headerDescription(
   return "Upload one or more files, then Cerno can build a plain-language map of the dataset.";
 }
 
-function EmptyState({ canProcess }: { canProcess: boolean }) {
+function EmptyState({
+  canProcess,
+  onProcess,
+}: {
+  canProcess: boolean;
+  onProcess: () => void;
+}) {
   return (
-    <div className="mt-10 max-w-xl border border-neutral-200 bg-white p-5">
-      <h3 className="font-mono text-base text-ink">Start with uploaded documents</h3>
-      <p className="mt-2 text-sm leading-6 text-neutral-600">
-        {canProcess
-          ? "Cerno will identify headers, explain fields, and look for connections between files."
-          : "Upload one or more files first, then Cerno can build the data map."}
-      </p>
+    <div className="mt-10 max-w-2xl border border-neutral-200 bg-white p-5">
+      <div className="flex flex-wrap items-start justify-between gap-5">
+        <div className="min-w-0 flex-1">
+          <h3 className="font-mono text-base text-ink">Start with uploaded documents</h3>
+          <p className="mt-2 text-sm leading-6 text-neutral-600">
+            {canProcess
+              ? "Cerno will identify headers, explain fields, and look for connections between files."
+              : "Upload one or more files first, then Cerno can build the data map."}
+          </p>
+        </div>
+        {canProcess ? (
+          <button
+            type="button"
+            onClick={onProcess}
+            className="small-caps shrink-0 border border-ink bg-ember px-4 py-2 text-sm text-white hover:bg-ember-hover"
+          >
+            process files
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
