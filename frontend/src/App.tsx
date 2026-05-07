@@ -1028,6 +1028,27 @@ function DotPattern() {
   );
 }
 
+const landingWorkflow = [
+  {
+    index: "01",
+    title: "Drop the files",
+    body: "Excel and CSV uploads stay as source material while Cerno profiles every sheet.",
+    icon: FileSpreadsheet,
+  },
+  {
+    index: "02",
+    title: "Approve the map",
+    body: "Headers, meanings, relationships, caveats, and glossary terms become a reviewed guide.",
+    icon: Database,
+  },
+  {
+    index: "03",
+    title: "Ask and shape",
+    body: "Chat answers with tables, charts, and saved analysis pages grounded in that guide.",
+    icon: MessageSquare,
+  },
+];
+
 function LandingPage({
   onEnter,
 }: {
@@ -1049,7 +1070,7 @@ function LandingPage({
     <div className="relative min-h-full overflow-hidden bg-tidepaper text-night-watch">
       <DotPattern />
       <main className="relative z-10 flex min-h-full flex-col">
-        <header className="flex items-center justify-between px-6 py-5 sm:px-10 border-b border-drift bg-tidepaper/80 backdrop-blur-md">
+        <header className="flex items-center justify-between border-b border-drift bg-tidepaper/85 px-6 py-5 backdrop-blur-md sm:px-10">
           <CernoLockup markClassName="h-6 w-6 text-deep-sea" wordmarkClassName="text-base text-night-watch" />
           <a
             href={googleLoginUrl()}
@@ -1059,13 +1080,13 @@ function LandingPage({
           </a>
         </header>
 
-        <section className="flex flex-1 items-center px-6 pb-16 pt-12 sm:px-10 relative z-10">
-          <div className="w-full max-w-7xl mx-auto grid lg:grid-cols-2 gap-16 items-center">
+        <section className="relative z-10 flex min-h-[calc(100svh-4.6rem)] items-center px-6 py-12 sm:px-10 lg:py-14">
+          <div className="mx-auto grid w-full max-w-7xl items-center gap-12 lg:grid-cols-[minmax(0,0.9fr)_minmax(30rem,1.1fr)]">
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8, ease: "easeOut" }}
-              className="border-l border-drift pl-8"
+              className="border-l border-drift pl-6 sm:pl-8"
             >
               <motion.div 
                 initial={{ opacity: 0 }}
@@ -1073,14 +1094,15 @@ function LandingPage({
                 transition={{ delay: 0.3 }}
                 className="flex items-center gap-2 small-caps text-xs text-deep-sea"
               >
-                <Sparkles className="h-3 w-3" /> measured & tactile
+                <Sparkles className="h-3 w-3" /> private beta for messy business data
               </motion.div>
-              <h1 className="mt-5 max-w-2xl font-serif text-5xl leading-[1.02] text-night-watch sm:text-7xl lg:text-7xl">
+              <h1 className="mt-5 max-w-3xl font-serif text-5xl leading-[1.02] text-night-watch sm:text-7xl lg:text-7xl">
                 Research notebook meets observatory.
               </h1>
               <p className="mt-6 max-w-xl text-lg leading-8 text-night-watch/70">
-                Upload spreadsheets, approve the data map, then work from a chat
-                that understands the files before it answers.
+                Cerno turns office spreadsheets into a reviewed data map, then gives
+                you a chat workspace that can explain fields, build dashboards, and
+                keep the analysis grounded.
               </p>
               <div className="mt-10 flex flex-wrap items-center gap-4">
                 <a
@@ -1090,6 +1112,14 @@ function LandingPage({
                   sign in to continue
                   <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
                 </a>
+                <span className="small-caps text-xs text-night-watch/50">
+                  access code required after login
+                </span>
+              </div>
+              <div className="mt-12 grid max-w-2xl grid-cols-3 border-y border-drift">
+                <LandingMeasure value="raw" label="files preserved" />
+                <LandingMeasure value="map" label="approved context" />
+                <LandingMeasure value="chat" label="visual analysis" />
               </div>
             </motion.div>
 
@@ -1097,96 +1127,203 @@ function LandingPage({
               initial={{ opacity: 0, x: 40 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 1, delay: 0.2, ease: "easeOut" }}
-              className="hidden lg:block relative h-[500px] w-full"
+              className="relative min-h-[420px] w-full lg:min-h-[560px]"
             >
-              {/* Abstract Mockup Elements */}
-              <div className="absolute inset-0 grid grid-cols-6 grid-rows-6 gap-4 p-4 border border-drift bg-tidepaper/50 backdrop-blur-sm">
-                <motion.div 
-                   initial={{ height: 0 }}
-                   animate={{ height: "100%" }}
-                   transition={{ duration: 1.5, delay: 0.5, ease: "easeInOut" }}
-                   className="col-span-2 row-span-4 border border-drift bg-drift/20 p-4 flex flex-col gap-4 overflow-hidden"
-                >
-                   <div className="h-2 w-1/2 bg-drift" />
-                   <div className="h-2 w-3/4 bg-drift" />
-                   <div className="flex-1 border border-drift/50 flex items-center justify-center text-drift">
-                      <Database className="h-8 w-8" />
-                   </div>
-                </motion.div>
-                <motion.div 
-                   initial={{ opacity: 0, scale: 0.95 }}
-                   animate={{ opacity: 1, scale: 1 }}
-                   transition={{ duration: 1, delay: 0.8, ease: "easeOut" }}
-                   className="col-span-4 row-span-3 border border-drift bg-tidepaper p-4 shadow-sm flex flex-col gap-3 relative"
-                >
-                  <div className="flex items-center gap-3 border-b border-drift pb-3">
-                     <MessageSquare className="h-4 w-4 text-deep-sea" />
-                     <div className="h-2 w-1/3 bg-drift" />
-                  </div>
-                  <div className="flex-1 flex items-end gap-2 px-2">
-                     <motion.div initial={{ height: "20%" }} animate={{ height: "40%" }} transition={{ duration: 1, delay: 1 }} className="flex-1 bg-sea-glass/40 border border-sea-glass/20" />
-                     <motion.div initial={{ height: "30%" }} animate={{ height: "70%" }} transition={{ duration: 1, delay: 1.2 }} className="flex-1 bg-sea-glass/60 border border-sea-glass/30" />
-                     <motion.div initial={{ height: "40%" }} animate={{ height: "100%" }} transition={{ duration: 1, delay: 1.4 }} className="flex-1 bg-sea-glass border border-sea-glass" />
-                     <motion.div initial={{ height: "20%" }} animate={{ height: "60%" }} transition={{ duration: 1, delay: 1.6 }} className="flex-1 bg-sea-glass/80 border border-sea-glass/40" />
-                  </div>
-                </motion.div>
-                <motion.div 
-                   initial={{ opacity: 0, y: 20 }}
-                   animate={{ opacity: 1, y: 0 }}
-                   transition={{ duration: 0.8, delay: 1.2, ease: "easeOut" }}
-                   className="col-span-4 row-span-3 border border-drift bg-tidepaper p-4 shadow-sm"
-                >
-                  <div className="h-2 w-1/4 bg-drift mb-4" />
-                  <div className="space-y-3">
-                     <div className="h-8 w-full border border-drift flex items-center px-3 gap-3">
-                        <FileSpreadsheet className="h-3 w-3 text-deep-sea" />
-                        <div className="h-1 w-1/2 bg-drift" />
-                     </div>
-                     <div className="h-8 w-full border border-drift flex items-center px-3 gap-3">
-                        <FileSpreadsheet className="h-3 w-3 text-deep-sea" />
-                        <div className="h-1 w-1/3 bg-drift" />
-                     </div>
-                  </div>
-                </motion.div>
-                <motion.div 
-                   initial={{ opacity: 0 }}
-                   animate={{ opacity: 1 }}
-                   transition={{ duration: 1, delay: 1.5 }}
-                   className="col-span-2 row-span-2 border border-drift bg-night-watch text-tidepaper p-4 flex flex-col justify-between"
-                >
-                   <LineChart className="h-5 w-5 text-clay" />
-                   <div>
-                     <div className="text-2xl font-mono">84%</div>
-                     <div className="text-[10px] small-caps text-tidepaper/60 mt-1">confidence</div>
-                   </div>
-                </motion.div>
-              </div>
+              <ObservatoryConsole />
             </motion.div>
           </div>
         </section>
 
-        <section className="relative z-10 grid border-t border-drift bg-tidepaper md:grid-cols-3">
-          <LandingFact
-            index="01"
-            title="Map first"
-            body="Headers, file meaning, relationships, and caveats are reviewed before analysis."
-            icon={Database}
-          />
-          <LandingFact
-            index="02"
-            title="Chat visuals next"
-            body="Approved workspaces answer questions with charts, KPIs, and tables directly in chat."
-            icon={LineChart}
-          />
-          <LandingFact
-            index="03"
-            title="Chat stays grounded"
-            body="Questions use the approved schema guide and render new views when visuals help."
-            icon={MessageSquare}
-          />
+        <section className="relative z-10 border-y border-drift bg-[#fbfaf6] px-6 py-10 sm:px-10">
+          <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[20rem_minmax(0,1fr)]">
+            <div>
+              <div className="small-caps text-xs text-deep-sea">how it behaves</div>
+              <h2 className="mt-3 font-serif text-4xl leading-tight text-night-watch">
+                Not a spreadsheet viewer. A working room for the data.
+              </h2>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              {landingWorkflow.map((item, idx) => (
+                <LandingFact key={item.index} {...item} delay={idx * 0.08} />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="relative z-10 px-6 py-14 sm:px-10">
+          <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+            <div>
+              <div className="small-caps text-xs text-deep-sea">what Cerno keeps track of</div>
+              <h2 className="mt-3 max-w-xl font-serif text-4xl leading-tight text-night-watch">
+                The boring parts become durable context.
+              </h2>
+              <p className="mt-5 max-w-xl text-base leading-7 text-night-watch/65">
+                Cerno remembers the schema guide, relationships, caveats, glossary
+                terms, and generated views so each question starts from the same
+                approved understanding.
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <LandingDetail label="headers" value="found before analysis" />
+              <LandingDetail label="relationships" value="reviewed across files" />
+              <LandingDetail label="dashboards" value="generated and editable" />
+              <LandingDetail label="chat" value="grounded in approved docs" />
+            </div>
+          </div>
+        </section>
+
+        <section className="relative z-10 border-t border-drift bg-night-watch px-6 py-10 text-tidepaper sm:px-10">
+          <div className="mx-auto flex max-w-7xl flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="small-caps text-xs text-clay">private beta</div>
+              <h2 className="mt-2 font-serif text-3xl text-tidepaper">
+                Bring the messy workbook. Cerno will build the first map.
+              </h2>
+            </div>
+            <a
+              href={googleLoginUrl()}
+              className="group flex w-fit items-center gap-2 small-caps border border-tidepaper/30 px-5 py-3 text-sm text-tidepaper transition hover:border-clay hover:text-clay"
+            >
+              login
+              <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+            </a>
+          </div>
         </section>
       </main>
     </div>
+  );
+}
+
+function LandingMeasure({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="border-r border-drift py-4 pr-3 last:border-r-0 last:pl-4 sm:px-4 sm:first:pl-0">
+      <div className="font-mono text-xl text-night-watch">{value}</div>
+      <div className="small-caps mt-1 text-[11px] text-night-watch/45">{label}</div>
+    </div>
+  );
+}
+
+function ObservatoryConsole() {
+  return (
+    <div className="absolute inset-0 border border-drift bg-tidepaper shadow-[0_24px_80px_rgba(44,51,56,0.12)]">
+      <div className="flex h-10 items-center justify-between border-b border-drift bg-[#fbfaf6] px-4">
+        <div className="small-caps text-xs text-night-watch/50">live workspace model</div>
+        <div className="flex gap-1.5">
+          <span className="h-2 w-2 bg-drift" />
+          <span className="h-2 w-2 bg-clay" />
+          <span className="h-2 w-2 bg-deep-sea" />
+        </div>
+      </div>
+      <div className="relative h-[calc(100%-2.5rem)] overflow-hidden">
+        <div
+          className="absolute inset-0 opacity-60"
+          style={{
+            backgroundImage:
+              "linear-gradient(#E2DDD1 1px, transparent 1px), linear-gradient(90deg, #E2DDD1 1px, transparent 1px)",
+            backgroundSize: "52px 52px",
+          }}
+        />
+        <motion.div
+          className="absolute inset-x-0 top-0 h-20 border-b border-clay/30 bg-clay/10"
+          animate={{ y: [0, 430, 0] }}
+          transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <NotebookSheet className="left-[5%] top-[9%] w-[38%]" delay={0.35} />
+        <motion.div
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.55, duration: 0.7, ease: "easeOut" }}
+          className="absolute right-[5%] top-[10%] w-[48%] border border-drift bg-[#fffdf9] p-4"
+        >
+          <div className="flex items-center justify-between border-b border-drift pb-3">
+            <div>
+              <div className="small-caps text-[11px] text-deep-sea">observatory</div>
+              <div className="mt-1 font-mono text-sm text-night-watch">Revenue by region</div>
+            </div>
+            <LineChart className="h-5 w-5 text-clay" />
+          </div>
+          <div className="mt-5 flex h-36 items-end gap-2">
+            {[42, 76, 58, 94, 68, 88].map((height, idx) => (
+              <motion.div
+                key={height}
+                initial={{ height: 10 }}
+                animate={{ height: `${height}%` }}
+                transition={{ delay: 0.8 + idx * 0.08, duration: 0.8, ease: "easeOut" }}
+                className="flex-1 border border-sea-glass/30 bg-sea-glass/55"
+              />
+            ))}
+          </div>
+        </motion.div>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.85, duration: 0.7, ease: "easeOut" }}
+          className="absolute bottom-[8%] left-[15%] right-[9%] border border-night-watch bg-night-watch p-4 text-tidepaper"
+        >
+          <div className="flex items-center gap-2 border-b border-tidepaper/20 pb-3">
+            <MessageSquare className="h-4 w-4 text-clay" />
+            <div className="small-caps text-[11px] text-tidepaper/55">grounded answer</div>
+          </div>
+          <p className="mt-3 max-w-xl font-mono text-sm leading-6 text-tidepaper/85">
+            South region variance is tied to discounting. I found it in invoice rows,
+            then checked it against the customer table before charting.
+          </p>
+        </motion.div>
+        <motion.div
+          className="absolute left-[38%] top-[39%] h-px w-[24%] origin-left bg-clay"
+          initial={{ scaleX: 0 }}
+          animate={{ scaleX: 1 }}
+          transition={{ delay: 1.2, duration: 0.8 }}
+        />
+        <motion.div
+          className="absolute left-[36%] top-[52%] h-px w-[31%] origin-left bg-deep-sea"
+          initial={{ scaleX: 0 }}
+          animate={{ scaleX: 1 }}
+          transition={{ delay: 1.35, duration: 0.8 }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function NotebookSheet({
+  className,
+  delay,
+}: {
+  className: string;
+  delay: number;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 18, rotate: -1 }}
+      animate={{ opacity: 1, y: 0, rotate: -1 }}
+      transition={{ delay, duration: 0.7, ease: "easeOut" }}
+      className={`absolute border border-drift bg-[#fffdf9] p-4 shadow-[0_18px_45px_rgba(44,51,56,0.10)] ${className}`}
+    >
+      <div className="flex items-center gap-2 border-b border-drift pb-3">
+        <FileSpreadsheet className="h-4 w-4 text-deep-sea" />
+        <div>
+          <div className="small-caps text-[11px] text-night-watch/45">uploaded workbook</div>
+          <div className="font-mono text-sm text-night-watch">Operations.xlsx</div>
+        </div>
+      </div>
+      <div className="mt-4 space-y-2">
+        {["date", "region", "invoice_total", "customer_id", "discount"].map((field, idx) => (
+          <motion.div
+            key={field}
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: delay + 0.25 + idx * 0.08 }}
+            className="grid grid-cols-[minmax(0,1fr)_4rem] gap-3 border border-drift/70 px-3 py-2"
+          >
+            <span className="truncate font-mono text-xs text-night-watch">{field}</span>
+            <span className="small-caps text-[10px] text-night-watch/40">
+              {idx === 0 ? "date" : idx === 2 || idx === 4 ? "number" : "text"}
+            </span>
+          </motion.div>
+        ))}
+      </div>
+    </motion.div>
   );
 }
 
@@ -1195,17 +1332,22 @@ function LandingFact({
   title,
   body,
   icon: Icon,
+  delay = 0,
 }: {
   index: string;
   title: string;
   body: string;
-  icon?: any;
+  icon?: typeof Database;
+  delay?: number;
 }) {
   return (
     <motion.div 
+      initial={{ opacity: 0, y: 14 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, amount: 0.5 }}
       whileHover={{ backgroundColor: "rgba(226, 221, 209, 0.2)" }}
-      transition={{ duration: 0.2 }}
-      className="border-b border-drift px-6 py-8 md:border-b-0 md:border-r md:last:border-r-0 lg:px-10 group"
+      transition={{ duration: 0.45, delay }}
+      className="group border border-drift bg-tidepaper px-5 py-6"
     >
       <div className="flex items-center justify-between">
         <div className="small-caps text-xs text-deep-sea group-hover:text-sea-glass transition-colors">{index}</div>
@@ -1213,6 +1355,21 @@ function LandingFact({
       </div>
       <h2 className="mt-6 font-mono text-xl text-night-watch">{title}</h2>
       <p className="mt-3 max-w-sm text-sm leading-relaxed text-night-watch/70">{body}</p>
+    </motion.div>
+  );
+}
+
+function LandingDetail({ label, value }: { label: string; value: string }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, amount: 0.45 }}
+      whileHover={{ x: 4 }}
+      className="border border-drift bg-[#fffdf9] px-5 py-5"
+    >
+      <div className="small-caps text-[11px] text-deep-sea">{label}</div>
+      <div className="mt-3 font-mono text-lg text-night-watch">{value}</div>
     </motion.div>
   );
 }
