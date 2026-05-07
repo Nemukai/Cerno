@@ -10,6 +10,8 @@ type Props = {
 };
 
 type CategoryData = {
+  columns?: string[];
+  rows?: TableRow[];
   categories?: string[];
   series?: Array<{ name?: string; data: number[] }>;
   values?: number[];
@@ -18,12 +20,17 @@ type CategoryData = {
 };
 
 type PieData = {
+  columns?: string[];
+  rows?: TableRow[];
   items?: Array<{ name: string; value: number }>;
 };
 
+type TableCell = string | number | boolean | null;
+type TableRow = TableCell[];
+
 type TableData = {
   columns?: string[];
-  rows?: Array<Array<string | number>>;
+  rows?: TableRow[];
 };
 
 type MarkdownData = {
@@ -34,6 +41,11 @@ type WidgetOptions = {
   horizontal?: boolean;
   interactive?: boolean;
   searchable?: boolean;
+  x?: string;
+  y?: string;
+  category?: string;
+  value?: string;
+  label?: string;
 };
 
 const baseAxis = {
@@ -65,6 +77,79 @@ function chartItems(data: CategoryData): Array<{ name: string; value: number }> 
   const categories = data.categories ?? data.labels ?? [];
   const values = data.values ?? [];
   return categories.map((name, idx) => ({ name, value: Number(values[idx] ?? 0) }));
+}
+
+function numericValue(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/,/g, "").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function columnIndex(columns: string[], names: Array<string | undefined>): number {
+  for (const name of names) {
+    if (!name) continue;
+    const index = columns.findIndex(
+      (column) => column.toLowerCase() === name.toLowerCase(),
+    );
+    if (index >= 0) return index;
+  }
+  return -1;
+}
+
+function inferCategoryIndex(columns: string[], rows: TableRow[], options: WidgetOptions) {
+  const configured = columnIndex(columns, [options.x, options.category, options.label]);
+  if (configured >= 0) return configured;
+  const firstText = columns.findIndex((_, index) =>
+    rows.some((row) => numericValue(row[index]) === null),
+  );
+  return firstText >= 0 ? firstText : 0;
+}
+
+function inferValueIndex(
+  columns: string[],
+  rows: TableRow[],
+  categoryIndex: number,
+  options: WidgetOptions,
+) {
+  const configured = columnIndex(columns, [options.y, options.value]);
+  if (configured >= 0) return configured;
+  const firstNumeric = columns.findIndex(
+    (_, index) =>
+      index !== categoryIndex &&
+      rows.some((row) => numericValue(row[index]) !== null),
+  );
+  return firstNumeric >= 0 ? firstNumeric : categoryIndex === 0 ? 1 : 0;
+}
+
+function categoryDataFromTable(
+  data: CategoryData,
+  options: WidgetOptions,
+): CategoryData {
+  if (!data.columns || !data.rows) return data;
+  const categoryIndex = inferCategoryIndex(data.columns, data.rows, options);
+  const valueIndex = inferValueIndex(data.columns, data.rows, categoryIndex, options);
+  const items = data.rows
+    .map((row) => {
+      const value = numericValue(row[valueIndex]);
+      if (value === null) return null;
+      return {
+        name: String(row[categoryIndex] ?? ""),
+        value,
+      };
+    })
+    .filter((item): item is { name: string; value: number } => item !== null);
+  return {
+    categories: items.map((item) => item.name),
+    values: items.map((item) => item.value),
+  };
+}
+
+function pieDataFromTable(data: PieData & CategoryData, options: WidgetOptions): PieData {
+  if (!data.columns || !data.rows) return data;
+  return { items: chartItems(categoryDataFromTable(data, options)) };
 }
 
 function limitItems(
@@ -185,7 +270,11 @@ function FilterableBar({
   height?: number;
 }) {
   const [limit, setLimit] = useState(10);
-  const items = useMemo(() => chartItems(data), [data]);
+  const normalizedData = useMemo(
+    () => categoryDataFromTable(data, options),
+    [data, options],
+  );
+  const items = useMemo(() => chartItems(normalizedData), [normalizedData]);
   const visible = useMemo(() => limitItems(items, limit), [items, limit]);
   const chartData = {
     categories: visible.map((item) => item.name),
@@ -214,7 +303,8 @@ function FilterablePie({
   height?: number;
 }) {
   const [limit, setLimit] = useState(8);
-  const items = useMemo(() => chartItems(data), [data]);
+  const normalizedData = useMemo(() => pieDataFromTable(data, {}), [data]);
+  const items = useMemo(() => chartItems(normalizedData as CategoryData), [normalizedData]);
   const visible = useMemo(() => limitItems(items, limit), [items, limit]);
   return (
     <>
@@ -369,7 +459,10 @@ export function WidgetRenderer({ widget, height }: Props) {
     return (
       <div className="py-4">
         {header}
-        <EChart height={height} option={buildLineOption(data as CategoryData)} />
+        <EChart
+          height={height}
+          option={buildLineOption(categoryDataFromTable(data as CategoryData, widgetOptions))}
+        />
         {footer}
       </div>
     );
@@ -379,7 +472,10 @@ export function WidgetRenderer({ widget, height }: Props) {
     return (
       <div className="py-4">
         {header}
-        <FilterablePie data={data as PieData & CategoryData} height={height} />
+        <FilterablePie
+          data={pieDataFromTable(data as PieData & CategoryData, widgetOptions) as PieData & CategoryData}
+          height={height}
+        />
         {footer}
       </div>
     );

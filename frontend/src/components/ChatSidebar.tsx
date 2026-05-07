@@ -71,8 +71,9 @@ export function ChatSidebar({
     const turnIds = new Set(turns.map((turn) => turn.id));
     setOpenTraceByTurn((current) => {
       const next: Record<string, boolean> = {};
-      for (const [turnId, open] of Object.entries(current)) {
-        if (turnIds.has(turnId)) next[turnId] = open;
+      for (const [traceKey, open] of Object.entries(current)) {
+        const turnId = traceKey.split(":")[0] ?? traceKey;
+        if (turnIds.has(turnId)) next[traceKey] = open;
       }
       return next;
     });
@@ -141,7 +142,9 @@ export function ChatSidebar({
               persistedMessages.length > 0
                 ? persistedMessages
                 : fallbackMessages(turn);
-            const widgets = widgetsFromArtifacts(artifactsByTurn[turn.id] ?? []);
+            const widgetArtifacts = widgetArtifactsFromArtifacts(
+              artifactsByTurn[turn.id] ?? [],
+            );
             const traceItems = messages
               .map((message, index) => ({
                 message,
@@ -153,41 +156,45 @@ export function ChatSidebar({
             const visibleMessages = messages.filter(
               (message) => message.role !== "tool" && !message.tool_name,
             );
-            const userMessages = visibleMessages.filter(
-              (message) => message.role === "user",
-            );
-            const assistantMessages = visibleMessages.filter(
-              (message) => message.role === "assistant",
-            );
 
             return (
               <div key={turn.id} className="hairline border-b py-4">
-                {userMessages.map((message) => (
-                  <UserBubble key={message.id} text={message.content} />
-                ))}
-                {traceItems.length > 0 ? (
-                  <TraceDisclosure
-                    open={Boolean(openTraceByTurn[turn.id])}
-                    items={traceItems}
-                    onToggle={() => toggleTrace(turn.id)}
-                  />
-                ) : null}
                 {messages.length === 0 && turn.state !== "complete" ? <ThinkingIndicator /> : null}
-                {assistantMessages.map((message) => (
-                  <AssistantBubble key={message.id} text={message.content} />
-                ))}
-                {widgets.length > 0 ? (
-                  <div className="mt-4 grid gap-3">
-                    {widgets.map((widget, index) => (
-                      <div
-                        key={`${turn.id}:widget:${index}`}
-                        className="border border-neutral-200 bg-white px-4 py-3 shadow-[0_10px_30px_rgba(14,14,14,0.04)]"
-                      >
-                        <WidgetRenderer widget={widget} height={260} />
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
+                {visibleMessages.map((message, index) => {
+                  if (message.role === "user") {
+                    return <UserBubble key={message.id} text={message.content} />;
+                  }
+                  if (message.role !== "assistant") return null;
+                  const traceKey = `${turn.id}:${message.id}`;
+                  const assistantTraceItems = traceItemsForAssistant(
+                    message,
+                    messages,
+                    traceItems,
+                  );
+                  const assistantWidgets = widgetArtifactsForMessage(
+                    message,
+                    messages,
+                    widgetArtifacts,
+                  );
+                  return (
+                    <Fragment key={message.id}>
+                      {assistantTraceItems.length > 0 ? (
+                        <TraceDisclosure
+                          open={Boolean(openTraceByTurn[traceKey])}
+                          items={assistantTraceItems}
+                          onToggle={() => toggleTrace(traceKey)}
+                        />
+                      ) : null}
+                      <AssistantBubble text={message.content} />
+                      {assistantWidgets.length > 0 ? (
+                        <WidgetGrid
+                          widgets={assistantWidgets.map((item) => item.widget)}
+                          idPrefix={`${turn.id}:${message.id}:${index}`}
+                        />
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
               </div>
             );
           })
@@ -240,13 +247,18 @@ export function ChatSidebar({
   );
 }
 
-function widgetsFromArtifacts(artifacts: ChatArtifact[]): Widget[] {
+type WidgetArtifact = {
+  artifact: ChatArtifact;
+  widget: Widget;
+};
+
+function widgetArtifactsFromArtifacts(artifacts: ChatArtifact[]): WidgetArtifact[] {
   return artifacts
     .map((artifact) => {
       const widget = artifact.inline_payload?.widget;
-      return isWidget(widget) ? widget : null;
+      return isWidget(widget) ? { artifact, widget } : null;
     })
-    .filter((widget): widget is Widget => widget !== null);
+    .filter((item): item is WidgetArtifact => item !== null);
 }
 
 function isWidget(value: unknown): value is Widget {
@@ -365,6 +377,27 @@ function ToolCallCard({
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function WidgetGrid({
+  widgets,
+  idPrefix,
+}: {
+  widgets: Widget[];
+  idPrefix: string;
+}) {
+  return (
+    <div className="mb-4 mt-3 grid gap-3">
+      {widgets.map((widget, index) => (
+        <div
+          key={`${idPrefix}:widget:${index}`}
+          className="border border-neutral-200 bg-white px-4 py-3 shadow-[0_10px_30px_rgba(14,14,14,0.04)]"
+        >
+          <WidgetRenderer widget={widget} height={260} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -518,6 +551,65 @@ function findToolResult(
     if (message.role === "tool") return message;
   }
   return null;
+}
+
+function traceItemsForAssistant(
+  assistant: ChatMessage,
+  messages: ChatMessage[],
+  traceItems: TraceItem[],
+): TraceItem[] {
+  const assistantIndex = messages.findIndex((message) => message.id === assistant.id);
+  if (assistantIndex < 0) return [];
+  let start = 0;
+  for (let i = assistantIndex - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message) continue;
+    if (message.role === "user" || (message.role === "assistant" && !message.tool_name)) {
+      start = i + 1;
+      break;
+    }
+  }
+  const traceIds = new Set(
+    messages
+      .slice(start, assistantIndex)
+      .filter((message) => message.role === "assistant" && Boolean(message.tool_name))
+      .map((message) => message.id),
+  );
+  return traceItems.filter((item) => traceIds.has(item.message.id));
+}
+
+function widgetArtifactsForMessage(
+  assistant: ChatMessage,
+  messages: ChatMessage[],
+  widgetArtifacts: WidgetArtifact[],
+): WidgetArtifact[] {
+  const direct = widgetArtifacts.filter((item) => item.artifact.message_id === assistant.id);
+  if (direct.length > 0) return direct;
+  return widgetArtifacts.filter((item) => {
+    if (item.artifact.message_id) return false;
+    const owner = nearestAssistantBeforeArtifact(item.artifact, messages);
+    return owner?.id === assistant.id;
+  });
+}
+
+function nearestAssistantBeforeArtifact(
+  artifact: ChatArtifact,
+  messages: ChatMessage[],
+): ChatMessage | null {
+  const artifactTime = new Date(artifact.created_at).getTime();
+  const assistantMessages = messages.filter(
+    (message) => message.role === "assistant" && !message.tool_name,
+  );
+  if (!Number.isFinite(artifactTime)) {
+    return assistantMessages[assistantMessages.length - 1] ?? null;
+  }
+  let owner: ChatMessage | null = null;
+  for (const message of assistantMessages) {
+    const messageTime = new Date(message.created_at).getTime();
+    if (!Number.isFinite(messageTime)) continue;
+    if (messageTime <= artifactTime) owner = message;
+  }
+  return owner ?? assistantMessages[assistantMessages.length - 1] ?? null;
 }
 
 function formatToolName(name: string | null) {

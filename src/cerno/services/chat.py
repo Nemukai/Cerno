@@ -11,6 +11,7 @@ from cerno.config import Settings
 from cerno.llm import LLMClient, ToolCall, conversation_context_options, run_tool_loop
 from cerno.models import (
     AssetArtifact,
+    ChatMessage,
     ChatTurn,
     DataDoc,
     DataDocFile,
@@ -98,8 +99,17 @@ async def run_chat_turn(
         data_docs_repo=data_docs_repo,
         schemas_repo=schemas_repo,
     )
+    final_message_id: str | None = None
+
     def on_message(message: dict[str, Any]) -> None:
-        _persist_loop_message(chat_repo, runtime.turn.id, message)
+        nonlocal final_message_id
+        saved_message = _persist_loop_message(chat_repo, runtime.turn.id, message)
+        if (
+            saved_message is not None
+            and saved_message.role == "assistant"
+            and saved_message.tool_name is None
+        ):
+            final_message_id = saved_message.id
         chat_repo.conn.commit()
 
     try:
@@ -127,6 +137,7 @@ async def run_chat_turn(
             chat_artifacts_repo=chat_artifacts_repo,
             session_id=session_id,
             turn_id=runtime.turn.id,
+            message_id=final_message_id,
             widgets=runtime.ctx.rendered_widgets,
         )
 
@@ -319,13 +330,19 @@ async def stream_chat_turn(
                 continue
             break
 
+        final_chat_message = None
         if final_message:
-            chat_repo.append_message(turn_id=runtime.turn.id, role="assistant", content=final_message)
+            final_chat_message = chat_repo.append_message(
+                turn_id=runtime.turn.id,
+                role="assistant",
+                content=final_message,
+            )
         if runtime.ctx.rendered_widgets:
             _persist_widget_artifacts(
                 chat_artifacts_repo=chat_artifacts_repo,
                 session_id=session_id,
                 turn_id=runtime.turn.id,
+                message_id=final_chat_message.id if final_chat_message else None,
                 widgets=runtime.ctx.rendered_widgets,
             )
         chat_repo.complete_turn(
@@ -788,11 +805,16 @@ def _unique_table_name(base: str, seen: set[str]) -> str:
     return name
 
 
-def _persist_loop_message(chat_repo: ChatRepository, turn_id: str, message: dict[str, Any]) -> None:
+def _persist_loop_message(
+    chat_repo: ChatRepository,
+    turn_id: str,
+    message: dict[str, Any],
+) -> ChatMessage | None:
     role = message.get("role")
     if role == "assistant":
         content = message.get("content") or ""
         tool_calls = message.get("tool_calls")
+        saved_message: ChatMessage | None = None
         if tool_calls:
             for tc in tool_calls:
                 fn = tc.get("function", {})
@@ -801,7 +823,7 @@ def _persist_loop_message(chat_repo: ChatRepository, turn_id: str, message: dict
                     args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
                 except json.JSONDecodeError:
                     args = {"_raw": args_raw}
-                chat_repo.append_message(
+                saved_message = chat_repo.append_message(
                     turn_id=turn_id,
                     role="assistant",
                     content=content,
@@ -809,20 +831,21 @@ def _persist_loop_message(chat_repo: ChatRepository, turn_id: str, message: dict
                     tool_args=args,
                 )
         else:
-            chat_repo.append_message(turn_id=turn_id, role="assistant", content=content)
-        return
+            saved_message = chat_repo.append_message(turn_id=turn_id, role="assistant", content=content)
+        return saved_message
     if role == "tool":
         raw = message.get("content") or "{}"
         try:
             result = json.loads(raw) if isinstance(raw, str) else raw
         except json.JSONDecodeError:
             result = {"_raw": raw}
-        chat_repo.append_message(
+        return chat_repo.append_message(
             turn_id=turn_id,
             role="tool",
             content=raw if isinstance(raw, str) else json.dumps(raw),
             tool_result=result if isinstance(result, dict) else {"value": result},
         )
+    return None
 
 
 def _persist_tool_call(chat_repo: ChatRepository, turn_id: str, call: ToolCall) -> None:
@@ -886,12 +909,14 @@ def _persist_widget_artifacts(
     chat_artifacts_repo: ChatArtifactRepository,
     session_id: str,
     turn_id: str,
+    message_id: str | None = None,
     widgets: list[Widget],
 ) -> None:
     for idx, widget in enumerate(widgets):
         chat_artifacts_repo.create(
             session_id=session_id,
             turn_id=turn_id,
+            message_id=message_id,
             artifact_type=f"widget:{widget.kind}",
             title=widget.title,
             inline_payload={"widget": widget.model_dump()},

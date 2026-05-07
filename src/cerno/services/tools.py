@@ -192,8 +192,10 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 "Emit a widget for this chat turn. "
                 "Prioritize this for analytical answers: KPI totals, grouped result tables, rankings, comparisons, distributions, and time trends should be rendered as widgets, not only described in text. "
                 "Call this for every chart, KPI, or table you want the user to see before writing the final answer. "
-                "The data field is required and must be an object, never a raw list. "
-                "For table, bar, line, and pie widgets, use data={columns: [...], rows: [[...], ...]}."
+                "The data field is required and must be an object, never a raw list and never Python code. "
+                "First use run_python to compute compact aggregates from the available pandas DataFrames, then pass the returned concrete values into this tool. "
+                "For table, bar, line, and pie widgets, use data={columns: [...], rows: [[...], ...]}. "
+                "For charts, set options.x/category and options.y/value when the first column is not the category and the second column is not the measure."
             ),
             parameters={
                 "type": "object",
