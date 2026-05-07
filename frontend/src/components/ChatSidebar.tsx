@@ -263,22 +263,28 @@ function isWidget(value: unknown): value is Widget {
 function ThinkingIndicator() {
   return (
     <div className="flex items-center gap-3 py-2">
-      <div className="flex items-center gap-1">
-        <span
-          className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
-          style={{ animationDelay: "0ms", animationDuration: "1s" }}
-        />
-        <span
-          className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
-          style={{ animationDelay: "150ms", animationDuration: "1s" }}
-        />
-        <span
-          className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
-          style={{ animationDelay: "300ms", animationDuration: "1s" }}
-        />
-      </div>
+      <ThinkingDots />
       <span className="text-sm text-neutral-400 animate-pulse">analyzing your data…</span>
     </div>
+  );
+}
+
+function ThinkingDots() {
+  return (
+    <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
+      <span
+        className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
+        style={{ animationDelay: "0ms", animationDuration: "1s" }}
+      />
+      <span
+        className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
+        style={{ animationDelay: "150ms", animationDuration: "1s" }}
+      />
+      <span
+        className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
+        style={{ animationDelay: "300ms", animationDuration: "1s" }}
+      />
+    </span>
   );
 }
 
@@ -296,18 +302,19 @@ function TraceDisclosure({
   items: TraceItem[];
   onToggle: () => void;
 }) {
-  const label = open ? "hide thinking & tools" : "show thinking & tools";
-
   return (
     <div className="mb-3">
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-2.5 py-2 text-left hover:border-orange-200 hover:bg-orange-50"
+        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-3 py-2 text-left hover:border-orange-200 hover:bg-orange-50"
       >
-        <span className="small-caps text-[10px] text-neutral-500">
-          {label}
+        <span className="flex min-w-0 items-center gap-2">
+          <ThinkingDots />
+          <span className="small-caps text-[10px] text-neutral-500">
+            thinking
+          </span>
         </span>
         <span className="flex items-center gap-2">
           <span className="font-mono text-[10px] text-neutral-400">
@@ -412,43 +419,19 @@ function AssistantBubble({ text }: { text: string }) {
 }
 
 function LiveChatBlock({ liveChat }: { liveChat: LiveChatState }) {
+  const [traceOpen, setTraceOpen] = useState(false);
+  const hasTrace = Boolean(liveChat.reasoningText.trim()) || liveChat.tools.length > 0;
+
   return (
     <div className="hairline border-b py-4">
       <UserBubble text={liveChat.userMessage} />
       <div className="small-caps mb-2 text-sm text-ember">cerno</div>
-      {liveChat.reasoningText ? (
-        <div className="mb-3 border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-600">
-          <div className="small-caps mb-1 text-xs text-neutral-500">thinking</div>
-          <MarkdownText text={liveChat.reasoningText} compact />
-        </div>
-      ) : null}
-      {liveChat.tools.length > 0 ? (
-        <div className="mb-3 grid gap-2">
-          {liveChat.tools.map((tool) => (
-            <div key={tool.callId} className="border border-neutral-200 bg-white px-3 py-2">
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-mono text-xs text-ink">{tool.name || "tool"}</span>
-                <span className="small-caps text-xs text-neutral-400">
-                  {tool.result ? "done" : "running"}
-                </span>
-              </div>
-              {tool.args ? (
-                <pre className="mt-2 max-h-28 overflow-auto bg-neutral-50 p-2 text-xs text-neutral-600">
-                  {JSON.stringify(tool.args, null, 2)}
-                </pre>
-              ) : tool.argsText ? (
-                <pre className="mt-2 max-h-28 overflow-auto bg-neutral-50 p-2 text-xs text-neutral-600">
-                  {tool.argsText}
-                </pre>
-              ) : null}
-              {tool.result ? (
-                <pre className="mt-2 max-h-40 overflow-auto border-t border-neutral-200 bg-neutral-50 p-2 text-xs text-neutral-600">
-                  {formatToolResultPreview(tool.result)}
-                </pre>
-              ) : null}
-            </div>
-          ))}
-        </div>
+      {hasTrace ? (
+        <LiveTraceDisclosure
+          open={traceOpen}
+          liveChat={liveChat}
+          onToggle={() => setTraceOpen((open) => !open)}
+        />
       ) : null}
       {liveChat.assistantText ? (
         <div className="max-w-3xl text-base text-ink">
@@ -458,9 +441,68 @@ function LiveChatBlock({ liveChat }: { liveChat: LiveChatState }) {
         <div className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {liveChat.error}
         </div>
-      ) : (
+      ) : hasTrace ? null : (
         <ThinkingIndicator />
       )}
+    </div>
+  );
+}
+
+function LiveTraceDisclosure({
+  open,
+  liveChat,
+  onToggle,
+}: {
+  open: boolean;
+  liveChat: LiveChatState;
+  onToggle: () => void;
+}) {
+  const stepCount =
+    liveChat.tools.length + (liveChat.reasoningText.trim() ? 1 : 0);
+
+  return (
+    <div className="mb-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-3 py-2 text-left hover:border-orange-200 hover:bg-orange-50"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <ThinkingDots />
+          <span className="small-caps text-[10px] text-neutral-500">
+            thinking
+          </span>
+        </span>
+        <span className="flex items-center gap-2">
+          <span className="font-mono text-[10px] text-neutral-400">
+            {stepCount} {stepCount === 1 ? "step" : "steps"}
+          </span>
+          <span className="text-xs text-ember">{open ? "\u2191" : "\u2193"}</span>
+        </span>
+      </button>
+      {open ? (
+        <div className="mt-2 space-y-2">
+          {liveChat.reasoningText.trim() ? (
+            <div className="border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-600">
+              <div className="small-caps mb-1 text-xs text-neutral-500">thinking</div>
+              <MarkdownText text={liveChat.reasoningText} compact />
+            </div>
+          ) : null}
+          {liveChat.tools.map((tool) => (
+            <div key={tool.callId} className="border border-orange-200 bg-white px-3 py-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="truncate font-mono text-xs text-ink">
+                  {formatToolName(tool.name || null)}
+                </span>
+                <span className="small-caps text-xs text-neutral-400">
+                  {tool.result ? "done" : "running"}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -481,66 +523,6 @@ function findToolResult(
 function formatToolName(name: string | null) {
   if (!name) return "tool";
   return name.replace(/_/g, " ");
-}
-
-function summarizeRecord(record: Record<string, unknown>) {
-  const entries = Object.entries(record)
-    .filter(([, value]) => value !== null && value !== undefined && value !== "")
-    .slice(0, 3);
-  if (entries.length === 0) return "No arguments";
-  return entries
-    .map(([key, value]) => `${key}: ${formatPreviewValue(value)}`)
-    .join(" | ");
-}
-
-function summarizeToolResult(record: Record<string, unknown>) {
-  if (typeof record.error === "string") return `Error: ${record.error}`;
-  if (Array.isArray(record.tables)) return `${record.tables.length} tables available`;
-  if (record.schema_guide && typeof record.schema_guide === "object") {
-    return "Schema guide returned";
-  }
-  if (typeof record.message === "string") return record.message;
-  if (record.result_preview && typeof record.result_preview === "object") {
-    return formatPreviewValue(record.result_preview);
-  }
-  const keys = Object.keys(record).filter((key) => key !== "error");
-  if (keys.length === 0) return "Empty result returned";
-  return `Result keys: ${keys.slice(0, 4).join(", ")}`;
-}
-
-function formatPreviewValue(value: unknown) {
-  let text: string;
-  if (Array.isArray(value)) text = `${value.length} items`;
-  else if (typeof value === "object" && value !== null) {
-    const keys = Object.keys(value as Record<string, unknown>);
-    text = keys.length > 0 ? `{${keys.slice(0, 3).join(", ")}}` : "{}";
-  } else {
-    text = String(value);
-  }
-  return text.length > 64 ? `${text.slice(0, 61)}...` : text;
-}
-
-function formatToolResultPreview(record: Record<string, unknown>) {
-  const selected: Record<string, unknown> = {};
-  for (const key of [
-    "ok",
-    "message",
-    "error",
-    "table_count",
-    "python_dataframe_names",
-    "tables",
-    "columns",
-    "schema_guide",
-    "result_preview",
-    "stdout",
-    "stderr",
-  ]) {
-    if (record[key] !== undefined && record[key] !== null && record[key] !== "") {
-      selected[key] = record[key];
-    }
-  }
-  const payload = Object.keys(selected).length > 0 ? selected : record;
-  return JSON.stringify(payload, null, 2);
 }
 
 export function MarkdownText({
