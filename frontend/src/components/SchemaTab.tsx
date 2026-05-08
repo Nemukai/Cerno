@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getFilePreview } from "../lib/api";
 import type {
   DataDoc,
-  DataDocFile,
   DiscoveredColumn,
   DiscoveredFile,
   DiscoveredLink,
@@ -30,6 +29,7 @@ type Props = {
     links: DiscoveredLink[],
     overview: string,
   ) => void;
+  onDeleteFile: (fileId: string) => void;
 };
 
 const DTYPES: SimpleDtype[] = [
@@ -67,6 +67,7 @@ export function SchemaTab({
   canProcess,
   onProcess,
   onApprove,
+  onDeleteFile,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draftFiles, setDraftFiles] = useState<DiscoveredFile[]>([]);
@@ -146,6 +147,14 @@ export function SchemaTab({
   const activeFileIdx = activeFile
     ? draftFiles.findIndex((file) => file.file_id === activeFile.file_id)
     : -1;
+  const relationshipGroups = useMemo(
+    () => groupRelationships(draftFiles, draftLinks),
+    [draftFiles, draftLinks],
+  );
+  const guideSummary = useMemo(
+    () => buildGuideSummary(doc, draftFiles),
+    [doc, draftFiles],
+  );
 
   const handleCancelEdit = () => {
     if (discovery) {
@@ -248,24 +257,35 @@ export function SchemaTab({
   };
 
   return (
-    <div className="px-8 py-6">
-      <header className="hairline mb-5 flex flex-wrap items-start justify-between gap-4 border-b pb-5">
-        <div className="max-w-3xl">
-          <div className="small-caps text-xs text-neutral-500">schema</div>
-          <h2 className="mt-1 font-mono text-2xl text-ink">
-            {schemaTitle(status, processing)}
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-neutral-600">
+    <div className="cerno-insights-surface relative min-h-full overflow-hidden px-8 py-7 text-[#141210]">
+      <div className="pointer-events-none absolute inset-0 opacity-80" aria-hidden="true">
+        <div className="absolute right-[-14rem] top-[-18rem] h-[36rem] w-[48rem] rounded-full border border-[#176B7D]/10" />
+        <div className="absolute right-[-9rem] top-[-13rem] h-[28rem] w-[39rem] rounded-full border border-[#D17B2E]/14" />
+        <div className="absolute right-[-4rem] top-[-8rem] h-[20rem] w-[29rem] rounded-full border border-[#176B7D]/12" />
+      </div>
+
+      <header className="relative z-10 mb-7 grid gap-6 border-b border-[#141210]/12 pb-6 xl:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="max-w-4xl">
+          <div className="small-caps text-xs text-[#176B7D]">insights</div>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <h2 className="font-serif text-4xl leading-none tracking-tight text-[#141210]">
+              {schemaTitle(status, processing)}
+            </h2>
+            <span className="small-caps border border-[#141210]/12 bg-[#F7F1E7]/80 px-2 py-1 text-xs text-[#141210]/58">
+              {summary.state}
+            </span>
+          </div>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-[#141210]/62">
             {headerDescription(status, processing, files.length)}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-start gap-2">
           {status === "empty" || status === "failed" ? (
             <button
               type="button"
               onClick={onProcess}
               disabled={!canProcess || processing}
-              className="small-caps border border-ink bg-ember px-3 py-1.5 text-xs text-white hover:bg-ember-hover disabled:cursor-not-allowed disabled:opacity-40"
+              className="small-caps border border-[#141210] bg-[#D17B2E] px-4 py-2 text-xs text-[#141210] transition hover:bg-[#E89A48] disabled:cursor-not-allowed disabled:opacity-40"
             >
               {processing ? "processing" : "process files"}
             </button>
@@ -277,7 +297,7 @@ export function SchemaTab({
                   type="button"
                   onClick={handleCancelEdit}
                   disabled={approving}
-                  className="small-caps border border-ink px-3 py-1.5 text-xs hover:bg-neutral-100 disabled:opacity-40"
+                  className="small-caps border border-[#141210]/28 bg-[#F2EBDD]/70 px-4 py-2 text-xs transition hover:bg-[#F7F1E7] disabled:opacity-40"
                 >
                   cancel
                 </button>
@@ -285,7 +305,7 @@ export function SchemaTab({
                   type="button"
                   onClick={handleApprove}
                   disabled={approving}
-                  className="small-caps border border-ink bg-ember px-3 py-1.5 text-xs text-white hover:bg-ember-hover disabled:opacity-40"
+                  className="small-caps border border-[#141210] bg-[#D17B2E] px-4 py-2 text-xs text-[#141210] transition hover:bg-[#E89A48] disabled:opacity-40"
                 >
                   {approving ? "saving" : "save and apply"}
                 </button>
@@ -295,7 +315,7 @@ export function SchemaTab({
                 <button
                   type="button"
                   onClick={() => setEditing(true)}
-                  className="small-caps border border-ink px-3 py-1.5 text-xs hover:bg-neutral-100"
+                  className="small-caps border border-[#141210]/28 bg-[#F2EBDD]/70 px-4 py-2 text-xs transition hover:bg-[#F7F1E7]"
                 >
                   edit
                 </button>
@@ -304,7 +324,7 @@ export function SchemaTab({
                     type="button"
                     onClick={handleApprove}
                     disabled={approving}
-                    className="small-caps border border-ink bg-ember px-3 py-1.5 text-xs text-white hover:bg-ember-hover disabled:opacity-40"
+                    className="small-caps border border-[#141210] bg-[#D17B2E] px-4 py-2 text-xs text-[#141210] transition hover:bg-[#E89A48] disabled:opacity-40"
                   >
                     {approving ? "approving" : "approve"}
                   </button>
@@ -313,7 +333,7 @@ export function SchemaTab({
                     type="button"
                     onClick={onProcess}
                     disabled={processing}
-                    className="small-caps border border-ink px-3 py-1.5 text-xs hover:bg-neutral-100 disabled:opacity-40"
+                    className="small-caps border border-[#141210]/28 bg-[#F2EBDD]/70 px-4 py-2 text-xs transition hover:bg-[#F7F1E7] disabled:opacity-40"
                   >
                     re-process
                   </button>
@@ -333,84 +353,75 @@ export function SchemaTab({
       ) : null}
 
       {discovery && (status === "pending_review" || status === "approved") ? (
-        <div className="space-y-6">
-          <section className="hairline border-b pb-5">
-            <div className="small-caps text-xs text-neutral-500">what Cerno found</div>
-            {editing ? (
-              <textarea
-                value={draftOverview}
-                onChange={(e) => setDraftOverview(e.target.value)}
-                rows={4}
-                className="mt-3 w-full border border-neutral-300 bg-white p-3 text-sm focus:outline-none focus:ring-1 focus:ring-ink"
-              />
-            ) : (
-              <p className="mt-2 max-w-5xl text-sm leading-6 text-neutral-700">
-                {draftOverview || "No overview was generated."}
-              </p>
-            )}
-          </section>
-
-          <DataHealthSummary summary={summary} warnings={warnings} />
-
-          <section className="hairline border-b pb-5">
-            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <div className="small-caps text-xs text-neutral-500">files</div>
-                <h3 className="mt-1 font-mono text-lg text-ink">Uploaded documents</h3>
-                <p className="mt-1 text-sm leading-5 text-neutral-600">
-                  Each tile is one file, sheet, or table Cerno can use. Open a tile
-                  only when you need column-level detail.
-                </p>
-              </div>
-              <div className="text-xs text-neutral-500">
-                Click a document to inspect it.
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {draftFiles.map((file) => (
-                <FileTile
-                  key={file.file_id}
-                  file={file}
-                  record={fileById.get(file.file_id)}
-                  displayName={fileNameMap.get(file.file_id) ?? file.friendly_name}
-                  warnings={warnings.byFile.get(file.file_id) ?? []}
-                  onClick={() => setActiveFileId(file.file_id)}
-                />
-              ))}
-            </div>
-          </section>
-
-          <section className="hairline border-b pb-5">
-            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <div className="small-caps text-xs text-neutral-500">connections</div>
-                <h3 className="mt-1 font-mono text-lg text-ink">How the documents connect</h3>
-                <p className="mt-1 text-sm leading-5 text-neutral-600">
-                  These are the shared fields Cerno will use to move between files.
-                  Review weak or missing connections before approving complex uploads.
-                </p>
-              </div>
+        <div className="relative z-10 grid gap-7">
+          <section className="grid gap-6 border-b border-[#141210]/12 pb-7 xl:grid-cols-[minmax(0,1.08fr)_minmax(28rem,0.92fr)]">
+            <div className="min-w-0">
+              <div className="small-caps text-xs text-[#141210]/42">summary</div>
               {editing ? (
+                <textarea
+                  value={draftOverview}
+                  onChange={(e) => setDraftOverview(e.target.value)}
+                  rows={5}
+                  className="mt-3 w-full border border-[#141210]/18 bg-[#F7F1E7]/84 p-3 text-sm leading-6 focus:outline-none focus:ring-1 focus:ring-[#141210]"
+                />
+              ) : (
+                <p className="mt-3 max-w-3xl text-lg leading-8 text-[#141210]/72">
+                  {shortText(draftOverview || "No overview was generated.", 310)}
+                </p>
+              )}
+              {warnings.total > 0 ? (
                 <button
                   type="button"
-                  onClick={() => addLink()}
-                  disabled={draftFiles.length < 2}
-                  className="small-caps border border-ink px-2 py-1 text-[11px] hover:bg-neutral-100 disabled:opacity-40"
+                  onClick={() => {
+                    const first = draftFiles.find((file) =>
+                      warnings.byFile.has(file.file_id),
+                    );
+                    if (first) setActiveFileId(first.file_id);
+                  }}
+                  className="mt-5 border border-amber-300 bg-amber-50 px-3 py-2 text-left text-xs text-amber-800 transition hover:bg-amber-100"
                 >
-                  add connection
+                  {warnings.total} item{warnings.total === 1 ? "" : "s"} need review.
+                  Open the marked document for detail.
                 </button>
-              ) : null}
+              ) : (
+                <div className="mt-5 inline-flex border border-[#176B7D]/18 bg-[#C9E3E2]/18 px-3 py-2 text-xs text-[#176B7D]">
+                  No document warnings found.
+                </div>
+              )}
             </div>
-            <RelationshipMap
-              files={draftFiles}
-              links={draftLinks}
-              linkStats={linkStats}
-              fileNameMap={fileNameMap}
-              onSelectFile={setActiveFileId}
-            />
+            <div className="grid grid-cols-2 gap-x-8 gap-y-5 border border-[#141210]/12 bg-[#F7F1E7]/70 p-5 shadow-[0_18px_60px_rgba(20,18,16,0.04)] sm:grid-cols-3">
+              <Stat label="rows" value={summary.rows} />
+              <Stat label="files" value={summary.files} />
+              <Stat label="fields" value={summary.columns} />
+              <Stat label="connections" value={summary.relationships} />
+              <Stat label="size" value={summary.size} />
+              <Stat label="state" value={summary.state} />
+            </div>
           </section>
 
-          <DataGuideSection doc={doc} files={draftFiles} />
+          <DocumentSummaryList
+            files={draftFiles}
+            fileById={fileById}
+            fileNameMap={fileNameMap}
+            warnings={warnings}
+            onSelectFile={setActiveFileId}
+          />
+
+          <ConnectionSummaryList
+            groups={relationshipGroups}
+            fileNameMap={fileNameMap}
+            linkStats={linkStats}
+            onSelectFile={setActiveFileId}
+            editing={editing}
+            onAddLink={addLink}
+            canAddLink={draftFiles.length >= 2}
+          />
+
+          <AgentContextSummary
+            summary={guideSummary}
+            files={draftFiles}
+            onSelectFile={setActiveFileId}
+          />
         </div>
       ) : null}
 
@@ -436,6 +447,7 @@ export function SchemaTab({
         onAddLink={addLink}
         onUpdateLink={updateLink}
         onRemoveLink={removeLink}
+        onDeleteFile={onDeleteFile}
       />
     </div>
   );
@@ -669,269 +681,238 @@ type WarningState = {
   byFile: Map<string, string[]>;
 };
 
-function DataHealthSummary({
-  summary,
-  warnings,
-}: {
-  summary: SummaryStats;
-  warnings: WarningState;
-}) {
-  return (
-    <section className="hairline border-b pb-5">
-      <div className="grid gap-4 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-        <div>
-          <div className="small-caps text-xs text-neutral-500">review strip</div>
-          <h3 className="mt-1 font-mono text-xl text-ink">Check before approving</h3>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-600">
-            Start here for the shape of the upload. Open individual documents only
-            when a warning or connection needs a closer look.
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
-          <Stat label="size" value={summary.size} />
-          <Stat label="rows" value={summary.rows} />
-          <Stat label="files" value={summary.files} />
-          <Stat label="columns" value={summary.columns} />
-          <Stat label="connections" value={summary.relationships} />
-          <Stat label="state" value={summary.state} />
-        </div>
-      </div>
-      {warnings.total > 0 ? (
-        <div className="mt-4 border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          {warnings.total} item{warnings.total === 1 ? "" : "s"} need a look. Open the
-          marked documents before approving.
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="small-caps text-[11px] text-neutral-500">{label}</div>
-      <div className="mt-1 font-mono text-lg text-ink">{value}</div>
+      <div className="small-caps text-[11px] text-[#141210]/44">{label}</div>
+      <div className="mt-1 font-mono text-lg text-[#141210]">{value}</div>
     </div>
   );
 }
 
-function FileTile({
-  file,
-  record,
-  displayName,
-  warnings,
-  onClick,
-}: {
-  file: DiscoveredFile;
-  record?: FileRecord;
-  displayName: string;
-  warnings: string[];
-  onClick: () => void;
-}) {
-  const badges = fileBadges(file, warnings);
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={fileHoverTitle(file, record)}
-      className="group min-h-[8rem] border border-neutral-200 bg-white p-4 text-left transition hover:border-ink hover:bg-neutral-50"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate font-mono text-base text-ink">{displayName}</div>
-          <div className="mt-1 truncate text-xs text-neutral-500">
-            {record?.filename ?? "Original file unknown"}
-          </div>
-        </div>
-        <span
-          className={`small-caps shrink-0 border px-1.5 py-0.5 text-[10px] ${
-            warnings.length > 0
-              ? "border-amber-200 bg-amber-50 text-amber-800"
-              : "border-neutral-200 bg-neutral-50 text-neutral-500"
-          }`}
-        >
-          {warnings.length > 0 ? "check" : "ready"}
-        </span>
-      </div>
-      <p className="mt-3 max-h-10 overflow-hidden text-sm leading-5 text-neutral-600">
-        {file.description || "No description yet."}
-      </p>
-      <div className="mt-4 flex flex-wrap gap-3 text-xs text-neutral-500">
-        <span>{formatNumber(record?.row_count ?? 0)} rows</span>
-        <span>{file.columns.length} columns</span>
-        <span>{formatSize(record?.original_size_bytes)}</span>
-      </div>
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {badges.map((badge) => (
-          <span
-            key={badge}
-            className="small-caps border border-neutral-200 bg-neutral-50 px-1.5 py-0.5 text-[10px] text-neutral-600"
-          >
-            {badge}
-          </span>
-        ))}
-      </div>
-    </button>
-  );
-}
-
-function DataGuideSection({
-  doc,
+function DocumentSummaryList({
   files,
+  fileById,
+  fileNameMap,
+  warnings,
+  onSelectFile,
 }: {
-  doc: DataDoc | null;
   files: DiscoveredFile[];
+  fileById: Map<string, FileRecord>;
+  fileNameMap: Map<string, string>;
+  warnings: WarningState;
+  onSelectFile: (fileId: string) => void;
 }) {
-  if (!doc) {
-    return (
-      <section className="pb-5">
-        <div className="small-caps text-xs text-neutral-500">guidance</div>
-        <div className="mt-3 border border-neutral-200 bg-white p-4">
-          <h3 className="font-mono text-base text-ink">Usage notes will appear here</h3>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-600">
-            Once the map is saved, Cerno will keep the plain-language notes,
-            questions, and glossary on this Schema page.
-          </p>
-        </div>
-      </section>
-    );
-  }
-
-  const documentedIds = new Set(doc.files.map((file) => file.file_id));
-  const missingGuides = files.filter((file) => !documentedIds.has(file.file_id));
-  const caveatFiles = doc.files.filter((file) => file.caveats.length > 0);
-
   return (
-    <section className="pb-5">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+    <section className="border-b border-[#141210]/12 pb-7">
+      <div className="mb-4 flex items-end justify-between gap-4">
         <div>
-          <div className="small-caps text-xs text-neutral-500">guidance</div>
-          <h3 className="mt-1 font-mono text-lg text-ink">How to use this data</h3>
-          <p className="mt-1 max-w-3xl text-sm leading-5 text-neutral-600">
-            These notes travel with the map, so every chat answer shares the same
-            understanding of the uploaded documents.
-          </p>
+          <div className="small-caps text-xs text-[#176B7D]">documents</div>
+          <h3 className="mt-1 font-mono text-xl text-[#141210]">Files Cerno can use</h3>
         </div>
-        <div className="small-caps text-xs text-neutral-500">
-          {doc.files.length} documented
-        </div>
+        <div className="text-xs text-[#141210]/46">Click a file for fields and rows.</div>
       </div>
-
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.8fr)]">
-        <div className="space-y-4">
-          <section className="border-y border-neutral-200">
-            {doc.files.map((file) => (
-              <DocumentNote key={file.file_id} file={file} />
-            ))}
-            {missingGuides.map((file) => (
-              <div key={file.file_id} className="hairline border-b py-4 last:border-b-0">
-                <div className="font-mono text-sm text-ink">{file.friendly_name}</div>
-                <p className="mt-1 text-sm leading-5 text-neutral-600">
-                  No usage note has been written for this document yet.
-                </p>
+      <div className="divide-y divide-[#141210]/10 border-y border-[#141210]/12">
+        {files.map((file) => {
+          const record = fileById.get(file.file_id);
+          const fileWarnings = warnings.byFile.get(file.file_id) ?? [];
+          return (
+            <button
+              key={file.file_id}
+              type="button"
+              onClick={() => onSelectFile(file.file_id)}
+              className="group grid w-full gap-3 px-3 py-4 text-left transition hover:bg-[#F7F1E7]/80 lg:grid-cols-[minmax(14rem,0.7fr)_minmax(0,1fr)_auto]"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`h-2.5 w-2.5 ${fileWarnings.length > 0 ? "bg-[#D17B2E]" : "bg-[#176B7D]"}`}
+                  />
+                  <span className="truncate font-mono text-base text-[#141210]">
+                    {fileNameMap.get(file.file_id) ?? file.friendly_name}
+                  </span>
+                </div>
+                <div className="mt-1 truncate text-xs text-[#141210]/45">
+                  {record?.filename ?? "Original file unknown"}
+                </div>
               </div>
-            ))}
-          </section>
-
-          <GuideList
-            title="Questions to try"
-            items={doc.starter_questions}
-            empty="No starter questions yet."
-          />
-        </div>
-
-        <aside className="space-y-6">
-          <GuideList
-            title="Watch-outs"
-            items={[
-              ...doc.usage_notes,
-              ...caveatFiles.flatMap((file) =>
-                file.caveats.map((caveat) => `${file.name}: ${caveat}`),
-              ),
-            ]}
-            empty="No caveats yet."
-          />
-
-          <section>
-            <div className="small-caps text-xs text-neutral-500">glossary</div>
-            {doc.glossary.length === 0 ? (
-              <p className="mt-3 text-sm text-neutral-500">No glossary terms yet.</p>
-            ) : (
-              <div className="mt-3 space-y-3">
-                {doc.glossary.map((item) => (
-                  <div key={item.term}>
-                    <div className="font-mono text-sm text-ink">{item.term}</div>
-                    <p className="mt-1 text-sm leading-5 text-neutral-600">
-                      {item.meaning}
-                    </p>
-                  </div>
-                ))}
+              <div className="min-w-0 text-sm leading-6 text-[#141210]/62">
+                {shortText(file.description || "No description yet.", 150)}
               </div>
-            )}
-          </section>
-        </aside>
+              <div className="flex items-center gap-5 font-mono text-xs text-[#141210]/56 lg:justify-end">
+                <span>{formatNumber(record?.row_count ?? 0)} rows</span>
+                <span>{file.columns.length} fields</span>
+                <span
+                  className={`small-caps border px-2 py-1 font-sans text-[10px] ${
+                    fileWarnings.length > 0
+                      ? "border-amber-300 bg-amber-50 text-amber-800"
+                      : "border-[#141210]/12 bg-[#F2EBDD]/70 text-[#141210]/48"
+                  }`}
+                >
+                  {fileWarnings.length > 0 ? "review" : "ready"}
+                </span>
+              </div>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
 }
 
-function DocumentNote({ file }: { file: DataDocFile }) {
-  return (
-    <article className="hairline border-b py-4 last:border-b-0">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h4 className="font-mono text-base text-ink">{file.name}</h4>
-          <p className="mt-1 max-w-3xl text-sm leading-6 text-neutral-700">
-            {file.description || "No description yet."}
-          </p>
-        </div>
-        <div className="small-caps shrink-0 text-xs text-neutral-500">
-          {formatNumber(file.row_count)} rows
-        </div>
-      </div>
-      <div className="mt-3 grid gap-3 text-sm text-neutral-600 md:grid-cols-2 xl:grid-cols-4">
-        <GuideFact label="One row means" value={file.grain || "Not documented"} />
-        <GuideFact label="Key fields" value={joinItems(file.key_columns)} />
-        <GuideFact label="Dates" value={joinItems(file.date_columns)} />
-        <GuideFact label="Amounts" value={joinItems(file.measure_columns)} />
-      </div>
-    </article>
-  );
-}
-
-function GuideFact({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="small-caps text-[11px] text-neutral-500">{label}</div>
-      <div className="mt-1 leading-5">{value}</div>
-    </div>
-  );
-}
-
-function GuideList({
-  title,
-  items,
-  empty,
+function ConnectionSummaryList({
+  groups,
+  fileNameMap,
+  linkStats,
+  onSelectFile,
+  editing,
+  onAddLink,
+  canAddLink,
 }: {
-  title: string;
-  items: string[];
-  empty: string;
+  groups: RelationshipGroup[];
+  fileNameMap: Map<string, string>;
+  linkStats: Map<string, LinkStat>;
+  onSelectFile: (fileId: string) => void;
+  editing: boolean;
+  onAddLink: () => void;
+  canAddLink: boolean;
 }) {
+  const visibleGroups = [...groups]
+    .sort((a, b) => b.links.length - a.links.length)
+    .slice(0, 6);
+  const hiddenCount = Math.max(0, groups.length - visibleGroups.length);
+
   return (
-    <section>
-      <div className="small-caps text-xs text-neutral-500">{title}</div>
-      {items.length === 0 ? (
-        <p className="mt-3 text-sm text-neutral-500">{empty}</p>
+    <section className="border-b border-[#141210]/12 pb-7">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="small-caps text-xs text-[#176B7D]">connections</div>
+          <h3 className="mt-1 font-mono text-xl text-[#141210]">How files relate</h3>
+        </div>
+        {editing ? (
+          <button
+            type="button"
+            onClick={onAddLink}
+            disabled={!canAddLink}
+            className="small-caps border border-[#141210]/28 bg-[#F2EBDD]/70 px-3 py-2 text-xs transition hover:bg-[#F7F1E7] disabled:opacity-40"
+          >
+            add connection
+          </button>
+        ) : null}
+      </div>
+      {visibleGroups.length === 0 ? (
+        <div className="border border-[#141210]/12 bg-[#F7F1E7]/62 p-4 text-sm text-[#141210]/58">
+          No strong file connections found yet.
+        </div>
       ) : (
-        <ul className="mt-3 divide-y divide-neutral-100 border-y border-neutral-200 text-sm leading-5 text-neutral-700">
-          {items.map((item, idx) => (
-            <li key={`${idx}-${item}`} className="py-3">
-              {item}
-            </li>
-          ))}
-        </ul>
+        <div className="grid gap-2">
+          {visibleGroups.map((group) => {
+            const weakCount = group.links.filter((link) =>
+              isWeakLink(
+                linkStats.get(
+                  linkLookupKey(link.file_a_id, link.col_a, link.file_b_id, link.col_b),
+                ),
+              ),
+            ).length;
+            return (
+              <div
+                key={group.key}
+                className="grid items-center gap-3 border border-[#141210]/10 bg-[#F7F1E7]/58 px-3 py-3 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]"
+              >
+                <button
+                  type="button"
+                  onClick={() => onSelectFile(group.leftId)}
+                  className="truncate border border-[#141210]/10 bg-[#F2EBDD]/62 px-3 py-2 text-left font-mono text-sm transition hover:border-[#176B7D]/40"
+                >
+                  {fileNameMap.get(group.leftId) ?? group.leftId}
+                </button>
+                <span className="small-caps whitespace-nowrap border border-[#D17B2E]/22 bg-[#D17B2E]/8 px-2 py-1 text-[10px] text-[#9A551F]">
+                  {group.links.length} link{group.links.length === 1 ? "" : "s"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onSelectFile(group.rightId)}
+                  className="truncate border border-[#141210]/10 bg-[#F2EBDD]/62 px-3 py-2 text-left font-mono text-sm transition hover:border-[#176B7D]/40"
+                >
+                  {fileNameMap.get(group.rightId) ?? group.rightId}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSelectFile(group.leftId)}
+                  className="small-caps text-[10px] text-[#141210]/44 transition hover:text-[#176B7D]"
+                >
+                  inspect
+                </button>
+                {weakCount > 0 ? (
+                  <div className="text-xs text-amber-700 md:col-span-4">
+                    {weakCount} weak link{weakCount === 1 ? "" : "s"}.
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+          {hiddenCount > 0 ? (
+            <div className="small-caps px-3 py-2 text-xs text-[#141210]/42">
+              {hiddenCount} more connection group{hiddenCount === 1 ? "" : "s"} hidden from this view.
+            </div>
+          ) : null}
+        </div>
       )}
     </section>
+  );
+}
+
+type GuideSummary = {
+  documented: number;
+  notes: number;
+  glossary: number;
+  questions: number;
+  caveats: number;
+};
+
+function AgentContextSummary({
+  summary,
+  files,
+  onSelectFile,
+}: {
+  summary: GuideSummary;
+  files: DiscoveredFile[];
+  onSelectFile: (fileId: string) => void;
+}) {
+  return (
+    <section className="pb-3">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="small-caps text-xs text-[#176B7D]">context</div>
+          <h3 className="mt-1 font-mono text-xl text-[#141210]">Saved for chat</h3>
+        </div>
+        {files[0] ? (
+          <button
+            type="button"
+            onClick={() => onSelectFile(files[0]!.file_id)}
+            className="small-caps border border-[#141210]/16 bg-[#F2EBDD]/70 px-3 py-2 text-xs transition hover:bg-[#F7F1E7]"
+          >
+            inspect details
+          </button>
+        ) : null}
+      </div>
+      <div className="grid gap-3 md:grid-cols-5">
+        <ContextCount label="documents" value={summary.documented} />
+        <ContextCount label="notes" value={summary.notes} />
+        <ContextCount label="glossary" value={summary.glossary} />
+        <ContextCount label="questions" value={summary.questions} />
+        <ContextCount label="watch-outs" value={summary.caveats} />
+      </div>
+    </section>
+  );
+}
+
+function ContextCount({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="border border-[#141210]/10 bg-[#F7F1E7]/52 px-3 py-3">
+      <div className="font-mono text-xl text-[#141210]">{formatNumber(value)}</div>
+      <div className="small-caps mt-1 text-[10px] text-[#141210]/42">{label}</div>
+    </div>
   );
 }
 
@@ -947,85 +928,6 @@ type RelationshipGroup = {
   rightId: string;
   links: DiscoveredLink[];
 };
-
-function RelationshipMap({
-  files,
-  links,
-  linkStats,
-  fileNameMap,
-  onSelectFile,
-}: {
-  files: DiscoveredFile[];
-  links: DiscoveredLink[];
-  linkStats: Map<string, LinkStat>;
-  fileNameMap: Map<string, string>;
-  onSelectFile: (fileId: string) => void;
-}) {
-  const groups = useMemo(() => groupRelationships(files, links), [files, links]);
-
-  if (groups.length === 0) {
-    return (
-      <div className="border border-neutral-200 bg-white p-4 text-sm text-neutral-600">
-        No strong document-to-document connections yet. You can still approve the
-        map, or add a connection in edit mode if you know how the files relate.
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      {groups.map((group) => {
-        const weakCount = group.links.filter((link) =>
-          isWeakLink(linkStats.get(linkLookupKey(link.file_a_id, link.col_a, link.file_b_id, link.col_b))),
-        ).length;
-        return (
-          <div
-            key={group.key}
-            className="grid items-center gap-3 border border-neutral-200 bg-white p-3 md:grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)]"
-          >
-            <FileNode
-              label={fileNameMap.get(group.leftId) ?? group.leftId}
-              onClick={() => onSelectFile(group.leftId)}
-            />
-            <button
-              type="button"
-              onClick={() => onSelectFile(group.leftId)}
-              className="group flex items-center justify-center gap-2 text-xs text-neutral-500"
-              title="Open a file to inspect linked columns"
-            >
-              <span className="h-px flex-1 bg-neutral-300 group-hover:bg-ember" />
-              <span className="small-caps whitespace-nowrap border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 group-hover:border-ember group-hover:text-ember">
-                {group.links.length} connection{group.links.length === 1 ? "" : "s"}
-              </span>
-              <span className="h-px flex-1 bg-neutral-300 group-hover:bg-ember" />
-            </button>
-            <FileNode
-              label={fileNameMap.get(group.rightId) ?? group.rightId}
-              onClick={() => onSelectFile(group.rightId)}
-            />
-            {weakCount > 0 ? (
-              <div className="md:col-span-3 text-xs text-amber-700">
-                {weakCount} connection{weakCount === 1 ? "" : "s"} may need review.
-              </div>
-            ) : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function FileNode({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="min-w-0 border border-neutral-200 bg-neutral-50 px-3 py-2 text-left hover:border-ink hover:bg-white"
-    >
-      <span className="block truncate font-mono text-sm text-ink">{label}</span>
-    </button>
-  );
-}
 
 function FileSchemaDrawer({
   open,
@@ -1049,6 +951,7 @@ function FileSchemaDrawer({
   onAddLink,
   onUpdateLink,
   onRemoveLink,
+  onDeleteFile,
 }: {
   open: boolean;
   file: DiscoveredFile | null;
@@ -1075,6 +978,7 @@ function FileSchemaDrawer({
   onAddLink: (preferredFileId?: string) => void;
   onUpdateLink: (idx: number, patch: Partial<DiscoveredLink>) => void;
   onRemoveLink: (idx: number) => void;
+  onDeleteFile: (fileId: string) => void;
 }) {
   if (!open || !file || fileIdx < 0) return null;
   const fileLinks = links
@@ -1110,13 +1014,31 @@ function FileSchemaDrawer({
               <span>header starts on row {file.header_row}</span>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="small-caps shrink-0 border border-ink px-2 py-1 text-xs hover:bg-neutral-100"
-          >
-            close
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {record ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const ok = window.confirm(
+                    `Remove ${record.filename}? Cerno will refresh the workspace understanding after deletion.`,
+                  );
+                  if (!ok) return;
+                  onClose();
+                  onDeleteFile(record.id);
+                }}
+                className="small-caps border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+              >
+                delete file
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="small-caps border border-ink px-2 py-1 text-xs hover:bg-neutral-100"
+            >
+              close
+            </button>
+          </div>
         </div>
 
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
@@ -1541,6 +1463,26 @@ function EvidenceLabel({ stat }: { stat?: LinkStat }) {
   );
 }
 
+function buildGuideSummary(doc: DataDoc | null, files: DiscoveredFile[]): GuideSummary {
+  if (!doc) {
+    return {
+      documented: files.length,
+      notes: 0,
+      glossary: 0,
+      questions: 0,
+      caveats: 0,
+    };
+  }
+
+  return {
+    documented: doc.files.length,
+    notes: doc.usage_notes.length,
+    glossary: doc.glossary.length,
+    questions: doc.starter_questions.length,
+    caveats: doc.files.reduce((sum, file) => sum + file.caveats.length, 0),
+  };
+}
+
 function buildSummary(
   files: FileRecord[],
   draftFiles: DiscoveredFile[],
@@ -1611,33 +1553,6 @@ function buildWarnings(
   };
 }
 
-function fileBadges(file: DiscoveredFile, warnings: string[]): string[] {
-  const badges: string[] = [];
-  const lowerNames = file.columns.map((column) => column.name.toLowerCase());
-  if (file.columns.some((column) => column.dtype === "date" || column.dtype === "datetime")) {
-    badges.push("has dates");
-  }
-  if (
-    file.columns.some((column) => column.dtype === "int" || column.dtype === "float") ||
-    lowerNames.some((name) =>
-      ["amount", "price", "cost", "revenue", "total", "quantity"].some((term) =>
-        name.includes(term),
-      ),
-    )
-  ) {
-    badges.push("has numbers");
-  }
-  if (
-    lowerNames.some((name) =>
-      ["id", "key", "code", "number"].some((term) => name.includes(term)),
-    )
-  ) {
-    badges.push("has ids");
-  }
-  if (warnings.length > 0) badges.push("needs review");
-  return badges.slice(0, 4);
-}
-
 function groupRelationships(
   files: DiscoveredFile[],
   links: DiscoveredLink[],
@@ -1677,14 +1592,17 @@ function relationshipSentence(
   return `${left} connects to ${right} through ${link.col_a} and ${link.col_b}. This looks like ${direction}.`;
 }
 
-function fileHoverTitle(file: DiscoveredFile, record?: FileRecord): string {
-  const original = record?.filename ?? file.friendly_name;
-  return `${original}\n${formatSize(record?.original_size_bytes)}\n${formatNumber(record?.row_count ?? 0)} rows`;
-}
-
 function cleanFilename(filename: string): string {
   const stem = filename.replace(/\.[^.]+$/, "");
   return stem.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim() || filename;
+}
+
+function shortText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  const sentenceEnd = normalized.slice(0, maxLength).lastIndexOf(".");
+  const cutAt = sentenceEnd > maxLength * 0.45 ? sentenceEnd + 1 : maxLength;
+  return `${normalized.slice(0, cutAt).trim()}...`;
 }
 
 function formatSize(bytes: number | null | undefined): string {
@@ -1702,10 +1620,6 @@ function formatSize(bytes: number | null | undefined): string {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value);
-}
-
-function joinItems(items: string[]): string {
-  return items.length > 0 ? items.join(", ") : "Not documented";
 }
 
 function isWeakLink(stat?: LinkStat): boolean {

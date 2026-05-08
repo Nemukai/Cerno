@@ -25,7 +25,6 @@ type Props = {
   liveChat: LiveChatState | null;
   onSend: (message: string) => void;
   onOpenInsights: () => void;
-  onOpenFiles: () => void;
 };
 
 type LiveChatState = {

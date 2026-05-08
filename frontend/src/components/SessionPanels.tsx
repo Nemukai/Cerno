@@ -26,7 +26,7 @@ type WorkspaceSidebarProps = {
   turns: ChatTurn[];
   messagesByTurn: Record<string, ChatMessage[]>;
   activeTurnId: string | null;
-  onSelectTab: (tab: "ask" | "insights" | "files") => void;
+  onSelectTab: (tab: "ask" | "insights") => void;
   onSelectTurn: (turnId: string) => void;
   onNewChat: () => void;
   onRenameTurn: (turnId: string, title: string) => void;
@@ -89,8 +89,9 @@ export function WorkspaceSidebar({
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <button
           type="button"
-          onClick={() => onSelectTab("files")}
+          onClick={() => onSelectTab("insights")}
           className="flex w-full items-center justify-between bg-neutral-50 px-3 py-2 text-left transition hover:bg-neutral-100"
+          title="Open file summaries in Insights"
         >
           <span className="text-sm font-medium text-ink">Files</span>
           <span className="font-mono text-sm text-neutral-500">

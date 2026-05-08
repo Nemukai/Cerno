@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { motion } from "framer-motion";
-import { ArrowRight, Database, LineChart, FileSpreadsheet, Sparkles, MessageSquare } from "lucide-react";
+import {
+  motion,
+  useMotionValue,
+  useSpring,
+  useTransform,
+  type MotionValue,
+} from "framer-motion";
+import {
+  ArrowRight,
+  Database,
+  FileSpreadsheet,
+  MessageSquare,
+  ShieldCheck,
+  Table2,
+  type LucideIcon,
+} from "lucide-react";
 import {
   approveSchema,
   createSession,
@@ -76,9 +90,9 @@ type HomeView = "landing" | "sessions";
 type AppRoute =
   | { kind: "landing" }
   | { kind: "sessions" }
-  | { kind: "session"; sessionId: string; tab: TabKey };
+  | { kind: "session"; sessionId: string; tab: TabKey; legacyFiles?: boolean };
 
-const SESSION_TABS: TabKey[] = ["ask", "insights", "files"];
+const SESSION_TABS: TabKey[] = ["ask", "insights"];
 
 function isTabKey(value: string | undefined): value is TabKey {
   return SESSION_TABS.includes(value as TabKey);
@@ -91,10 +105,18 @@ function readRoute(): AppRoute {
     if (parts.length === 1) return { kind: "sessions" };
     const sessionId = parts[1];
     if (!sessionId) return { kind: "sessions" };
+    if (parts[2] === "files") {
+      window.history.replaceState(
+        {},
+        "",
+        `/sessions/${sessionId}/insights`,
+      );
+    }
     return {
       kind: "session",
       sessionId: decodeURIComponent(sessionId),
-      tab: isTabKey(parts[2]) ? parts[2] : "ask",
+      tab: parts[2] === "files" ? "insights" : isTabKey(parts[2]) ? parts[2] : "ask",
+      legacyFiles: parts[2] === "files",
     };
   }
   return { kind: "landing" };
@@ -437,6 +459,9 @@ export function App() {
     }
 
     setHomeView("sessions");
+    if (route.legacyFiles) {
+      navigateSessionTab(route.sessionId, "insights", { replace: true });
+    }
     if (session?.id !== nextSession.id) {
       markWorkspaceOpened(nextSession.id);
       clearSessionState();
@@ -451,6 +476,7 @@ export function App() {
     activeTab,
     clearSessionState,
     navigate,
+    navigateSessionTab,
     route,
     session,
     sessions,
@@ -468,8 +494,8 @@ export function App() {
         clearSessionState();
         setHomeView("sessions");
         setSession(s);
-        setActiveTab("files");
-        navigateSessionTab(s.id, "files");
+        setActiveTab("insights");
+        navigateSessionTab(s.id, "insights");
         await refreshSessions();
       } catch (err) {
         setError((err as Error).message);
@@ -537,8 +563,8 @@ export function App() {
       if (deduped.length === 0) return;
       setError(null);
       setUploading(true);
-      setActiveTab("files");
-      navigateSessionTab(session.id, "files");
+      setActiveTab("insights");
+      navigateSessionTab(session.id, "insights");
       try {
         await uploadFiles(session.id, deduped);
         setEvents([]);
@@ -572,8 +598,8 @@ export function App() {
     async (fileId: string) => {
       if (!session) return;
       setError(null);
-      setActiveTab("files");
-      navigateSessionTab(session.id, "files");
+      setActiveTab("insights");
+      navigateSessionTab(session.id, "insights");
       try {
         await deleteFile(fileId);
         const nextFiles = await listFiles(session.id);
@@ -974,7 +1000,6 @@ export function App() {
             liveChat={liveChat}
             onSend={handleSend}
             onOpenInsights={() => handleTabChange("insights")}
-            onOpenFiles={() => handleTabChange("files")}
           />
         ) : null}
         {!workspaceLoading && files.length > 0 && activeTab === "insights" ? (
@@ -989,17 +1014,7 @@ export function App() {
             canProcess={files.length > 0}
             onProcess={handleProcess}
             onApprove={handleApprove}
-          />
-        ) : null}
-        {!workspaceLoading && files.length > 0 && activeTab === "files" ? (
-          <FilesPanel
-            files={files}
-            discoveryStatus={discoveryStatus}
-            uploading={uploading}
-            processing={processing}
-            onUpload={handleUpload}
             onDeleteFile={handleDeleteFile}
-            onProcess={handleProcess}
           />
         ) : null}
       </Shell>
@@ -1023,31 +1038,117 @@ export function App() {
   );
 }
 
-function DotPattern() {
-  return (
-    <div className="absolute inset-0 z-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#345A67 1px, transparent 1px)', backgroundSize: '32px 32px' }} />
-  );
+type Point = {
+  x: number;
+  y: number;
+};
+
+type ContourIsland = {
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  levels: number;
+  phase: number;
+  rotate: number;
+  tightness: number;
+};
+
+type TopographicContour = {
+  path: string;
+  islandIndex: number;
+  level: number;
+};
+
+function formatPoint(point: Point) {
+  return `${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
 }
+
+function buildSmoothClosedPath(points: Point[]) {
+  const pointAt = (index: number) => points[(index + points.length) % points.length] as Point;
+  const segments = points.map((point, idx) => {
+    const previous = pointAt(idx - 1);
+    const next = pointAt(idx + 1);
+    const afterNext = pointAt(idx + 2);
+    const controlOne = {
+      x: point.x + (next.x - previous.x) / 6,
+      y: point.y + (next.y - previous.y) / 6,
+    };
+    const controlTwo = {
+      x: next.x - (afterNext.x - point.x) / 6,
+      y: next.y - (afterNext.y - point.y) / 6,
+    };
+
+    return `C${formatPoint(controlOne)} ${formatPoint(controlTwo)} ${formatPoint(next)}`;
+  });
+
+  return `M${formatPoint(pointAt(0))} ${segments.join(" ")}Z`;
+}
+
+function buildContourPath(island: ContourIsland, level: number) {
+  const scale = 1 - level * island.tightness;
+  const rotation = (island.rotate * Math.PI) / 180;
+  const points = Array.from({ length: 28 }, (_, idx) => {
+    const angle = (Math.PI * 2 * idx) / 28;
+    const radial =
+      1 +
+      Math.sin(angle * 2 + island.phase) * 0.08 +
+      Math.sin(angle * 3 - island.phase * 0.72) * 0.055 +
+      Math.cos(angle * 5 + island.phase * 1.4) * 0.035;
+    const rawX = Math.cos(angle) * island.rx * scale * radial;
+    const rawY = Math.sin(angle) * island.ry * scale * radial;
+
+    return {
+      x: island.cx + rawX * Math.cos(rotation) - rawY * Math.sin(rotation),
+      y: island.cy + rawX * Math.sin(rotation) + rawY * Math.cos(rotation),
+    };
+  });
+
+  return buildSmoothClosedPath(points);
+}
+
+const topographicIslands: ContourIsland[] = [
+  { cx: 890, cy: 360, rx: 355, ry: 244, levels: 13, phase: 0.35, rotate: -8, tightness: 0.062 },
+];
+
+const topographicContours: TopographicContour[] = topographicIslands.flatMap((island, islandIndex) =>
+  Array.from({ length: island.levels }, (_, level) => ({
+    path: buildContourPath(island, level),
+    islandIndex,
+    level,
+  })),
+);
+
+const surveyLabels = [
+  { text: "04", className: "right-[31%] top-[21%]" },
+  { text: "88", className: "right-[15%] top-[43%]" },
+];
 
 const landingWorkflow = [
   {
     index: "01",
-    title: "Drop the files",
-    body: "Excel and CSV uploads stay as source material while Cerno profiles every sheet.",
+    title: "Profile files",
+    body: "Reads Excel and CSV files, detects sheets, columns, row counts, types, and header issues.",
     icon: FileSpreadsheet,
   },
   {
     index: "02",
-    title: "Approve the map",
-    body: "Headers, meanings, relationships, caveats, and glossary terms become a reviewed guide.",
+    title: "Review schema",
+    body: "Creates field descriptions, relationships, caveats, glossary terms, and starter questions.",
     icon: Database,
   },
   {
     index: "03",
-    title: "Ask and shape",
-    body: "Chat answers with tables, charts, and saved analysis pages grounded in that guide.",
+    title: "Ask questions",
+    body: "Answers with tables, charts, and saved views using the approved workspace context.",
     icon: MessageSquare,
   },
+];
+
+const contextRows = [
+  { label: "Uploaded files", value: "Source files, row counts, sheet names, and upload history.", icon: Table2 },
+  { label: "Approved schema", value: "Field meanings, relationships, caveats, and glossary terms.", icon: ShieldCheck },
+  { label: "Chat history", value: "Follow-up questions stay in the same workspace thread.", icon: MessageSquare },
 ];
 
 function LandingPage({
@@ -1056,134 +1157,158 @@ function LandingPage({
   onEnter: () => void;
 }) {
   const { user, loading } = useUser();
-  
+  const pointerX = useMotionValue(0);
+  const pointerY = useMotionValue(0);
+  const smoothX = useSpring(pointerX, { stiffness: 80, damping: 24, mass: 0.4 });
+  const smoothY = useSpring(pointerY, { stiffness: 80, damping: 24, mass: 0.4 });
+  const topoX = useTransform(smoothX, [-0.5, 0.5], [-26, 26]);
+  const topoY = useTransform(smoothY, [-0.5, 0.5], [-18, 18]);
+
   useEffect(() => {
     if (!loading && user && user.access_status === "granted") {
       onEnter();
     }
   }, [user, loading, onEnter]);
 
+  const handlePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      pointerX.set((event.clientX - rect.left) / rect.width - 0.5);
+      pointerY.set((event.clientY - rect.top) / rect.height - 0.5);
+    },
+    [pointerX, pointerY],
+  );
+
   if (loading || (user && user.access_status === "granted")) {
-    return <div className="flex h-screen items-center justify-center bg-tidepaper text-night-watch">Loading…</div>;
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#F2EBDD] text-[#141210]">
+        Loading...
+      </div>
+    );
   }
 
   return (
-    <div className="relative min-h-full overflow-hidden bg-tidepaper text-night-watch">
-      <DotPattern />
-      <main className="relative z-10 flex min-h-full flex-col">
-        <header className="flex items-center justify-between border-b border-drift bg-tidepaper/85 px-6 py-5 backdrop-blur-md sm:px-10">
-          <CernoLockup markClassName="h-6 w-6 text-deep-sea" wordmarkClassName="text-base text-night-watch" />
+    <div
+      className="cerno-paper-grain relative min-h-full overflow-x-hidden bg-[#F2EBDD] text-[#141210]"
+      onPointerMove={handlePointerMove}
+    >
+      <main className="relative">
+        <header className="absolute inset-x-0 top-0 z-30 flex items-center justify-between border-b border-[#141210]/10 bg-[#F2EBDD]/72 px-6 py-5 backdrop-blur-md sm:px-10">
+          <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base text-[#141210]" />
           <a
             href={googleLoginUrl()}
-            className="small-caps border border-drift bg-tidepaper px-3 py-1.5 text-xs text-night-watch transition hover:bg-drift"
+            className="small-caps border border-[#141210]/20 bg-[#F2EBDD]/70 px-3 py-1.5 text-xs text-[#141210] transition hover:border-[#D17B2E] hover:text-[#943B18]"
           >
             login
           </a>
         </header>
 
-        <section className="relative z-10 flex min-h-[calc(100svh-4.6rem)] items-center px-6 py-12 sm:px-10 lg:py-14">
-          <div className="mx-auto grid w-full max-w-7xl items-center gap-12 lg:grid-cols-[minmax(0,0.9fr)_minmax(30rem,1.1fr)]">
-            <motion.div 
-              initial={{ opacity: 0, y: 20 }}
+        <section className="relative isolate min-h-[100svh] overflow-hidden px-6 pb-12 pt-28 sm:px-10">
+          <OceanTopographyBackground
+            topoX={topoX}
+            topoY={topoY}
+          />
+          <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(242,235,221,0.99)_0%,rgba(242,235,221,0.93)_32%,rgba(242,235,221,0.48)_61%,rgba(242,235,221,0.14)_100%)]" />
+          <div className="absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-[#F2EBDD] to-transparent" />
+
+          <div className="relative z-10 mx-auto flex min-h-[calc(100svh-10rem)] max-w-7xl items-center">
+            <motion.div
+              initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8, ease: "easeOut" }}
-              className="border-l border-drift pl-6 sm:pl-8"
+              className="w-full max-w-3xl"
             >
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.3 }}
-                className="flex items-center gap-2 small-caps text-xs text-deep-sea"
-              >
-                <Sparkles className="h-3 w-3" /> private beta for messy business data
-              </motion.div>
-              <h1 className="mt-5 max-w-3xl font-serif text-5xl leading-[1.02] text-night-watch sm:text-7xl lg:text-7xl">
-                Research notebook meets observatory.
+              <div className="small-caps text-xs text-[#176B7D]">
+                private beta
+              </div>
+              <h1 className="mt-6 font-serif text-7xl leading-[0.9] text-[#141210] sm:text-8xl lg:text-9xl">
+                Cerno
               </h1>
-              <p className="mt-6 max-w-xl text-lg leading-8 text-night-watch/70">
-                Cerno turns office spreadsheets into a reviewed data map, then gives
-                you a chat workspace that can explain fields, build dashboards, and
-                keep the analysis grounded.
+              <p className="mt-7 max-w-2xl font-serif text-4xl leading-tight text-[#141210] sm:text-5xl">
+                Turn spreadsheets into trusted analysis.
               </p>
-              <div className="mt-10 flex flex-wrap items-center gap-4">
+              <p className="mt-6 max-w-xl text-base leading-7 text-[#141210]/68 sm:text-lg sm:leading-8">
+                Upload Excel or CSV files, review the generated schema, then ask
+                questions with context Cerno can verify.
+              </p>
+
+              <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25, duration: 0.7, ease: "easeOut" }}
+                className="mt-10 flex flex-col items-start gap-3 sm:flex-row sm:items-center"
+              >
                 <a
                   href={googleLoginUrl()}
-                  className="group flex items-center gap-2 small-caps bg-night-watch px-6 py-3.5 text-sm text-tidepaper transition hover:bg-deep-sea"
+                  className="group flex items-center justify-center gap-2 bg-[#D17B2E] px-6 py-4 small-caps text-sm text-[#141210] shadow-[0_18px_46px_rgba(184,82,31,0.24)] transition hover:bg-[#E89A48]"
                 >
-                  sign in to continue
+                  sign in to create a workspace
                   <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
                 </a>
-                <span className="small-caps text-xs text-night-watch/50">
-                  invite-only email access
+                <span className="font-mono text-xs text-[#141210]/48">
+                  Excel and CSV files only.
                 </span>
-              </div>
-              <div className="mt-12 grid max-w-2xl grid-cols-3 border-y border-drift">
-                <LandingMeasure value="raw" label="files preserved" />
-                <LandingMeasure value="map" label="approved context" />
-                <LandingMeasure value="chat" label="visual analysis" />
-              </div>
-            </motion.div>
+              </motion.div>
 
-            <motion.div 
-              initial={{ opacity: 0, x: 40 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 1, delay: 0.2, ease: "easeOut" }}
-              className="relative min-h-[420px] w-full lg:min-h-[560px]"
-            >
-              <ObservatoryConsole />
+              <div className="mt-10 grid max-w-xl grid-cols-3 border-y border-[#141210]/15">
+                <LandingMeasure value="files" label="Excel / CSV" />
+                <LandingMeasure value="schema" label="review step" />
+                <LandingMeasure value="chat" label="grounded answers" />
+              </div>
             </motion.div>
           </div>
         </section>
 
-        <section className="relative z-10 border-y border-drift bg-[#fbfaf6] px-6 py-10 sm:px-10">
-          <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[20rem_minmax(0,1fr)]">
+        <section className="relative overflow-hidden border-y border-[#CBC1AD]/70 bg-[#F8F0E2] px-6 py-16 sm:px-10">
+          <MiniTopoStrip />
+          <div className="relative z-10 mx-auto grid max-w-7xl gap-12 lg:grid-cols-[minmax(18rem,0.7fr)_minmax(0,1.3fr)]">
             <div>
-              <div className="small-caps text-xs text-deep-sea">how it behaves</div>
-              <h2 className="mt-3 font-serif text-4xl leading-tight text-night-watch">
-                Not a spreadsheet viewer. A working room for the data.
+              <div className="small-caps text-xs text-[#176B7D]">workflow</div>
+              <h2 className="mt-3 max-w-sm font-serif text-4xl leading-tight text-[#141210]">
+                What Cerno does.
               </h2>
             </div>
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="border-t border-[#141210]/15">
               {landingWorkflow.map((item, idx) => (
-                <LandingFact key={item.index} {...item} delay={idx * 0.08} />
+                <WorkflowRow key={item.index} {...item} delay={idx * 0.08} />
               ))}
             </div>
           </div>
         </section>
 
-        <section className="relative z-10 px-6 py-14 sm:px-10">
-          <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <section className="relative overflow-hidden bg-[#07242E] px-6 py-16 text-[#F2EBDD] sm:px-10">
+          <OceanTopographyBackground dark />
+          <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(7,36,46,0.98)_0%,rgba(7,36,46,0.88)_48%,rgba(7,36,46,0.74)_100%)]" />
+          <div className="relative z-10 mx-auto grid max-w-7xl gap-10 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
             <div>
-              <div className="small-caps text-xs text-deep-sea">what Cerno keeps track of</div>
-              <h2 className="mt-3 max-w-xl font-serif text-4xl leading-tight text-night-watch">
-                The boring parts become durable context.
+              <div className="small-caps text-xs text-[#E89A48]">workspace context</div>
+              <h2 className="mt-3 max-w-2xl font-serif text-4xl leading-tight text-[#F2EBDD] sm:text-5xl">
+                Keep the important context attached.
               </h2>
-              <p className="mt-5 max-w-xl text-base leading-7 text-night-watch/65">
-                Cerno remembers the schema guide, relationships, caveats, glossary
-                terms, and generated views so each question starts from the same
-                approved understanding.
+              <p className="mt-5 max-w-xl text-base leading-7 text-[#F2EBDD]/68">
+                Cerno stores the files, approved schema, and chat history together
+                so later questions use the same reviewed context.
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <LandingDetail label="headers" value="found before analysis" />
-              <LandingDetail label="relationships" value="reviewed across files" />
-              <LandingDetail label="dashboards" value="generated and editable" />
-              <LandingDetail label="chat" value="grounded in approved docs" />
+            <div className="border-t border-[#F2EBDD]/18">
+              {contextRows.map((item, idx) => (
+                <ContextRow key={item.label} {...item} delay={idx * 0.08} />
+              ))}
             </div>
           </div>
         </section>
 
-        <section className="relative z-10 border-t border-drift bg-night-watch px-6 py-10 text-tidepaper sm:px-10">
+        <section className="border-t border-[#CBC1AD]/70 bg-[#F2EBDD] px-6 py-12 sm:px-10">
           <div className="mx-auto flex max-w-7xl flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="small-caps text-xs text-clay">private beta</div>
-              <h2 className="mt-2 font-serif text-3xl text-tidepaper">
-                Bring the messy workbook. Cerno will build the first map.
+              <div className="small-caps text-xs text-[#176B7D]">private beta</div>
+              <h2 className="mt-2 max-w-2xl font-serif text-3xl leading-tight text-[#141210]">
+                Start with a workbook.
               </h2>
             </div>
             <a
               href={googleLoginUrl()}
-              className="group flex w-fit items-center gap-2 small-caps border border-tidepaper/30 px-5 py-3 text-sm text-tidepaper transition hover:border-clay hover:text-clay"
+              className="group flex w-fit items-center gap-2 bg-[#141210] px-5 py-3 small-caps text-sm text-[#F2EBDD] transition hover:bg-[#D17B2E] hover:text-[#141210]"
             >
               login
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
@@ -1195,140 +1320,141 @@ function LandingPage({
   );
 }
 
-function LandingMeasure({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="border-r border-drift py-4 pr-3 last:border-r-0 last:pl-4 sm:px-4 sm:first:pl-0">
-      <div className="font-mono text-xl text-night-watch">{value}</div>
-      <div className="small-caps mt-1 text-[11px] text-night-watch/45">{label}</div>
-    </div>
-  );
-}
+function OceanTopographyBackground({
+  dark = false,
+  topoX,
+  topoY,
+}: {
+  dark?: boolean;
+  topoX?: MotionValue<number>;
+  topoY?: MotionValue<number>;
+}) {
+  const contourColor = dark ? "#EBF0EC" : "#07242E";
+  const kaiColor = dark ? "#72BCC9" : "#1F869A";
+  const orangeColor = dark ? "#E89A48" : "#D17B2E";
+  const topoStyle = topoX && topoY ? { x: topoX, y: topoY } : undefined;
 
-function ObservatoryConsole() {
   return (
-    <div className="absolute inset-0 border border-drift bg-tidepaper shadow-[0_24px_80px_rgba(44,51,56,0.12)]">
-      <div className="flex h-10 items-center justify-between border-b border-drift bg-[#fbfaf6] px-4">
-        <div className="small-caps text-xs text-night-watch/50">live workspace model</div>
-        <div className="flex gap-1.5">
-          <span className="h-2 w-2 bg-drift" />
-          <span className="h-2 w-2 bg-clay" />
-          <span className="h-2 w-2 bg-deep-sea" />
-        </div>
-      </div>
-      <div className="relative h-[calc(100%-2.5rem)] overflow-hidden">
-        <div
-          className="absolute inset-0 opacity-60"
-          style={{
-            backgroundImage:
-              "linear-gradient(#E2DDD1 1px, transparent 1px), linear-gradient(90deg, #E2DDD1 1px, transparent 1px)",
-            backgroundSize: "52px 52px",
-          }}
-        />
-        <motion.div
-          className="absolute inset-x-0 top-0 h-20 border-b border-clay/30 bg-clay/10"
-          animate={{ y: [0, 430, 0] }}
-          transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <NotebookSheet className="left-[5%] top-[9%] w-[38%]" delay={0.35} />
-        <motion.div
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.55, duration: 0.7, ease: "easeOut" }}
-          className="absolute right-[5%] top-[10%] w-[48%] border border-drift bg-[#fffdf9] p-4"
-        >
-          <div className="flex items-center justify-between border-b border-drift pb-3">
-            <div>
-              <div className="small-caps text-[11px] text-deep-sea">observatory</div>
-              <div className="mt-1 font-mono text-sm text-night-watch">Revenue by region</div>
-            </div>
-            <LineChart className="h-5 w-5 text-clay" />
-          </div>
-          <div className="mt-5 flex h-36 items-end gap-2">
-            {[42, 76, 58, 94, 68, 88].map((height, idx) => (
-              <motion.div
-                key={height}
-                initial={{ height: 10 }}
-                animate={{ height: `${height}%` }}
-                transition={{ delay: 0.8 + idx * 0.08, duration: 0.8, ease: "easeOut" }}
-                className="flex-1 border border-sea-glass/30 bg-sea-glass/55"
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage:
+            dark
+              ? "radial-gradient(circle at 78% 42%, rgba(62,160,178,0.12), transparent 42%), radial-gradient(circle at 84% 70%, rgba(209,123,46,0.10), transparent 34%)"
+              : "radial-gradient(circle at 76% 42%, rgba(31,134,154,0.13), transparent 42%), radial-gradient(circle at 86% 72%, rgba(209,123,46,0.12), transparent 34%)",
+        }}
+      />
+      <motion.svg
+        viewBox="0 0 1200 820"
+        preserveAspectRatio="xMidYMid slice"
+        className="absolute inset-[-9%] h-[118%] w-[118%]"
+        aria-hidden="true"
+        style={topoStyle}
+      >
+        <g fill="none" strokeLinecap="round" strokeLinejoin="round">
+          {topographicContours
+            .filter((contour) => contour.islandIndex === 0 && contour.level === 5)
+            .map((contour) => (
+              <path
+                key={`fill-${contour.path}`}
+                d={contour.path}
+                fill={orangeColor}
+                opacity={dark ? 0.12 : 0.08}
+                stroke="none"
               />
             ))}
-          </div>
-        </motion.div>
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.85, duration: 0.7, ease: "easeOut" }}
-          className="absolute bottom-[8%] left-[15%] right-[9%] border border-night-watch bg-night-watch p-4 text-tidepaper"
+          {topographicContours.map((contour, idx) => {
+            const highlighted = contour.islandIndex === 0 && (contour.level === 2 || contour.level === 8);
+            const oceanLine = contour.level % 4 === 0;
+            const stroke = highlighted ? orangeColor : oceanLine ? kaiColor : contourColor;
+            const strokeWidth = highlighted ? 2.4 : oceanLine ? 1.75 : 1.15;
+            const opacity = highlighted
+              ? dark ? 0.72 : 0.68
+              : dark ? oceanLine ? 0.42 : 0.28
+                : oceanLine ? 0.38 : 0.26;
+
+            return (
+              <motion.path
+                key={contour.path}
+                d={contour.path}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                opacity={opacity}
+                initial={{ pathLength: 0 }}
+                animate={{ pathLength: 1 }}
+                transition={{ duration: 1.1, delay: idx * 0.035, ease: "easeOut" }}
+              />
+            );
+          })}
+        </g>
+        <g>
+          {topographicIslands.slice(0, 2).map((island, idx) => (
+            <motion.path
+              key={`${island.cx}-${island.cy}`}
+              d={buildContourPath(island, island.levels - 1)}
+              fill={orangeColor}
+              initial={{ scale: 0.92, opacity: 0 }}
+              animate={{ scale: [0.92, 1, 0.96, 1], opacity: [0, 0.72, 0.45, 0.72] }}
+              style={{ transformOrigin: `${island.cx}px ${island.cy}px` }}
+              transition={{ delay: 0.55 + idx * 0.16, duration: 3.2, repeat: Infinity, repeatDelay: 2.6 }}
+            />
+          ))}
+        </g>
+      </motion.svg>
+
+      {surveyLabels.map((label) => (
+        <span
+          key={label.text}
+          className={`absolute hidden font-mono text-xs ${dark ? "text-[#EBF0EC]/35" : "text-[#07242E]/30"} lg:block ${label.className}`}
         >
-          <div className="flex items-center gap-2 border-b border-tidepaper/20 pb-3">
-            <MessageSquare className="h-4 w-4 text-clay" />
-            <div className="small-caps text-[11px] text-tidepaper/55">grounded answer</div>
-          </div>
-          <p className="mt-3 max-w-xl font-mono text-sm leading-6 text-tidepaper/85">
-            South region variance is tied to discounting. I found it in invoice rows,
-            then checked it against the customer table before charting.
-          </p>
-        </motion.div>
-        <motion.div
-          className="absolute left-[38%] top-[39%] h-px w-[24%] origin-left bg-clay"
-          initial={{ scaleX: 0 }}
-          animate={{ scaleX: 1 }}
-          transition={{ delay: 1.2, duration: 0.8 }}
-        />
-        <motion.div
-          className="absolute left-[36%] top-[52%] h-px w-[31%] origin-left bg-deep-sea"
-          initial={{ scaleX: 0 }}
-          animate={{ scaleX: 1 }}
-          transition={{ delay: 1.35, duration: 0.8 }}
-        />
-      </div>
+          {label.text}
+        </span>
+      ))}
     </div>
   );
 }
 
-function NotebookSheet({
-  className,
-  delay,
-}: {
-  className: string;
-  delay: number;
-}) {
+function LandingMeasure({ value, label }: { value: string; label: string }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 18, rotate: -1 }}
-      animate={{ opacity: 1, y: 0, rotate: -1 }}
-      transition={{ delay, duration: 0.7, ease: "easeOut" }}
-      className={`absolute border border-drift bg-[#fffdf9] p-4 shadow-[0_18px_45px_rgba(44,51,56,0.10)] ${className}`}
-    >
-      <div className="flex items-center gap-2 border-b border-drift pb-3">
-        <FileSpreadsheet className="h-4 w-4 text-deep-sea" />
-        <div>
-          <div className="small-caps text-[11px] text-night-watch/45">uploaded workbook</div>
-          <div className="font-mono text-sm text-night-watch">Operations.xlsx</div>
-        </div>
-      </div>
-      <div className="mt-4 space-y-2">
-        {["date", "region", "invoice_total", "customer_id", "discount"].map((field, idx) => (
-          <motion.div
-            key={field}
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: delay + 0.25 + idx * 0.08 }}
-            className="grid grid-cols-[minmax(0,1fr)_4rem] gap-3 border border-drift/70 px-3 py-2"
-          >
-            <span className="truncate font-mono text-xs text-night-watch">{field}</span>
-            <span className="small-caps text-[10px] text-night-watch/40">
-              {idx === 0 ? "date" : idx === 2 || idx === 4 ? "number" : "text"}
-            </span>
-          </motion.div>
-        ))}
-      </div>
-    </motion.div>
+    <div className="border-r border-[#141210]/15 py-4 pr-3 last:border-r-0 last:pl-4 sm:px-4 sm:first:pl-0">
+      <div className="font-mono text-lg text-[#141210]">{value}</div>
+      <div className="small-caps mt-1 text-[11px] text-[#141210]/45">{label}</div>
+    </div>
   );
 }
 
-function LandingFact({
+function MiniTopoStrip() {
+  return (
+    <div className="pointer-events-none absolute inset-y-0 right-0 w-[55%] opacity-35">
+      <svg viewBox="0 0 620 420" preserveAspectRatio="xMidYMid slice" className="h-full w-full">
+        <g fill="none" stroke="#176B7D" strokeLinecap="round" strokeLinejoin="round">
+          {topographicContours
+            .filter((contour) => contour.islandIndex === 0)
+            .slice(1, 11)
+            .map((contour, idx) => (
+            <path
+              key={`mini-${contour.path}`}
+              d={contour.path}
+              strokeWidth={idx % 3 === 0 ? 2 : 1.2}
+              opacity={0.42}
+              transform="translate(-520 -158) scale(0.92)"
+            />
+          ))}
+          <path
+            d={topographicContours.find((contour) => contour.islandIndex === 0 && contour.level === 4)?.path}
+            stroke="#D17B2E"
+            strokeWidth="2.2"
+            opacity="0.62"
+            transform="translate(-520 -158) scale(0.92)"
+          />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function WorkflowRow({
   index,
   title,
   body,
@@ -1338,39 +1464,51 @@ function LandingFact({
   index: string;
   title: string;
   body: string;
-  icon?: typeof Database;
+  icon: LucideIcon;
   delay?: number;
 }) {
-  return (
-    <motion.div 
-      initial={{ opacity: 0, y: 14 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, amount: 0.5 }}
-      whileHover={{ backgroundColor: "rgba(226, 221, 209, 0.2)" }}
-      transition={{ duration: 0.45, delay }}
-      className="group border border-drift bg-tidepaper px-5 py-6"
-    >
-      <div className="flex items-center justify-between">
-        <div className="small-caps text-xs text-deep-sea group-hover:text-sea-glass transition-colors">{index}</div>
-        {Icon && <Icon className="h-4 w-4 text-drift group-hover:text-clay transition-colors" />}
-      </div>
-      <h2 className="mt-6 font-mono text-xl text-night-watch">{title}</h2>
-      <p className="mt-3 max-w-sm text-sm leading-relaxed text-night-watch/70">{body}</p>
-    </motion.div>
-  );
-}
-
-function LandingDetail({ label, value }: { label: string; value: string }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 14 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, amount: 0.45 }}
-      whileHover={{ x: 4 }}
-      className="border border-drift bg-[#fffdf9] px-5 py-5"
+      whileHover={{ x: 8 }}
+      transition={{ duration: 0.45, delay }}
+      className="group grid gap-5 border-b border-[#141210]/15 py-7 transition-colors sm:grid-cols-[6rem_minmax(0,1fr)_2.5rem]"
     >
-      <div className="small-caps text-[11px] text-deep-sea">{label}</div>
-      <div className="mt-3 font-mono text-lg text-night-watch">{value}</div>
+      <div className="font-mono text-sm text-[#D17B2E]">{index}</div>
+      <div>
+        <h3 className="font-mono text-xl text-[#141210]">{title}</h3>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-[#141210]/68">{body}</p>
+      </div>
+      <Icon className="h-6 w-6 text-[#176B7D] transition group-hover:text-[#D17B2E] sm:justify-self-end" />
+    </motion.div>
+  );
+}
+
+function ContextRow({
+  label,
+  value,
+  icon: Icon,
+  delay = 0,
+}: {
+  label: string;
+  value: string;
+  icon: LucideIcon;
+  delay?: number;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, amount: 0.45 }}
+      whileHover={{ x: 8 }}
+      transition={{ duration: 0.45, delay }}
+      className="group grid gap-5 border-b border-[#F2EBDD]/18 py-6 sm:grid-cols-[2.5rem_minmax(10rem,0.45fr)_minmax(0,1fr)]"
+    >
+      <Icon className="h-5 w-5 text-[#72BCC9] transition group-hover:text-[#E89A48]" />
+      <div className="font-mono text-base text-[#F2EBDD]">{label}</div>
+      <div className="text-sm leading-6 text-[#F2EBDD]/68">{value}</div>
     </motion.div>
   );
 }
@@ -1404,6 +1542,18 @@ function WorkspacesPage({
 }) {
   const [name, setName] = useState("");
   const stats = buildWorkspaceStats(sessions, metrics);
+  const pointerX = useMotionValue(0);
+  const pointerY = useMotionValue(0);
+  const topoX = useSpring(useTransform(pointerX, [-0.5, 0.5], [-18, 18]), {
+    stiffness: 70,
+    damping: 24,
+    mass: 0.7,
+  });
+  const topoY = useSpring(useTransform(pointerY, [-0.5, 0.5], [-12, 12]), {
+    stiffness: 70,
+    damping: 24,
+    mass: 0.7,
+  });
 
   useEffect(() => {
     sessions.slice(0, 6).forEach((session) => onPrefetch(session.id));
@@ -1427,61 +1577,86 @@ function WorkspacesPage({
   };
 
   return (
-    <div className="relative flex min-h-full w-full overflow-hidden bg-tidepaper px-7 py-10 text-night-watch">
-      <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-col py-4">
-        <header className="flex items-center justify-between gap-4 border-b border-drift pb-4">
+    <div
+      className="cerno-paper-grain relative flex min-h-full w-full overflow-hidden bg-[#F2EBDD] px-6 py-8 text-[#141210] sm:px-8 lg:px-10"
+      onMouseMove={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        pointerX.set((event.clientX - rect.left) / rect.width - 0.5);
+        pointerY.set((event.clientY - rect.top) / rect.height - 0.5);
+      }}
+    >
+      <WorkspacesCartographyBackground topoX={topoX} topoY={topoY} />
+      <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-col py-3">
+        <header className="flex items-center justify-between gap-4 border-b border-[#141210]/12 pb-4">
           <button
             type="button"
             onClick={onBackToLanding}
-            className="text-night-watch/60 transition hover:text-deep-sea"
+            className="text-[#141210]/62 transition hover:text-[#176B7D]"
           >
             <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base" />
           </button>
-          <div className="small-caps text-sm text-night-watch/60">workspaces</div>
+          <div className="small-caps text-sm text-[#141210]/48">workspaces</div>
         </header>
 
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
           <div className="min-w-0">
-            <section className="mt-16 grid gap-12 lg:grid-cols-[minmax(0,1.05fr)_minmax(25rem,0.95fr)]">
-              <div>
-                <div className="small-caps text-sm text-deep-sea">workspaces</div>
-                <h1 className="mt-3 max-w-4xl font-serif text-5xl leading-tight tracking-tight text-night-watch sm:text-6xl">
+            <section className="mt-14 grid gap-10 lg:grid-cols-[minmax(0,1.05fr)_minmax(24rem,0.95fr)]">
+              <motion.div
+                initial={{ opacity: 0, y: 18 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.65, ease: "easeOut" }}
+              >
+                <div className="small-caps text-sm text-[#176B7D]">workspaces</div>
+                <h1 className="mt-3 max-w-4xl font-serif text-5xl leading-[0.94] tracking-tight text-[#141210] sm:text-6xl">
                   Open a workspace or start with new files.
                 </h1>
-                <p className="mt-6 max-w-3xl text-lg leading-8 text-night-watch/70">
-                  Upload Excel files, ask questions, generate insights, and save useful charts.
+                <p className="mt-6 max-w-2xl text-lg leading-8 text-[#141210]/64">
+                  Upload Excel or CSV files, review the generated schema, then ask questions with context Cerno can verify.
                 </p>
-              </div>
+              </motion.div>
 
-              <div className="grid grid-cols-2 gap-x-10 gap-y-7 border border-drift bg-drift/20 px-5 py-7">
+              <motion.div
+                initial={{ opacity: 0, y: 18 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.65, delay: 0.08, ease: "easeOut" }}
+                className="relative overflow-hidden border border-[#141210]/12 bg-[#F6EFE2]/70 px-5 py-7 shadow-[0_18px_60px_rgba(20,18,16,0.05)] backdrop-blur-[1px]"
+              >
+                <MiniTopoStrip />
+                <div className="relative z-10 grid grid-cols-2 gap-x-10 gap-y-7">
                 <WorkspaceStat label="workspaces" value={stats.workspaces} />
                 <WorkspaceStat label="files uploaded" value={stats.filesUploaded} />
                 <WorkspaceStat label="last activity" value={stats.lastActivity} />
                 <WorkspaceStat label="total rows" value={stats.totalRows} />
-              </div>
+                </div>
+              </motion.div>
             </section>
 
-            <section className="mx-auto mt-14 w-full max-w-5xl">
-              <div className="w-full border border-drift bg-tidepaper p-2 shadow-sm">
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <label className="flex min-w-0 flex-1 items-center gap-4 border border-drift bg-drift/20 px-5 py-4 text-left text-night-watch">
-                    <span className="small-caps shrink-0 text-sm text-night-watch/60">
-                      What are you analyzing?
+            <motion.section
+              className="mx-auto mt-12 w-full max-w-5xl"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.62, delay: 0.16, ease: "easeOut" }}
+            >
+              <div className="w-full border border-[#141210]/12 bg-[#F7F1E7]/78 p-2 shadow-[0_18px_50px_rgba(20,18,16,0.04)]">
+                <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_14rem]">
+                  <label className="grid min-w-0 gap-2 border border-[#141210]/10 bg-[#F2EBDD]/80 px-5 py-4 text-left text-[#141210] sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:items-center">
+                    <span className="small-caps text-sm text-[#141210]/50">
+                      Workspace name
                     </span>
                     <input
                       type="text"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       onKeyDown={handleKey}
-                      placeholder="Excel files, monthly sales, audit data..."
-                      className="min-w-0 flex-1 bg-transparent font-mono text-base text-night-watch placeholder:text-night-watch/40 focus:outline-none"
+                      placeholder="Monthly sales, audit data..."
+                      className="min-w-0 bg-transparent font-mono text-base text-[#141210] placeholder:text-[#141210]/36 focus:outline-none"
                     />
                   </label>
                   <button
                     type="button"
                     onClick={handleStart}
                     disabled={starting}
-                    className="small-caps bg-night-watch px-7 py-4 text-sm text-tidepaper transition hover:bg-deep-sea disabled:opacity-40"
+                    className="small-caps bg-[#D17B2E] px-7 py-4 text-sm text-[#141210] transition hover:bg-[#E89A48] disabled:opacity-40"
                   >
                     {starting ? "starting..." : "start workspace"}
                   </button>
@@ -1500,17 +1675,22 @@ function WorkspacesPage({
                   </button>
                 </div>
               ) : null}
-            </section>
+            </motion.section>
 
-            <section className="mx-auto mt-14 w-full max-w-5xl">
-              <div className="flex items-end justify-between gap-4 border-b border-drift pb-4">
+            <motion.section
+              className="mx-auto mt-14 w-full max-w-5xl"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.62, delay: 0.24, ease: "easeOut" }}
+            >
+              <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 pb-4">
                 <div>
-                  <div className="small-caps text-sm text-deep-sea">current workspaces</div>
-                  <h2 className="mt-2 font-serif text-2xl text-night-watch">
+                  <div className="small-caps text-sm text-[#176B7D]">current workspaces</div>
+                  <h2 className="mt-2 font-serif text-2xl text-[#141210]">
                     Saved analysis rooms
                   </h2>
                 </div>
-                <span className="text-sm text-night-watch/60">
+                <span className="text-sm text-[#141210]/52">
                   {sessions.length} saved
                 </span>
               </div>
@@ -1529,11 +1709,11 @@ function WorkspacesPage({
                   ))}
                 </ul>
               ) : (
-                <div className="mt-5 border border-dashed border-drift bg-tidepaper px-5 py-8 font-mono text-base text-night-watch/60">
+                <div className="mt-5 border border-dashed border-[#141210]/16 bg-[#F7F1E7]/66 px-5 py-8 font-mono text-base text-[#141210]/56">
                   No saved workspaces yet.
                 </div>
               )}
-            </section>
+            </motion.section>
           </div>
 
           <UserProfilePanel user={user} onSignOut={onSignOut} />
@@ -1553,35 +1733,55 @@ function UserProfilePanel({
   const displayName = userDisplayName(user);
 
   return (
-    <aside className="mt-16 h-fit border border-drift bg-drift/20 p-4 lg:sticky lg:top-10">
-      <div className="flex items-center gap-3 border-b border-drift pb-4">
+    <motion.aside
+      initial={{ opacity: 0, x: 18 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.62, delay: 0.18, ease: "easeOut" }}
+      className="mt-14 h-fit border border-[#141210]/12 bg-[#F7F1E7]/74 p-4 shadow-[0_18px_50px_rgba(20,18,16,0.045)] backdrop-blur-[1px] lg:sticky lg:top-8"
+    >
+      <div className="flex items-center gap-3 border-b border-[#141210]/12 pb-4">
         {user.picture ? (
           <img
             src={user.picture}
             alt=""
-            className="h-12 w-12 border border-drift object-cover"
+            className="h-12 w-12 border border-[#141210]/14 object-cover"
             referrerPolicy="no-referrer"
           />
         ) : (
-          <div className="flex h-12 w-12 items-center justify-center border border-drift bg-tidepaper font-mono text-base text-deep-sea">
+          <div className="flex h-12 w-12 items-center justify-center border border-[#141210]/14 bg-[#F2EBDD] font-mono text-base text-[#176B7D]">
             {userInitials(displayName)}
           </div>
         )}
         <div className="min-w-0">
-          <div className="truncate font-mono text-base text-night-watch">{displayName}</div>
-          <div className="truncate text-sm text-night-watch/55">{user.email}</div>
+          <div className="truncate font-mono text-base text-[#141210]">{displayName}</div>
+          <div className="truncate text-sm text-[#141210]/52">{user.email}</div>
         </div>
       </div>
 
-      <section className="border-b border-drift py-5">
-        <div className="small-caps text-sm text-night-watch/60">usage stats</div>
-        <div className="mt-4 h-24 border border-dashed border-drift bg-tidepaper/60" />
+      <section className="border-b border-[#141210]/12 py-5">
+        <div className="small-caps text-sm text-[#141210]/52">usage stats</div>
+        <div className="relative mt-4 h-24 overflow-hidden border border-dashed border-[#141210]/14 bg-[#F2EBDD]/62">
+          <svg viewBox="0 0 260 120" preserveAspectRatio="none" className="absolute inset-0 h-full w-full opacity-70">
+            <g fill="none" strokeLinecap="round" strokeLinejoin="round">
+              {topographicContours.slice(2, 10).map((contour, idx) => (
+                <path
+                  key={`profile-${contour.path}`}
+                  d={contour.path}
+                  transform="translate(-725 -305) scale(0.62)"
+                  stroke={idx % 3 === 0 ? "#D17B2E" : "#176B7D"}
+                  strokeWidth={idx % 3 === 0 ? 2 : 1}
+                  opacity={idx % 3 === 0 ? 0.34 : 0.2}
+                />
+              ))}
+            </g>
+          </svg>
+        </div>
       </section>
 
       <div className="grid gap-2 pt-4">
         <button
           type="button"
-          className="small-caps border border-deep-sea/30 bg-tidepaper px-4 py-3 text-sm text-deep-sea transition hover:border-deep-sea hover:bg-sea-glass/10"
+          className="small-caps border border-[#176B7D]/25 bg-[#F2EBDD] px-4 py-3 text-sm text-[#176B7D] transition hover:border-[#176B7D] hover:bg-[#C9E3E2]/20"
         >
           upgrade plan
         </button>
@@ -1593,7 +1793,89 @@ function UserProfilePanel({
           sign out
         </button>
       </div>
-    </aside>
+    </motion.aside>
+  );
+}
+
+function WorkspacesCartographyBackground({
+  topoX,
+  topoY,
+}: {
+  topoX: MotionValue<number>;
+  topoY: MotionValue<number>;
+}) {
+  const lowerTopoX = useTransform(topoX, (value) => value * -0.55);
+  const lowerTopoY = useTransform(topoY, (value) => value * -0.55);
+
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage:
+            "radial-gradient(circle at 74% 20%, rgba(31,134,154,0.10), transparent 28%), radial-gradient(circle at 82% 48%, rgba(209,123,46,0.12), transparent 32%), linear-gradient(180deg, rgba(255,255,255,0.30), transparent 42%)",
+        }}
+      />
+      <motion.svg
+        viewBox="0 0 1200 820"
+        preserveAspectRatio="xMidYMid slice"
+        className="absolute -right-[26%] top-[-22%] h-[92%] w-[82%] sm:-right-[20%] lg:-right-[10%] lg:h-[86%] lg:w-[66%]"
+        aria-hidden="true"
+        style={{ x: topoX, y: topoY }}
+      >
+        <g fill="none" strokeLinecap="round" strokeLinejoin="round">
+          {topographicContours
+            .filter((contour) => contour.level === 5)
+            .map((contour) => (
+              <path
+                key={`workspace-fill-${contour.path}`}
+                d={contour.path}
+                fill="#D17B2E"
+                opacity="0.055"
+                stroke="none"
+              />
+            ))}
+          {topographicContours.map((contour, idx) => {
+            const highlighted = contour.level === 2 || contour.level === 8;
+            const kaiLine = contour.level % 4 === 0;
+
+            return (
+              <motion.path
+                key={`workspace-${contour.path}`}
+                d={contour.path}
+                stroke={highlighted ? "#D17B2E" : kaiLine ? "#176B7D" : "#141210"}
+                strokeWidth={highlighted ? 2.2 : kaiLine ? 1.45 : 1.05}
+                opacity={highlighted ? 0.34 : kaiLine ? 0.18 : 0.13}
+                initial={{ pathLength: 0 }}
+                animate={{ pathLength: 1 }}
+                transition={{ duration: 1.05, delay: idx * 0.025, ease: "easeOut" }}
+              />
+            );
+          })}
+        </g>
+      </motion.svg>
+
+      <motion.svg
+        viewBox="0 0 620 420"
+        preserveAspectRatio="xMidYMid slice"
+        className="absolute bottom-[-15%] left-[-13%] h-[42%] w-[44%] opacity-60"
+        aria-hidden="true"
+        style={{ x: lowerTopoX, y: lowerTopoY }}
+      >
+        <g fill="none" strokeLinecap="round" strokeLinejoin="round">
+          {topographicContours.slice(1, 12).map((contour, idx) => (
+            <path
+              key={`workspace-lower-${contour.path}`}
+              d={contour.path}
+              transform="translate(-550 -170) scale(0.92)"
+              stroke={idx % 4 === 0 ? "#D17B2E" : "#176B7D"}
+              strokeWidth={idx % 4 === 0 ? 2.1 : 1.1}
+              opacity={idx % 4 === 0 ? 0.24 : 0.15}
+            />
+          ))}
+        </g>
+      </motion.svg>
+    </div>
   );
 }
 
@@ -1619,8 +1901,8 @@ function WorkspaceStat({
 }) {
   return (
     <div>
-      <div className="small-caps text-sm text-neutral-500">{label}</div>
-      <div className="mt-2 font-mono text-3xl text-ink">{value}</div>
+      <div className="small-caps text-sm text-[#141210]/46">{label}</div>
+      <div className="mt-2 font-mono text-3xl text-[#141210]">{value}</div>
     </div>
   );
 }
@@ -1629,9 +1911,7 @@ function WorkspaceLoadingPanel({ activeTab }: { activeTab: TabKey }) {
   const title =
     activeTab === "ask"
       ? "Loading chat"
-      : activeTab === "insights"
-        ? "Loading insights"
-        : "Loading files";
+      : "Loading insights";
 
   return (
     <div className="h-full bg-[#fffdf9] px-8 py-7">
@@ -1680,24 +1960,30 @@ function WorkspaceRow({
 
   return (
     <li>
-      <div
-        className="group grid gap-4 border border-drift bg-tidepaper px-5 py-5 transition hover:border-deep-sea hover:bg-drift/30 md:grid-cols-[minmax(0,1fr)_auto]"
+      <motion.div
+        layout
+        className="group relative grid gap-4 overflow-hidden border border-[#141210]/12 bg-[#F7F1E7]/74 px-5 py-5 transition hover:border-[#176B7D]/40 hover:bg-[#F2EBDD]/88 md:grid-cols-[minmax(0,1fr)_auto]"
         onMouseEnter={onPrefetch}
         onFocus={onPrefetch}
+        whileHover={{ y: -2 }}
+        transition={{ duration: 0.22, ease: "easeOut" }}
       >
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-1/2 opacity-0 transition group-hover:opacity-100">
+          <MiniTopoStrip />
+        </div>
         <button
           type="button"
           onClick={onResume}
-          className="min-w-0 text-left"
+          className="relative z-10 min-w-0 text-left"
         >
           <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <span className="h-3 w-3 bg-sea-glass" />
-            <span className="truncate font-mono text-xl text-night-watch">{session.name}</span>
-            <span className="small-caps border border-drift bg-tidepaper px-2 py-1 text-sm text-night-watch/70">
+            <span className="h-3 w-3 bg-[#176B7D]" />
+            <span className="truncate font-mono text-xl text-[#141210]">{session.name}</span>
+            <span className="small-caps border border-[#141210]/12 bg-[#F2EBDD]/82 px-2 py-1 text-sm text-[#141210]/64">
               {workspaceStatusLabel(session)}
             </span>
           </div>
-          <div className="mt-4 grid gap-4 font-mono text-sm text-night-watch/70 sm:grid-cols-4">
+          <div className="mt-4 grid gap-4 font-mono text-sm text-[#141210]/68 sm:grid-cols-4">
             <WorkspaceFact label="files" value={formatMaybeNumber(fileCount)} />
             <WorkspaceFact label="rows" value={formatMaybeNumber(rowCount)} />
             <WorkspaceFact label="last activity" value={formatActivity(activity)} />
@@ -1707,11 +1993,11 @@ function WorkspaceRow({
             />
           </div>
         </button>
-        <div className="flex items-center gap-2 md:flex-col md:items-end md:justify-between">
+        <div className="relative z-10 flex items-center gap-2 md:flex-col md:items-end md:justify-between">
           <button
             type="button"
             onClick={onResume}
-            className="small-caps bg-night-watch px-4 py-2 text-sm text-tidepaper transition hover:bg-deep-sea"
+            className="small-caps bg-[#141210] px-4 py-2 text-sm text-[#F2EBDD] transition hover:bg-[#176B7D]"
           >
             open
           </button>
@@ -1723,7 +2009,7 @@ function WorkspaceRow({
             delete
           </button>
         </div>
-      </div>
+      </motion.div>
     </li>
   );
 }
@@ -1731,8 +2017,8 @@ function WorkspaceRow({
 function WorkspaceFact({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="small-caps text-sm text-neutral-400">{label}</div>
-      <div className="mt-1 text-base text-ink">{value}</div>
+      <div className="small-caps text-sm text-[#141210]/36">{label}</div>
+      <div className="mt-1 text-base text-[#141210]">{value}</div>
     </div>
   );
 }
