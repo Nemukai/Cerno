@@ -1,11 +1,11 @@
-"""Operator CLI for managing beta access.
+"""Operator CLI for managing access.
 
 Run with `uv run cerno-admin <command>` once installed.
 
 Commands:
-  create-code    Generate (or set) a beta access code
-  list-codes     List all beta codes with usage counts
-  delete-code    Delete a code so no one else can redeem it
+  approve-email  Add an email to the approved access list
+  remove-email   Remove an email from the approved access list
+  list-emails    List approved access emails
   list-users     List signed-in users with their access status
   grant          Grant a user access without a code (by email)
   revoke         Revoke a user's access (by email)
@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 
 from cerno.config import get_settings
 from cerno.db import DbConnection, connect
-from cerno.repositories import BetaCodeRepository, UserRepository
+from cerno.repositories import ApprovedEmailRepository, BetaCodeRepository, UserRepository
 from cerno.services.storage_gc import cleanup_unused_storage_for_user
 
 # Avoid look-alike characters: no I, O, 0, 1.
@@ -126,14 +126,60 @@ def cmd_list_users(args: argparse.Namespace) -> None:
         print(f"{u.email:<40}  {u.access_status:<10}  {code:<22}  {u.created_at.isoformat()}")
 
 
+def cmd_approve_email(args: argparse.Namespace) -> None:
+    conn = _open_conn()
+    try:
+        approved = ApprovedEmailRepository(conn).add(args.email, args.note)
+        user = UserRepository(conn).get_by_email(approved.email)
+        if user is not None and user.access_status != "revoked":
+            UserRepository(conn).sync_allowlist_status(user.id, email_approved=True)
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"approved {approved.email}")
+
+
+def cmd_remove_email(args: argparse.Namespace) -> None:
+    conn = _open_conn()
+    try:
+        repo = ApprovedEmailRepository(conn)
+        email = repo.normalize(args.email)
+        removed = repo.remove(email)
+        user = UserRepository(conn).get_by_email(email)
+        if user is not None:
+            UserRepository(conn).sync_allowlist_status(user.id, email_approved=False)
+        conn.commit()
+    finally:
+        conn.close()
+    if removed:
+        print(f"removed {email}")
+    else:
+        sys.exit(f"no approved email: {email}")
+
+
+def cmd_list_emails(args: argparse.Namespace) -> None:
+    conn = _open_conn()
+    try:
+        emails = ApprovedEmailRepository(conn).list_all()
+    finally:
+        conn.close()
+    if not emails:
+        print("(no approved emails)")
+        return
+    print(f"{'email':<40}  {'created':<25}  note")
+    print("-" * 90)
+    for item in emails:
+        print(f"{item.email:<40}  {item.created_at.isoformat():<25}  {item.note or ''}")
+
+
 def cmd_grant(args: argparse.Namespace) -> None:
     conn = _open_conn()
     try:
+        ApprovedEmailRepository(conn).add(args.email, "admin grant")
         repo = UserRepository(conn)
         user = repo.get_by_email(args.email)
-        if user is None:
-            sys.exit(f"no user with email: {args.email}")
-        repo.mark_granted(user.id, "ADMIN")
+        if user is not None:
+            repo.sync_allowlist_status(user.id, email_approved=True)
         conn.commit()
     finally:
         conn.close()
@@ -143,6 +189,7 @@ def cmd_grant(args: argparse.Namespace) -> None:
 def cmd_revoke(args: argparse.Namespace) -> None:
     conn = _open_conn()
     try:
+        ApprovedEmailRepository(conn).remove(args.email)
         repo = UserRepository(conn)
         user = repo.get_by_email(args.email)
         if user is None:
@@ -197,6 +244,18 @@ def cmd_storage_gc(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cerno-admin")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("approve-email", help="add an email to the approved access list")
+    p.add_argument("email")
+    p.add_argument("--note", help="who is this / why")
+    p.set_defaults(func=cmd_approve_email)
+
+    p = sub.add_parser("remove-email", help="remove an email from the approved access list")
+    p.add_argument("email")
+    p.set_defaults(func=cmd_remove_email)
+
+    p = sub.add_parser("list-emails", help="list approved access emails")
+    p.set_defaults(func=cmd_list_emails)
 
     p = sub.add_parser("create-code", help="generate (or set) a beta code")
     p.add_argument("--note", help="who is this for / why")

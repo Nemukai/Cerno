@@ -3,7 +3,25 @@ export type DiscoveryStatus = "empty" | "discovering" | "pending_review" | "appr
 export type SimpleDtype = "string" | "int" | "float" | "date" | "datetime" | "bool" | "category";
 export type InferredKind = SimpleDtype;
 export type LinkDirection = "many_to_one" | "one_to_one" | "many_to_many";
-export type WidgetKind = "kpi" | "bar" | "line" | "pie" | "table" | "markdown";
+export type WidgetKind =
+  | "kpi"
+  | "bar"
+  | "horizontal_bar"
+  | "grouped_bar"
+  | "stacked_bar"
+  | "line"
+  | "area"
+  | "stacked_area"
+  | "pie"
+  | "histogram"
+  | "scatter"
+  | "heatmap"
+  | "boxplot"
+  | "waterfall"
+  | "sankey"
+  | "timeline"
+  | "table"
+  | "markdown";
 export type LinkSource = "discovered" | "user_added";
 export type LinkAction = "confirm" | "reject" | "edit";
 export type TurnState = "pending" | "tool_running" | "rendering" | "complete" | "failed";
@@ -336,6 +354,16 @@ export type ChatResponse = {
 export type KpiData = {
   value: string | number;
   label?: string;
+  title?: string;
+  items?: Array<{
+    title?: string;
+    value: string | number;
+    label?: string;
+    delta?: {
+      direction: "up" | "down";
+      value: string;
+    };
+  }>;
   delta?: {
     direction: "up" | "down";
     value: string;

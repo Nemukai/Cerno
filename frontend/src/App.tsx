@@ -917,6 +917,7 @@ export function App() {
             session={session}
             files={files}
             turns={turns}
+            messagesByTurn={messagesByTurn}
             activeTurnId={activeTurnId}
             onSelectTab={handleTabChange}
             onSelectTurn={handleSelectTurn}
@@ -1113,7 +1114,7 @@ function LandingPage({
                   <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
                 </a>
                 <span className="small-caps text-xs text-night-watch/50">
-                  access code required after login
+                  invite-only email access
                 </span>
               </div>
               <div className="mt-12 grid max-w-2xl grid-cols-3 border-y border-drift">

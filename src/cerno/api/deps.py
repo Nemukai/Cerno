@@ -64,7 +64,7 @@ def get_granted_user(
     if user.access_status == "revoked":
         raise HTTPException(status_code=403, detail="access has been revoked")
     if user.access_status != "granted":
-        raise HTTPException(status_code=403, detail="beta access code required")
+        raise HTTPException(status_code=403, detail="email is not approved for access")
     return user
 
 

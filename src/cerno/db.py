@@ -9,7 +9,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-POSTGRES_SCHEMA_VERSION = 3
+POSTGRES_SCHEMA_VERSION = 5
 
 
 class DbRow:
@@ -206,6 +206,25 @@ _POSTGRES_MIGRATIONS = {
         "ALTER TABLE chat_turns ADD COLUMN IF NOT EXISTS title TEXT",
         "ALTER TABLE chat_turns ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'",
     ],
+    4: [
+        """
+        CREATE TABLE IF NOT EXISTS approved_emails (
+            email TEXT PRIMARY KEY,
+            note TEXT,
+            created_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_approved_emails_email ON approved_emails(email)",
+    ],
+    5: [
+        """
+        UPDATE users
+        SET access_status = 'pending',
+            access_code_used = NULL
+        WHERE access_status = 'granted'
+          AND lower(email) NOT IN (SELECT lower(email) FROM approved_emails)
+        """,
+    ],
 }
 
 
@@ -225,6 +244,14 @@ _POSTGRES_SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_users_access_status ON users(access_status)",
+    """
+    CREATE TABLE IF NOT EXISTS approved_emails (
+        email TEXT PRIMARY KEY,
+        note TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_approved_emails_email ON approved_emails(email)",
     """
     CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,

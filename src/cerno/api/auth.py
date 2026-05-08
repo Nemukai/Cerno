@@ -4,13 +4,13 @@ from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from cerno.api.deps import ConnDep, SettingsDep, UserDep, cookie_serializer
 from cerno.auth import build_oauth
 from cerno.config import Settings
 from cerno.models import AccessStatus
-from cerno.repositories import BetaCodeRepository, UserRepository
+from cerno.repositories import ApprovedEmailRepository, UserRepository
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -21,10 +21,6 @@ class CurrentUser(BaseModel):
     name: str | None = None
     picture: str | None = None
     access_status: AccessStatus = "pending"
-
-
-class RedeemRequest(BaseModel):
-    code: str = Field(min_length=1, max_length=64)
 
 
 def _set_session_cookie(response: Response, *, settings: Settings, user_id: str) -> None:
@@ -61,12 +57,13 @@ async def google_callback(request: Request, conn: ConnDep, settings: SettingsDep
     email = userinfo.get("email")
     if not sub or not email:
         raise HTTPException(status_code=400, detail="google did not return required identity")
+    approved_emails = ApprovedEmailRepository(conn)
     user = UserRepository(conn).upsert_from_google(
         google_sub=sub,
         email=email,
         name=userinfo.get("name"),
         picture=userinfo.get("picture"),
-        operator_emails=settings.operator_email_set(),
+        email_approved=approved_emails.is_approved(email),
     )
     response = RedirectResponse(url=settings.frontend_origin, status_code=302)
     _set_session_cookie(response, settings=settings, user_id=user.id)
@@ -74,41 +71,18 @@ async def google_callback(request: Request, conn: ConnDep, settings: SettingsDep
 
 
 @router.get("/me", response_model=CurrentUser)
-def me(user: UserDep) -> CurrentUser:
+def me(conn: ConnDep, user: UserDep) -> CurrentUser:
+    approved = ApprovedEmailRepository(conn).is_approved(user.email)
+    synced = UserRepository(conn).sync_allowlist_status(user.id, email_approved=approved)
+    if synced is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    conn.commit()
     return CurrentUser(
-        id=user.id,
-        email=user.email,
-        name=user.name,
-        picture=user.picture,
-        access_status=user.access_status,
-    )
-
-
-@router.post("/redeem", response_model=CurrentUser)
-def redeem(body: RedeemRequest, conn: ConnDep, user: UserDep) -> CurrentUser:
-    if user.access_status == "revoked":
-        raise HTTPException(status_code=403, detail="access has been revoked")
-    user_repo = UserRepository(conn)
-    if user.access_status == "granted":
-        return CurrentUser(
-            id=user.id,
-            email=user.email,
-            name=user.name,
-            picture=user.picture,
-            access_status="granted",
-        )
-    code = body.code.strip().upper()
-    redeemed = BetaCodeRepository(conn).redeem(code)
-    if redeemed is None:
-        raise HTTPException(status_code=403, detail="invalid or expired code")
-    updated = user_repo.mark_granted(user.id, redeemed.code)
-    assert updated is not None
-    return CurrentUser(
-        id=updated.id,
-        email=updated.email,
-        name=updated.name,
-        picture=updated.picture,
-        access_status=updated.access_status,
+        id=synced.id,
+        email=synced.email,
+        name=synced.name,
+        picture=synced.picture,
+        access_status=synced.access_status,
     )
 
 

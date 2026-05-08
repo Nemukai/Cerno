@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type {
+  ChatMessage,
   ChatTurn,
   DataDoc,
   DiscoveryResponse,
@@ -23,6 +24,7 @@ type WorkspaceSidebarProps = {
   session: Session;
   files: FileRecord[];
   turns: ChatTurn[];
+  messagesByTurn: Record<string, ChatMessage[]>;
   activeTurnId: string | null;
   onSelectTab: (tab: "ask" | "insights" | "files") => void;
   onSelectTurn: (turnId: string) => void;
@@ -35,6 +37,7 @@ export function WorkspaceSidebar({
   session,
   files,
   turns,
+  messagesByTurn = {},
   activeTurnId,
   onSelectTab,
   onSelectTurn,
@@ -47,6 +50,15 @@ export function WorkspaceSidebar({
     x: number;
     y: number;
   } | null>(null);
+  const orderedTurns = useMemo(
+    () =>
+      [...turns].sort(
+        (a, b) =>
+          latestTurnActivity(b, messagesByTurn).getTime() -
+          latestTurnActivity(a, messagesByTurn).getTime(),
+      ),
+    [messagesByTurn, turns],
+  );
 
   const renameTurn = (turn: ChatTurn) => {
     const current = defaultTurnTitle(turn);
@@ -97,8 +109,8 @@ export function WorkspaceSidebar({
           </button>
         </div>
         <div className="mt-2 grid gap-1">
-          {turns.length > 0 ? (
-            turns.slice(0, 24).map((turn) => (
+          {orderedTurns.length > 0 ? (
+            orderedTurns.slice(0, 24).map((turn) => (
               <button
                 key={turn.id}
                 type="button"
@@ -121,7 +133,7 @@ export function WorkspaceSidebar({
                     {turn.state}
                   </span>
                   <span className="text-[10px] text-neutral-400">
-                    {formatDate(turn.created_at)}
+                    {formatRelativeActivity(latestTurnActivity(turn, messagesByTurn))}
                   </span>
                 </div>
               </button>
@@ -678,6 +690,34 @@ function nameForFile(fileId: string, files: FileRecord[]) {
 function defaultTurnTitle(turn: ChatTurn): string {
   const trimmed = (turn.title || turn.user_message).trim();
   return trimmed.length > 52 ? `${trimmed.slice(0, 49)}...` : trimmed || "Untitled chat";
+}
+
+function latestTurnActivity(
+  turn: ChatTurn,
+  messagesByTurn: Record<string, ChatMessage[]>,
+): Date {
+  const messageDates = (messagesByTurn[turn.id] ?? [])
+    .map((message) => new Date(message.created_at).getTime())
+    .filter(Number.isFinite);
+  const fallback = new Date(turn.created_at).getTime();
+  const latest = Math.max(
+    Number.isFinite(fallback) ? fallback : 0,
+    ...messageDates,
+  );
+  return new Date(latest);
+}
+
+function formatRelativeActivity(date: Date): string {
+  const diffMs = Date.now() - date.getTime();
+  if (!Number.isFinite(diffMs)) return "unknown";
+  const futureSafe = Math.max(0, diffMs);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (futureSafe < minute) return "now";
+  if (futureSafe < hour) return `${Math.floor(futureSafe / minute)}min`;
+  if (futureSafe < day) return `${Math.floor(futureSafe / hour)}hr`;
+  return `${Math.floor(futureSafe / day)}d`;
 }
 
 function formatCompactNumber(value: number): string {

@@ -1,21 +1,35 @@
 import * as echarts from "echarts/core";
-import { BarChart, LineChart, PieChart } from "echarts/charts";
+import {
+  BarChart,
+  BoxplotChart,
+  HeatmapChart,
+  LineChart,
+  PieChart,
+  SankeyChart,
+  ScatterChart,
+} from "echarts/charts";
 import {
   GridComponent,
-  TooltipComponent,
   LegendComponent,
   TitleComponent,
+  TooltipComponent,
+  VisualMapComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
 echarts.use([
   BarChart,
+  BoxplotChart,
+  HeatmapChart,
   LineChart,
   PieChart,
+  SankeyChart,
+  ScatterChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,
   TitleComponent,
+  VisualMapComponent,
   CanvasRenderer,
 ]);
 

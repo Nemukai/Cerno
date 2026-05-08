@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   ChatArtifact,
   ChatMessage,
@@ -60,9 +60,10 @@ export function ChatSidebar({
     {},
   );
   const scrollRef = useRef<HTMLDivElement>(null);
-  const visibleTurns = activeTurnId
-    ? turns.filter((turn) => turn.id === activeTurnId)
-    : [];
+  const visibleTurns = useMemo(
+    () => (activeTurnId ? turns.filter((turn) => turn.id === activeTurnId) : []),
+    [activeTurnId, turns],
+  );
   const showLiveChat = Boolean(
     liveChat && (liveChat.turnId === activeTurnId || (!activeTurnId && visibleTurns.length === 0)),
   );
@@ -94,12 +95,12 @@ export function ChatSidebar({
     }
   }, [sending, turns]);
 
-  // Auto-scroll to bottom when sending or turns change
+  // Auto-scroll to bottom only when the active conversation changes or a message is sent.
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [visibleTurns, sending, pendingMessage]);
+  }, [activeTurnId, turns, sending, pendingMessage]);
 
   const toggleTrace = (turnId: string) => {
     setOpenTraceByTurn((current) => ({
@@ -275,25 +276,26 @@ function isWidget(value: unknown): value is Widget {
 function ThinkingIndicator() {
   return (
     <div className="flex items-center gap-3 py-2">
-      <ThinkingDots />
+      <ThinkingDots animated />
       <span className="text-sm text-neutral-400 animate-pulse">analyzing your data…</span>
     </div>
   );
 }
 
-function ThinkingDots() {
+function ThinkingDots({ animated = false }: { animated?: boolean }) {
+  const dotClass = `inline-block h-1.5 w-1.5 bg-ember ${animated ? "animate-bounce" : ""}`;
   return (
     <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
       <span
-        className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
+        className={dotClass}
         style={{ animationDelay: "0ms", animationDuration: "1s" }}
       />
       <span
-        className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
+        className={dotClass}
         style={{ animationDelay: "150ms", animationDuration: "1s" }}
       />
       <span
-        className="inline-block h-1.5 w-1.5 bg-ember animate-bounce"
+        className={dotClass}
         style={{ animationDelay: "300ms", animationDuration: "1s" }}
       />
     </span>
@@ -314,29 +316,30 @@ function TraceDisclosure({
   items: TraceItem[];
   onToggle: () => void;
 }) {
+  const done = items.every((item) => Boolean(item.result));
   return (
-    <div className="mb-3">
+    <div className="mb-3 max-w-3xl">
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-3 py-2 text-left hover:border-orange-200 hover:bg-orange-50"
+        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-2.5 py-1.5 text-left hover:border-orange-200 hover:bg-orange-50"
       >
         <span className="flex min-w-0 items-center gap-2">
-          <ThinkingDots />
+          <ThinkingDots animated={!done} />
           <span className="small-caps text-[10px] text-neutral-500">
-            thinking
+            {open ? "hide thinking" : done ? "done thinking" : "show thinking"}
           </span>
         </span>
         <span className="flex items-center gap-2">
           <span className="font-mono text-[10px] text-neutral-400">
             {items.length} {items.length === 1 ? "step" : "steps"}
           </span>
-          <span className="text-xs text-ember">{open ? "\u2191" : "\u2193"}</span>
+          <span className="text-[10px] text-ember">{open ? "hide" : "show"}</span>
         </span>
       </button>
       {open ? (
-        <div className="mt-2 space-y-2">
+        <div className="mt-1 divide-y divide-orange-100 border border-orange-100 bg-white">
           {items.map(({ message, result }) => (
             <ToolCallCard key={message.id} message={message} result={result} />
           ))}
@@ -353,29 +356,20 @@ function ToolCallCard({
   message: ChatMessage;
   result: ChatMessage | null;
 }) {
+  const summary = compactTraceText(message.content);
   return (
-    <div className="border border-orange-200 bg-white px-3 py-2 shadow-[0_1px_0_rgba(14,14,14,0.04)]">
-      <div className="flex items-start gap-2">
-        <div className="mt-1 h-2 w-2 shrink-0 bg-ember" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-3">
-            <div className="small-caps text-[10px] text-neutral-500">tool call</div>
-            <div className="small-caps text-[10px] text-ember">
-              {result ? "complete" : "running"}
-            </div>
-          </div>
-          <div className="mt-0.5 truncate font-mono text-xs text-ink">
-            {formatToolName(message.tool_name)}
-          </div>
-          {message.content.trim() ? (
-            <div className="mt-2 border-l-2 border-orange-200 pl-2 text-[11px] leading-5 text-neutral-600">
-              <div className="small-caps mb-1 text-[10px] text-neutral-400">
-                thinking
-              </div>
-              <MarkdownText text={message.content} compact />
-            </div>
-          ) : null}
-        </div>
+    <div className="grid grid-cols-[minmax(110px,180px)_1fr_auto] items-center gap-3 px-2.5 py-1.5 text-xs">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className={`h-1.5 w-1.5 shrink-0 ${result ? "bg-ember" : "bg-neutral-300"}`} />
+        <span className="truncate font-mono text-[11px] text-ink">
+          {formatToolName(message.tool_name)}
+        </span>
+      </div>
+      <div className="min-w-0 truncate text-[11px] text-neutral-500">
+        {summary || "tool call"}
+      </div>
+      <div className="small-caps text-[9px] text-neutral-400">
+        {result ? "done" : "running"}
       </div>
     </div>
   );
@@ -492,45 +486,61 @@ function LiveTraceDisclosure({
 }) {
   const stepCount =
     liveChat.tools.length + (liveChat.reasoningText.trim() ? 1 : 0);
+  const done = Boolean(liveChat.assistantText || liveChat.error);
 
   return (
-    <div className="mb-3">
+    <div className="mb-3 max-w-3xl">
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-3 py-2 text-left hover:border-orange-200 hover:bg-orange-50"
+        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-2.5 py-1.5 text-left hover:border-orange-200 hover:bg-orange-50"
       >
         <span className="flex min-w-0 items-center gap-2">
-          <ThinkingDots />
+          <ThinkingDots animated={!done} />
           <span className="small-caps text-[10px] text-neutral-500">
-            thinking
+            {open ? "hide thinking" : done ? "done thinking" : "show thinking"}
           </span>
         </span>
         <span className="flex items-center gap-2">
           <span className="font-mono text-[10px] text-neutral-400">
             {stepCount} {stepCount === 1 ? "step" : "steps"}
           </span>
-          <span className="text-xs text-ember">{open ? "\u2191" : "\u2193"}</span>
+          <span className="text-[10px] text-ember">{open ? "hide" : "show"}</span>
         </span>
       </button>
       {open ? (
-        <div className="mt-2 space-y-2">
+        <div className="mt-1 divide-y divide-orange-100 border border-orange-100 bg-white">
           {liveChat.reasoningText.trim() ? (
-            <div className="border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-600">
-              <div className="small-caps mb-1 text-xs text-neutral-500">thinking</div>
-              <MarkdownText text={liveChat.reasoningText} compact />
+            <div className="grid grid-cols-[minmax(110px,180px)_1fr_auto] items-center gap-3 px-2.5 py-1.5 text-xs">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="h-1.5 w-1.5 shrink-0 bg-neutral-300" />
+                <span className="truncate font-mono text-[11px] text-ink">
+                  reasoning
+                </span>
+              </div>
+              <div className="min-w-0 truncate text-[11px] text-neutral-500">
+                {compactTraceText(liveChat.reasoningText)}
+              </div>
+              <div className="small-caps text-[9px] text-neutral-400">live</div>
             </div>
           ) : null}
           {liveChat.tools.map((tool) => (
-            <div key={tool.callId} className="border border-orange-200 bg-white px-3 py-2">
-              <div className="flex items-center justify-between gap-3">
-                <span className="truncate font-mono text-xs text-ink">
+            <div
+              key={tool.callId}
+              className="grid grid-cols-[minmax(110px,180px)_1fr_auto] items-center gap-3 px-2.5 py-1.5 text-xs"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className={`h-1.5 w-1.5 shrink-0 ${tool.result ? "bg-ember" : "bg-neutral-300"}`} />
+                <span className="truncate font-mono text-[11px] text-ink">
                   {formatToolName(tool.name || null)}
                 </span>
-                <span className="small-caps text-xs text-neutral-400">
-                  {tool.result ? "done" : "running"}
-                </span>
+              </div>
+              <div className="min-w-0 truncate text-[11px] text-neutral-500">
+                {compactTraceText(tool.argsText) || "tool call"}
+              </div>
+              <div className="small-caps text-[9px] text-neutral-400">
+                {tool.result ? "done" : "running"}
               </div>
             </div>
           ))}
@@ -615,6 +625,12 @@ function nearestAssistantBeforeArtifact(
 function formatToolName(name: string | null) {
   if (!name) return "tool";
   return name.replace(/_/g, " ");
+}
+
+function compactTraceText(value: string | null | undefined): string {
+  const singleLine = (value ?? "").replace(/\s+/g, " ").trim();
+  if (singleLine.length <= 120) return singleLine;
+  return `${singleLine.slice(0, 117)}...`;
 }
 
 export function MarkdownText({

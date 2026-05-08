@@ -79,7 +79,9 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
             "row_count": table.row_count,
             "analysis_ready": table.dataframe is not None,
             "load_error": table.load_error,
-            "columns": table.columns,
+            "column_count": len(table.columns),
+            "profile": _table_profile(table),
+            "columns": _profiled_columns(table),
         }
 
     async def run_python_handler(args: dict[str, Any]) -> dict[str, Any]:
@@ -108,11 +110,12 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 "error": f"render_widget missing required field(s): {', '.join(missing)}",
                 "received_fields": sorted(args),
             }
+        kind, options = _normalize_widget_args(args)
         widget = Widget(
-            kind=args["kind"],
+            kind=kind,
             title=str(args["title"]),
             data=args["data"],
-            options=args.get("options") or {},
+            options=options,
             caption=args.get("caption"),
         )
         ctx.rendered_widgets.append(widget)
@@ -149,7 +152,11 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
     registry.register(
         Tool(
             name="describe_table",
-            description="Return the columns (name, type, nullable) for a single table.",
+            description=(
+                "Return the schema and compact data profile for a single table: "
+                "column descriptions, semantic kinds, null/distinct counts, numeric/date ranges, "
+                "and top categorical values. Does not return sample rows."
+            ),
             parameters={
                 "type": "object",
                 "properties": {"table": {"type": "string"}},
@@ -194,15 +201,39 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 "Call this for every chart, KPI, or table you want the user to see before writing the final answer. "
                 "The data field is required and must be an object, never a raw list and never Python code. "
                 "First use run_python to compute compact aggregates from the available pandas DataFrames, then pass the returned concrete values into this tool. "
-                "For table, bar, line, and pie widgets, use data={columns: [...], rows: [[...], ...]}. "
-                "For charts, set options.x/category and options.y/value when the first column is not the category and the second column is not the measure."
+                "For kpi, pass either data={value, label, delta} or up to four KPI cards as data={items: [{title, value, label, delta}, ...]}. "
+                "Available visual kinds are bar, horizontal_bar, grouped_bar, stacked_bar, line, area, stacked_area, pie, histogram, scatter, heatmap, boxplot, waterfall, sankey, and timeline. "
+                "For these chart and diagram widgets, prefer data={columns: [...], rows: [[...], ...]} with compact aggregated rows. "
+                "Use the exact kind for the requested visual: horizontal_bar for horizontal bars; grouped_bar for side-by-side grouped series; stacked_bar for stacked/proportion bars; stacked_area for stacked time-series areas; histogram for numeric distributions; scatter for x/y point plots; heatmap for matrix intensity; boxplot for spread/outliers; waterfall for cumulative deltas; sankey for source-target flows; timeline for dated events. "
+                "Do not encode a requested chart/diagram as kind=table, and do not encode a requested specialized chart as kind=bar or kind=line. "
+                "For charts, set options.x/category, options.y/value, options.series, options.source, options.target, options.time, or options.label when the default column inference is not obvious. "
+                "The current app can display all enum kinds in this schema; never tell the user that only the old line/bar/table/pie/KPI set is supported."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["kpi", "bar", "line", "pie", "table", "markdown"],
+                        "enum": [
+                            "kpi",
+                            "bar",
+                            "horizontal_bar",
+                            "grouped_bar",
+                            "stacked_bar",
+                            "line",
+                            "area",
+                            "stacked_area",
+                            "pie",
+                            "histogram",
+                            "scatter",
+                            "heatmap",
+                            "boxplot",
+                            "waterfall",
+                            "sankey",
+                            "timeline",
+                            "table",
+                            "markdown",
+                        ],
                     },
                     "title": {"type": "string"},
                     "data": {"type": "object"},
@@ -228,3 +259,316 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
     )
 
     return registry
+
+
+def _normalize_widget_args(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    kind = str(args["kind"])
+    options = dict(args.get("options") or {})
+    hint_text = " ".join(
+        str(value)
+        for value in (
+            args.get("title"),
+            args.get("caption"),
+            options.get("chartType"),
+            options.get("variant"),
+            options.get("layout"),
+            options.get("orientation"),
+            options.get("type"),
+        )
+        if value is not None
+    ).lower()
+    requested = {
+        str(options.get(key, "")).strip().lower()
+        for key in ("chartType", "variant", "layout", "orientation", "type")
+        if options.get(key) is not None
+    }
+
+    hinted_kind = _hinted_widget_kind(hint_text)
+    if hinted_kind is not None and kind in {"bar", "line", "table"}:
+        kind = hinted_kind
+
+    if kind == "table" and _looks_like_sankey_data(args.get("data")):
+        kind = "sankey"
+
+    if kind == "bar":
+        if {"horizontal", "horizontal_bar"} & requested:
+            kind = "horizontal_bar"
+        elif {"stacked", "stacked_bar"} & requested or options.get("stacked") is True:
+            kind = "stacked_bar"
+        elif _looks_like_percentage_series(args.get("data")):
+            kind = "stacked_bar"
+        elif {"grouped", "grouped_bar"} & requested or _looks_like_grouped_bar_data(args.get("data")):
+            kind = "grouped_bar"
+
+    if kind == "horizontal_bar":
+        options["horizontal"] = True
+
+    return kind, options
+
+
+def _hinted_widget_kind(text: str) -> str | None:
+    hints = (
+        ("stacked area", "stacked_area"),
+        ("area chart", "area"),
+        ("histogram", "histogram"),
+        ("scatterplot", "scatter"),
+        ("scatter plot", "scatter"),
+        ("heatmap", "heatmap"),
+        ("heat map", "heatmap"),
+        ("boxplot", "boxplot"),
+        ("box plot", "boxplot"),
+        ("waterfall", "waterfall"),
+        ("sankey", "sankey"),
+        ("timeline", "timeline"),
+        ("horizontal bar", "horizontal_bar"),
+        ("grouped bar", "grouped_bar"),
+        ("stacked bar", "stacked_bar"),
+        ("stacked chart", "stacked_bar"),
+    )
+    for phrase, kind in hints:
+        if phrase in text:
+            return kind
+    return None
+
+
+def _looks_like_sankey_data(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    columns = data.get("columns")
+    if not isinstance(columns, list):
+        return False
+    normalized = {str(column).strip().lower() for column in columns}
+    return {"source", "target"}.issubset(normalized)
+
+
+def _looks_like_percentage_series(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    columns = data.get("columns")
+    if not isinstance(columns, list):
+        return False
+    return any(
+        any(term in str(column).lower() for term in ("pct", "percent", "share", "proportion"))
+        for column in columns
+    )
+
+
+def _looks_like_grouped_bar_data(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if isinstance(data.get("series"), list) and len(data["series"]) > 1:
+        return True
+    columns = data.get("columns")
+    rows = data.get("rows")
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        return False
+    if len(columns) >= 3:
+        has_text_series = any(
+            isinstance(row, list)
+            and len(row) > 1
+            and _numeric_value(row[1]) is None
+            and row[1] not in (None, "")
+            for row in rows
+        )
+        has_numeric_value = any(
+            isinstance(row, list)
+            and len(row) > 2
+            and _numeric_value(row[2]) is not None
+            for row in rows
+        )
+        if has_text_series and has_numeric_value:
+            return True
+    numeric_columns = 0
+    for index in range(1, len(columns)):
+        if any(_numeric_value(row[index] if isinstance(row, list) and index < len(row) else None) is not None for row in rows):
+            numeric_columns += 1
+    return numeric_columns > 1
+
+
+def _numeric_value(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    try:
+        return float(value.replace(",", "").strip())
+    except ValueError:
+        return None
+
+
+def _table_profile(table: ToolTable) -> dict[str, Any]:
+    frame = table.dataframe
+    if frame is None:
+        return {
+            "ok": False,
+            "message": table.load_error or "No dataframe is loaded for this table.",
+        }
+    return {
+        "ok": True,
+        "row_count": int(len(frame.index)),
+        "column_count": int(len(frame.columns)),
+        "profiled_column_count": int(min(len(frame.columns), len(table.columns) or len(frame.columns))),
+        "notes": [
+            "This profile is computed from the processed dataframe available to run_python.",
+            "No sample rows are included.",
+            "Top values are capped and intended for orientation, not exhaustive enumeration.",
+        ],
+    }
+
+
+def _profiled_columns(table: ToolTable) -> list[dict[str, Any]]:
+    frame = table.dataframe
+    schema_columns = table.columns
+    if frame is None:
+        return schema_columns
+
+    if schema_columns:
+        columns = schema_columns
+    else:
+        columns = [{"name": str(name), "type": str(frame[name].dtype)} for name in frame.columns]
+
+    return [_profile_column(column, frame) for column in columns]
+
+
+def _profile_column(column: dict[str, Any], frame: pd.DataFrame) -> dict[str, Any]:
+    name = str(column.get("name") or "")
+    profiled = dict(column)
+    if name not in frame.columns:
+        profiled["profile"] = {"ok": False, "message": "Column is documented but not present in dataframe."}
+        return profiled
+
+    series = frame[name]
+    row_count = int(len(series.index))
+    null_count = int(series.isna().sum())
+    non_null_count = row_count - null_count
+    distinct_count = int(series.nunique(dropna=True))
+    profile: dict[str, Any] = {
+        "ok": True,
+        "pandas_dtype": str(series.dtype),
+        "non_null_count": non_null_count,
+        "null_count": null_count,
+        "null_percent": _round_percent(null_count, row_count),
+        "distinct_count": distinct_count,
+        "distinct_percent": _round_percent(distinct_count, non_null_count),
+        "hints": _column_hints(
+            row_count=row_count,
+            non_null_count=non_null_count,
+            null_count=null_count,
+            distinct_count=distinct_count,
+            name=name,
+        ),
+    }
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    numeric_non_null = int(numeric.notna().sum())
+    if numeric_non_null:
+        profile["numeric"] = {
+            "count": numeric_non_null,
+            "min": _json_safe_scalar(numeric.min()),
+            "max": _json_safe_scalar(numeric.max()),
+            "mean": _json_safe_scalar(numeric.mean()),
+            "median": _json_safe_scalar(numeric.median()),
+        }
+
+    temporal = _temporal_profile(name, column, series)
+    if temporal is not None:
+        profile.update(temporal)
+
+    profile["top_values"] = _top_values(series)
+    profiled["profile"] = profile
+    return profiled
+
+
+def _column_hints(
+    *,
+    row_count: int,
+    non_null_count: int,
+    null_count: int,
+    distinct_count: int,
+    name: str,
+) -> list[str]:
+    hints: list[str] = []
+    lowered = name.lower()
+    if row_count and null_count == row_count:
+        hints.append("all_null")
+    elif row_count and null_count / row_count >= 0.5:
+        hints.append("mostly_null")
+    if non_null_count and distinct_count == 1:
+        hints.append("constant")
+    if non_null_count and distinct_count / non_null_count >= 0.95:
+        hints.append("high_cardinality")
+    if "id" in lowered or "number" in lowered or lowered.endswith("no"):
+        hints.append("identifier_like")
+    return hints
+
+
+def _top_values(series: pd.Series, *, limit: int = 5) -> list[dict[str, Any]]:
+    counts = series.dropna().value_counts().head(limit)
+    return [
+        {
+            "value": _json_safe_scalar(value),
+            "count": int(count),
+        }
+        for value, count in counts.items()
+    ]
+
+
+def _temporal_profile(name: str, column: dict[str, Any], series: pd.Series) -> dict[str, Any] | None:
+    dtype = str(column.get("type") or column.get("kind") or column.get("inferred_kind") or "").lower()
+    lowered = name.lower()
+    is_date = "date" in dtype or "date" in lowered
+    is_time = "time" in dtype or "time" in lowered
+    if not (is_date or is_time or pd.api.types.is_datetime64_any_dtype(series)):
+        return None
+
+    if is_time and not is_date:
+        parsed = pd.to_datetime(series, format="%H:%M:%S", errors="coerce")
+        parsed_count = int(parsed.notna().sum())
+        if not parsed_count:
+            parsed = pd.to_datetime(series, errors="coerce", format="mixed")
+            parsed_count = int(parsed.notna().sum())
+        if not parsed_count:
+            return None
+        return {
+            "time": {
+                "count": parsed_count,
+                "min": parsed.min().strftime("%H:%M:%S"),
+                "max": parsed.max().strftime("%H:%M:%S"),
+            }
+        }
+
+    parsed = pd.to_datetime(series, errors="coerce", format="mixed")
+    parsed_count = int(parsed.notna().sum())
+    if not parsed_count:
+        return None
+    return {
+        "datetime": {
+            "count": parsed_count,
+            "min": _json_safe_scalar(parsed.min()),
+            "max": _json_safe_scalar(parsed.max()),
+        }
+    }
+
+
+def _round_percent(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round((numerator / denominator) * 100, 2)
+
+
+def _json_safe_scalar(value: Any) -> Any:
+    if pd.isna(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except ValueError:
+            pass
+    if isinstance(value, float):
+        return round(value, 6)
+    text = str(value)
+    return text[:120] if len(text) > 120 else value

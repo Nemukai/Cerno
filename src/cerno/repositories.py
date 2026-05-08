@@ -9,6 +9,7 @@ from cerno.db import DbConnection, DbRow, dumps_json, loads_json
 from cerno.models import (
     AccessStatus,
     Anomaly,
+    ApprovedEmail,
     AssetArtifact,
     AuditEvent,
     BetaCode,
@@ -1634,6 +1635,63 @@ def _row_to_beta_code(row: DbRow) -> BetaCode:
     )
 
 
+def _row_to_approved_email(row: DbRow) -> ApprovedEmail:
+    return ApprovedEmail(
+        email=row["email"],
+        note=row["note"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+class ApprovedEmailRepository:
+    def __init__(self, conn: DbConnection) -> None:
+        self.conn = conn
+
+    @staticmethod
+    def normalize(email: str) -> str:
+        return email.strip().lower()
+
+    def is_approved(self, email: str) -> bool:
+        normalized = self.normalize(email)
+        if not normalized:
+            return False
+        row = self.conn.execute(
+            "SELECT email FROM approved_emails WHERE email = ?",
+            (normalized,),
+        ).fetchone()
+        return row is not None
+
+    def add(self, email: str, note: str | None = None) -> ApprovedEmail:
+        normalized = self.normalize(email)
+        if not normalized:
+            raise ValueError("email cannot be empty")
+        now = _now().isoformat()
+        self.conn.execute(
+            """INSERT INTO approved_emails (email, note, created_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT (email) DO UPDATE SET note = excluded.note""",
+            (normalized, note, now),
+        )
+        row = self.conn.execute(
+            "SELECT * FROM approved_emails WHERE email = ?",
+            (normalized,),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"approved email not found after upsert: {normalized}")
+        return _row_to_approved_email(row)
+
+    def remove(self, email: str) -> bool:
+        cursor = self.conn.execute(
+            "DELETE FROM approved_emails WHERE email = ?",
+            (self.normalize(email),),
+        )
+        return cursor.rowcount > 0
+
+    def list_all(self) -> list[ApprovedEmail]:
+        rows = self.conn.execute("SELECT * FROM approved_emails ORDER BY created_at DESC").fetchall()
+        return [_row_to_approved_email(row) for row in rows]
+
+
 class UserRepository:
     def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
@@ -1645,18 +1703,17 @@ class UserRepository:
         email: str,
         name: str | None,
         picture: str | None,
-        operator_emails: set[str] | None = None,
+        email_approved: bool = False,
     ) -> User:
         now = _now().isoformat()
-        is_operator = operator_emails is not None and email.lower() in operator_emails
         existing = self.conn.execute(
             "SELECT * FROM users WHERE google_sub = ?", (google_sub,)
         ).fetchone()
         if existing is None:
             uid = new_id()
-            initial_status = "granted" if is_operator else "pending"
-            granted_at = now if is_operator else None
-            code_used = "OPERATOR" if is_operator else None
+            initial_status = "granted" if email_approved else "pending"
+            granted_at = now if email_approved else None
+            code_used = "EMAIL_ALLOWLIST" if email_approved else None
             self.conn.execute(
                 """INSERT INTO users
                    (id, google_sub, email, name, picture,
@@ -1680,17 +1737,26 @@ class UserRepository:
             if row is None:
                 raise LookupError(f"user not found after create: {uid}")
             return _row_to_user(row)
-        # Existing user: refresh profile + last_seen, and promote to granted if
-        # they're now in the operator list (operator_emails can change).
-        if is_operator and existing["access_status"] != "granted":
+        # Existing user: refresh profile + last_seen, then reconcile access
+        # against the email allowlist. Revoked users stay revoked.
+        if existing["access_status"] != "revoked" and email_approved:
             self.conn.execute(
                 """UPDATE users
                    SET email = ?, name = ?, picture = ?, last_seen_at = ?,
                        access_status = 'granted',
                        access_granted_at = COALESCE(access_granted_at, ?),
-                       access_code_used = COALESCE(access_code_used, 'OPERATOR')
+                       access_code_used = 'EMAIL_ALLOWLIST'
                    WHERE id = ?""",
                 (email, name, picture, now, now, existing["id"]),
+            )
+        elif existing["access_status"] == "granted":
+            self.conn.execute(
+                """UPDATE users
+                   SET email = ?, name = ?, picture = ?, last_seen_at = ?,
+                       access_status = 'pending',
+                       access_code_used = NULL
+                   WHERE id = ?""",
+                (email, name, picture, now, existing["id"]),
             )
         else:
             self.conn.execute(
@@ -1735,6 +1801,25 @@ class UserRepository:
             (now, code, user_id),
         )
         return self.get(user_id)
+
+    def sync_allowlist_status(self, user_id: str, *, email_approved: bool) -> User | None:
+        user = self.get(user_id)
+        if user is None:
+            return None
+        if user.access_status == "revoked":
+            return user
+        if email_approved:
+            return self.mark_granted(user_id, "EMAIL_ALLOWLIST")
+        if user.access_status == "granted":
+            self.conn.execute(
+                """UPDATE users
+                   SET access_status = 'pending',
+                       access_code_used = NULL
+                   WHERE id = ?""",
+                (user_id,),
+            )
+            return self.get(user_id)
+        return user
 
     def set_access_status(self, user_id: str, status: AccessStatus) -> User | None:
         self.conn.execute(

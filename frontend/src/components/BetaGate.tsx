@@ -1,11 +1,8 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { CernoLockup } from "./Brand";
-import {
-  RedeemError,
-  logout,
-  redeemBetaCode,
-  type CurrentUser,
-} from "../lib/auth";
+import { logout, type CurrentUser } from "../lib/auth";
+
+const CONTACT_EMAIL = "nik@nemukai.com";
 
 type BetaGateProps = {
   user: CurrentUser;
@@ -13,131 +10,101 @@ type BetaGateProps = {
   children: ReactNode;
 };
 
-export function BetaGate({ user, onUserUpdate, children }: BetaGateProps) {
+export function BetaGate({ user, children }: BetaGateProps) {
   if (user.access_status === "granted") {
     return <>{children}</>;
   }
   if (user.access_status === "revoked") {
-    return <RevokedScreen email={user.email} />;
+    return <WaitlistScreen user={user} revoked />;
   }
-  return <RedeemForm user={user} onUserUpdate={onUserUpdate} />;
+  return <WaitlistScreen user={user} />;
 }
 
-function RedeemForm({
+function WaitlistScreen({
   user,
-  onUserUpdate,
+  revoked = false,
 }: {
   user: CurrentUser;
-  onUserUpdate: (user: CurrentUser) => void;
+  revoked?: boolean;
 }) {
-  const [code, setCode] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!code.trim()) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const updated = await redeemBetaCode(code.trim());
-      onUserUpdate(updated);
-    } catch (e) {
-      if (e instanceof RedeemError) {
-        setError(e.message);
-      } else {
-        setError("Something went wrong. Please try again.");
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const onSignOut = async () => {
     await logout();
     window.location.reload();
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-tidepaper text-night-watch">
-      <div className="w-full max-w-md border border-drift bg-drift/10 px-8 py-10 shadow-sm">
-        <CernoLockup
-          markClassName="h-7 w-7 text-deep-sea"
-          wordmarkClassName="text-xl text-night-watch"
-        />
-        <h1 className="mt-6 font-serif text-xl font-medium">Beta access</h1>
-        <p className="mt-2 text-sm text-night-watch/70">
-          Cerno is in private beta. Enter the access code you were given to
-          continue.
-        </p>
-        <p className="mt-1 text-xs text-night-watch/50">
-          Signed in as <span className="text-night-watch">{user.email}</span>
-        </p>
-
-        <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-3">
-          <label className="text-xs uppercase tracking-wide text-night-watch/50">
-            Access code
-          </label>
-          <input
-            value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase())}
-            placeholder="CERNO-XXXX-XXXX"
-            autoFocus
-            spellCheck={false}
-            autoCapitalize="characters"
-            className="border border-drift bg-tidepaper px-3 py-2 font-mono text-sm uppercase tracking-wider text-night-watch outline-none focus:border-deep-sea"
+    <div className="min-h-screen overflow-hidden bg-tidepaper text-night-watch">
+      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-6 py-8">
+        <header className="flex items-center justify-between border-b border-drift pb-5">
+          <CernoLockup
+            markClassName="h-7 w-7 text-deep-sea"
+            wordmarkClassName="text-xl text-night-watch"
           />
-          {error ? (
-            <p className="text-sm text-red-600">{error}</p>
-          ) : null}
           <button
-            type="submit"
-            disabled={submitting || !code.trim()}
-            className="mt-2 bg-night-watch px-4 py-2 text-sm font-medium text-tidepaper hover:bg-deep-sea disabled:cursor-not-allowed disabled:opacity-50"
+            type="button"
+            onClick={onSignOut}
+            className="small-caps border border-drift px-4 py-2 text-xs text-night-watch/60 transition hover:border-night-watch hover:text-night-watch"
           >
-            {submitting ? "Verifying…" : "Continue"}
+            sign out
           </button>
-        </form>
+        </header>
 
-        <button
-          type="button"
-          onClick={onSignOut}
-          className="mt-6 text-xs text-night-watch/50 hover:text-night-watch"
-        >
-          Sign out
-        </button>
-      </div>
-    </div>
-  );
-}
+        <main className="grid flex-1 items-center gap-10 py-12 lg:grid-cols-[1.08fr_0.92fr]">
+          <section>
+            <div className="small-caps text-sm text-deep-sea">
+              private workspace access
+            </div>
+            <h1 className="mt-5 max-w-3xl font-serif text-5xl leading-[0.95] tracking-[-0.03em] text-night-watch md:text-7xl">
+              You are on the list to be reviewed.
+            </h1>
+            <p className="mt-7 max-w-xl text-lg leading-8 text-night-watch/65">
+              Cerno is currently invite-only. Access is verified against an
+              internal approved email list after Google sign-in.
+            </p>
+            <div className="mt-8 max-w-xl border border-drift bg-white/50 p-5">
+              <div className="small-caps text-xs text-night-watch/45">
+                signed in as
+              </div>
+              <div className="mt-2 break-all font-mono text-lg text-night-watch">
+                {user.email}
+              </div>
+            </div>
+          </section>
 
-function RevokedScreen({ email }: { email: string }) {
-  const onSignOut = async () => {
-    await logout();
-    window.location.reload();
-  };
-  return (
-    <div className="flex h-screen items-center justify-center bg-tidepaper text-night-watch">
-      <div className="w-full max-w-md border border-red-900/20 bg-red-50 px-8 py-10 shadow-sm">
-        <CernoLockup
-          markClassName="h-7 w-7 text-red-600"
-          wordmarkClassName="text-xl text-red-800"
-        />
-        <h1 className="mt-6 font-serif text-xl font-medium text-red-800">Access revoked</h1>
-        <p className="mt-2 text-sm text-red-900/70">
-          Your access to Cerno has been revoked. If you think this is a
-          mistake, contact the operator.
-        </p>
-        <p className="mt-1 text-xs text-red-900/50">
-          Signed in as <span className="text-red-800">{email}</span>
-        </p>
-        <button
-          type="button"
-          onClick={onSignOut}
-          className="mt-6 border border-red-900/20 px-4 py-2 text-sm font-medium text-red-800 hover:bg-red-100"
-        >
-          Sign out
-        </button>
+          <section className="relative border border-drift bg-[#fbf7ee] p-6 shadow-[0_24px_80px_rgba(42,38,31,0.08)]">
+            <div className="absolute right-5 top-5 grid grid-cols-2 gap-1">
+              <span className="h-2 w-2 bg-ember" />
+              <span className="h-2 w-2 bg-drift" />
+              <span className="h-2 w-2 bg-drift" />
+              <span className="h-2 w-2 bg-night-watch" />
+            </div>
+            <div className="small-caps text-xs text-night-watch/45">
+              access status
+            </div>
+            <div className="mt-12 border-y border-drift py-8">
+              <div className="font-mono text-4xl text-night-watch">
+                {revoked ? "revoked" : "waiting"}
+              </div>
+              <p className="mt-3 text-sm leading-6 text-night-watch/60">
+                {revoked
+                  ? "This account is not eligible for access right now."
+                  : "This account is not approved yet. Email Nik and ask to be added to the Cerno access list."}
+              </p>
+            </div>
+            <a
+              href={`mailto:${CONTACT_EMAIL}?subject=Cerno access request`}
+              className="mt-6 flex items-center justify-between border border-night-watch bg-night-watch px-5 py-4 text-sm text-tidepaper transition hover:bg-deep-sea"
+            >
+              <span>Email {CONTACT_EMAIL}</span>
+              <span className="font-mono">-&gt;</span>
+            </a>
+            <div className="mt-5 grid grid-cols-3 border border-drift text-center font-mono text-xs text-night-watch/45">
+              <div className="border-r border-drift py-3">google</div>
+              <div className="border-r border-drift py-3">verified</div>
+              <div className="py-3">manual</div>
+            </div>
+          </section>
+        </main>
       </div>
     </div>
   );

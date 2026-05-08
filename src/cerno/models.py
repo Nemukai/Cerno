@@ -29,7 +29,26 @@ ProcessingJobStatus = Literal["queued", "running", "succeeded", "failed"]
 UploadIntentStatus = Literal["pending", "uploaded", "processing", "processed", "failed"]
 InferredKind = Literal["string", "int", "float", "date", "datetime", "bool", "category"]
 LinkDirection = Literal["many_to_one", "one_to_one", "many_to_many"]
-WidgetKind = Literal["kpi", "bar", "line", "pie", "table", "markdown"]
+WidgetKind = Literal[
+    "kpi",
+    "bar",
+    "horizontal_bar",
+    "grouped_bar",
+    "stacked_bar",
+    "line",
+    "area",
+    "stacked_area",
+    "pie",
+    "histogram",
+    "scatter",
+    "heatmap",
+    "boxplot",
+    "waterfall",
+    "sankey",
+    "timeline",
+    "table",
+    "markdown",
+]
 LinkSource = Literal["discovered", "user_added"]
 LinkAction = Literal["confirm", "reject", "edit"]
 ReviewStatus = Literal["dismissed", "escalated"]
@@ -69,6 +88,12 @@ class BetaCode(BaseModel):
     uses_count: int = 0
     created_at: datetime
     expires_at: datetime | None = None
+
+
+class ApprovedEmail(BaseModel):
+    email: str
+    note: str | None = None
+    created_at: datetime
 
 
 class Session(BaseModel):

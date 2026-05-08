@@ -32,30 +32,6 @@ export async function logout(): Promise<void> {
   });
 }
 
-export class RedeemError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = "RedeemError";
-  }
-}
-
-export async function redeemBetaCode(code: string): Promise<CurrentUser> {
-  const res = await fetch(`${AUTH_BASE}/redeem`, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ detail: "request failed" }));
-    throw new RedeemError(res.status, body.detail ?? "request failed");
-  }
-  return (await res.json()) as CurrentUser;
-}
-
 export type UseUser = {
   user: CurrentUser | null;
   loading: boolean;
