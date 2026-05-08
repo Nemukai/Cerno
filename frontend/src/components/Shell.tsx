@@ -1,4 +1,5 @@
 import { type ReactNode } from "react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 export type TabKey = "ask" | "insights" | "files";
 
@@ -58,25 +59,32 @@ export function Shell({
       </div>
       <div className="min-h-0 flex flex-1">
         {sidebarOpen ? (
-          <div className="hairline relative w-[270px] shrink-0 border-r bg-[#fbfaf8]">
-            {sidebar}
-            <button
-              type="button"
-              onClick={onToggleSidebar}
-              className="small-caps absolute bottom-4 left-5 right-5 border border-neutral-300 bg-white px-3 py-2 text-xs text-neutral-500 hover:border-ember hover:text-ember"
-            >
-              hide sidebar
-            </button>
+          <div className="hairline flex w-[270px] shrink-0 flex-col border-r bg-[#fbfaf8]">
+            <div className="min-h-0 flex-1">{sidebar}</div>
+            <div className="flex justify-end border-t border-neutral-200/70 p-3">
+              <button
+                type="button"
+                onClick={onToggleSidebar}
+                className="grid size-9 place-items-center border border-neutral-300 bg-white text-neutral-500 transition hover:border-ember hover:text-ember"
+                aria-label="Hide sidebar"
+                title="Hide sidebar"
+              >
+                <PanelLeftClose size={17} strokeWidth={1.8} />
+                <span className="sr-only">Hide sidebar</span>
+              </button>
+            </div>
           </div>
         ) : (
-          <div className="relative w-0 shrink-0">
+          <div className="hairline flex w-12 shrink-0 flex-col justify-end border-r bg-[#fbfaf8] p-1.5">
             <button
               type="button"
               onClick={onToggleSidebar}
-              className="small-caps absolute bottom-4 left-4 z-20 w-32 border border-neutral-300 bg-white px-3 py-2 text-xs text-neutral-500 shadow-[0_10px_30px_rgba(14,14,14,0.08)] hover:border-ember hover:text-ember"
+              className="grid size-9 place-items-center border border-neutral-300 bg-white text-neutral-500 transition hover:border-ember hover:text-ember"
+              aria-label="Show sidebar"
               title="Show sidebar"
             >
-              show sidebar
+              <PanelLeftOpen size={17} strokeWidth={1.8} />
+              <span className="sr-only">Show sidebar</span>
             </button>
           </div>
         )}
