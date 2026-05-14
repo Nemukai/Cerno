@@ -9,6 +9,7 @@ from pathlib import Path
 
 from cerno.config import Settings, get_settings
 from cerno.db import DbConnection, connect
+from cerno.log_config import configure_logging
 from cerno.llm import LLMClient
 from cerno.models import ProcessingJob
 from cerno.repositories import (
@@ -37,14 +38,6 @@ def _worker_id(settings: Settings) -> str:
     if configured:
         return configured
     return f"{socket.gethostname()}:{os.getpid()}"
-
-
-def _configure_logging(settings: Settings) -> None:
-    level = getattr(logging, settings.log_level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
 
 
 def _append_event(
@@ -324,7 +317,7 @@ def run_once(settings: Settings, worker_id: str) -> bool:
 
 def main() -> None:
     settings = get_settings()
-    _configure_logging(settings)
+    configure_logging(settings)
     worker_id = _worker_id(settings)
     logger.info("event=worker.started worker_id=%s", worker_id)
     while True:

@@ -14,6 +14,7 @@ from cerno.api.chat import router as chat_router
 from cerno.api.dashboards import router as dashboards_router
 from cerno.api.sessions import router as sessions_router
 from cerno.config import get_settings
+from cerno.log_config import configure_logging
 
 
 @asynccontextmanager
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    configure_logging(settings)
     settings.validate_runtime_safety()
     app = FastAPI(
         title="Cerno",

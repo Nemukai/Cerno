@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from cerno.config import Settings
 from cerno.repositories import LLMUsageRepository
 
 DEFAULT_MAX_LLM_CALLS = 20
+logger = logging.getLogger(__name__)
 
 
 class LLMError(RuntimeError):
@@ -318,11 +320,30 @@ class LLMClient:
         for attempt in range(max_retries + 1):
             try:
                 response = await self._transport.post(url, json=body, headers=self._headers())
+                request_id = _response_request_id(response)
                 if response.status_code == 429:
+                    logger.warning(
+                        "event=llm.http.rate_limited status=%s request_id=%s body=%s",
+                        response.status_code,
+                        request_id,
+                        _preview_response_text(response.text),
+                    )
                     raise LLMRateLimitError(f"rate limited: {response.text}")
                 if response.status_code >= 500:
+                    logger.error(
+                        "event=llm.http.server_error status=%s request_id=%s body=%s",
+                        response.status_code,
+                        request_id,
+                        _preview_response_text(response.text),
+                    )
                     raise LLMError(f"llm server error {response.status_code}: {response.text}")
                 if response.status_code >= 400:
+                    logger.error(
+                        "event=llm.http.client_error status=%s request_id=%s body=%s",
+                        response.status_code,
+                        request_id,
+                        _preview_response_text(response.text),
+                    )
                     raise LLMError(f"llm client error {response.status_code}: {response.text}")
                 parsed: dict[str, Any] = response.json()
                 return parsed
@@ -347,8 +368,16 @@ class LLMClient:
             async with client.stream("POST", url, json=body, headers=self._headers()) as response:
                 if response.status_code >= 400:
                     text = await response.aread()
+                    body_text = text.decode(errors="replace")
+                    request_id = _response_request_id(response)
+                    logger.error(
+                        "event=llm.stream.http_error status=%s request_id=%s body=%s",
+                        response.status_code,
+                        request_id,
+                        _preview_response_text(body_text),
+                    )
                     raise LLMError(
-                        f"llm stream error {response.status_code}: {text.decode(errors='replace')}"
+                        f"llm stream error status={response.status_code} request_id={request_id or 'unknown'}"
                     )
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
@@ -366,6 +395,10 @@ class LLMClient:
                     try:
                         event = json.loads(payload)
                     except json.JSONDecodeError:
+                        logger.warning(
+                            "event=llm.stream.invalid_json payload=%s",
+                            _preview_response_text(payload),
+                        )
                         continue
                     yield event
 
@@ -393,6 +426,17 @@ class _HttpxTransport:
     ) -> httpx.Response:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             return await client.post(url, json=json, headers=headers)
+
+
+def _response_request_id(response: httpx.Response) -> str | None:
+    return response.headers.get("x-request-id") or response.headers.get("openai-request-id")
+
+
+def _preview_response_text(text: str, limit: int = 2000) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}..."
 
 
 def _parse_response(raw: dict[str, Any]) -> LLMResponse:

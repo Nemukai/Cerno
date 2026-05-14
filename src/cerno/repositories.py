@@ -1155,6 +1155,7 @@ class ChatRepository:
         turn_id: str,
         role: MessageRole,
         content: str,
+        tool_call_id: str | None = None,
         tool_name: str | None = None,
         tool_args: dict[str, Any] | None = None,
         tool_result: dict[str, Any] | None = None,
@@ -1163,13 +1164,14 @@ class ChatRepository:
         created_at = _now()
         self.conn.execute(
             """INSERT INTO chat_messages
-               (id, turn_id, role, content, tool_name, tool_args, tool_result, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, turn_id, role, content, tool_call_id, tool_name, tool_args, tool_result, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 mid,
                 turn_id,
                 role,
                 content,
+                tool_call_id,
                 tool_name,
                 dumps_json(tool_args) if tool_args is not None else None,
                 dumps_json(tool_result) if tool_result is not None else None,
@@ -1181,6 +1183,7 @@ class ChatRepository:
             turn_id=turn_id,
             role=role,
             content=content,
+            tool_call_id=tool_call_id,
             tool_name=tool_name,
             tool_args=tool_args,
             tool_result=tool_result,
@@ -2035,6 +2038,7 @@ def _row_to_message(row: DbRow) -> ChatMessage:
         turn_id=row["turn_id"],
         role=row["role"],
         content=row["content"],
+        tool_call_id=row["tool_call_id"] if "tool_call_id" in row.keys() else None,
         tool_name=row["tool_name"],
         tool_args=loads_json(row["tool_args"]),
         tool_result=loads_json(row["tool_result"]),

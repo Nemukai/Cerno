@@ -374,6 +374,7 @@ class ChatMessage(BaseModel):
     turn_id: str
     role: MessageRole
     content: str
+    tool_call_id: str | None = None
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
     tool_result: dict[str, Any] | None = None

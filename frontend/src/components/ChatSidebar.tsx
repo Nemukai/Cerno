@@ -402,6 +402,7 @@ function fallbackMessages(turn: ChatTurn): ChatMessage[] {
       turn_id: turn.id,
       role: "user",
       content: turn.user_message,
+      tool_call_id: null,
       tool_name: null,
       tool_args: null,
       tool_result: null,
@@ -414,6 +415,7 @@ function fallbackMessages(turn: ChatTurn): ChatMessage[] {
       turn_id: turn.id,
       role: "assistant",
       content: turn.assistant_message,
+      tool_call_id: null,
       tool_name: null,
       tool_args: null,
       tool_result: null,
@@ -553,6 +555,15 @@ function findToolResult(
   messages: ChatMessage[],
   toolCallIndex: number,
 ): ChatMessage | null {
+  const toolCall = messages[toolCallIndex];
+  if (toolCall?.tool_call_id) {
+    return (
+      messages.find(
+        (message) =>
+          message.role === "tool" && message.tool_call_id === toolCall.tool_call_id,
+      ) ?? null
+    );
+  }
   for (let i = toolCallIndex + 1; i < messages.length; i += 1) {
     const message = messages[i];
     if (!message) continue;

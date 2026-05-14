@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -33,6 +35,9 @@ from cerno.services.ingest import slugify_table_name
 from cerno.services.reingest import ColumnSpec, FileSpec, ReingestError, reingest_file
 from cerno.services.tools import ToolContext, ToolTable, build_tool_registry
 from cerno.storage import ObjectStore, get_object_store
+
+logger = logging.getLogger(__name__)
+USER_SAFE_CHAT_ERROR = "Something went wrong. Please try again."
 
 SYSTEM_PROMPT = (
     "You are Cerno, a plain-English data analyst. You are chatting with a non-technical "
@@ -130,6 +135,12 @@ async def run_chat_turn(
             on_message=on_message,
         )
     except Exception:
+        logger.exception(
+            "event=chat.turn.failed session_id=%s turn_id=%s conversation_id=%s",
+            session_id,
+            runtime.turn.id,
+            runtime.conversation_id,
+        )
         chat_repo.set_turn_state(runtime.turn.id, "failed")
         chat_repo.conn.commit()
         raise
@@ -183,17 +194,36 @@ async def stream_chat_turn(
     artifacts_repo: AssetArtifactRepository,
     data_docs_repo: DataDocRepository,
 ) -> AsyncIterator[dict[str, Any]]:
-    runtime = await _prepare_chat_runtime(
-        session_id=session_id,
-        user_message=user_message,
-        turn_id=turn_id,
-        settings=settings,
-        llm_client=llm_client,
-        files_repo=files_repo,
-        chat_repo=chat_repo,
-        artifacts_repo=artifacts_repo,
-        data_docs_repo=data_docs_repo,
-        schemas_repo=schemas_repo,
+    try:
+        runtime = await _prepare_chat_runtime(
+            session_id=session_id,
+            user_message=user_message,
+            turn_id=turn_id,
+            settings=settings,
+            llm_client=llm_client,
+            files_repo=files_repo,
+            chat_repo=chat_repo,
+            artifacts_repo=artifacts_repo,
+            data_docs_repo=data_docs_repo,
+            schemas_repo=schemas_repo,
+        )
+    except Exception:
+        error_id = _error_id()
+        logger.exception(
+            "event=chat.stream.prepare_failed error_id=%s session_id=%s requested_turn_id=%s",
+            error_id,
+            session_id,
+            turn_id,
+        )
+        yield {"type": "error", "turn_id": turn_id or "", "message": USER_SAFE_CHAT_ERROR}
+        return
+
+    logger.info(
+        "event=chat.stream.started session_id=%s turn_id=%s conversation_id=%s message_chars=%s",
+        session_id,
+        runtime.turn.id,
+        runtime.conversation_id,
+        len(user_message),
     )
     yield {
         "type": "turn_started",
@@ -210,9 +240,22 @@ async def stream_chat_turn(
 
     try:
         while True:
+            if call_count >= settings.chat_max_llm_calls:
+                raise RuntimeError("chat reached the maximum LLM call limit before a final answer")
             call_count += 1
             tool_outputs: list[dict[str, Any]] = []
             streamed_calls: dict[str, dict[str, Any]] = {}
+            completed_response: dict[str, Any] | None = None
+            streamed_text = ""
+
+            logger.info(
+                "event=chat.llm.stream.begin session_id=%s turn_id=%s conversation_id=%s call_index=%s input_items=%s",
+                session_id,
+                runtime.turn.id,
+                runtime.conversation_id,
+                call_count,
+                len(pending_input),
+            )
 
             async for event in llm_client.stream_response(
                 input=pending_input,
@@ -231,11 +274,19 @@ async def stream_chat_turn(
                     response = event.get("response") or {}
                     if isinstance(response, dict) and isinstance(response.get("id"), str):
                         response_id = response["id"]
+                    logger.info(
+                        "event=chat.llm.response.created session_id=%s turn_id=%s call_index=%s response_id=%s",
+                        session_id,
+                        runtime.turn.id,
+                        call_count,
+                        response_id,
+                    )
                     continue
                 if event_type == "response.output_text.delta":
                     delta = str(event.get("delta") or "")
                     if delta:
                         final_message += delta
+                        streamed_text += delta
                         yield {"type": "assistant_delta", "turn_id": runtime.turn.id, "delta": delta}
                     continue
                 if "reasoning" in event_type and event_type.endswith(".delta"):
@@ -257,7 +308,7 @@ async def stream_chat_turn(
                 if event_type == "response.output_item.added":
                     item = event.get("item") or {}
                     if isinstance(item, dict) and item.get("type") == "function_call":
-                        key = _stream_tool_key(event, item)
+                        key = _merge_streamed_tool_call(streamed_calls, event, item)
                         streamed_calls[key] = {
                             **streamed_calls.get(key, {}),
                             "call_id": item.get("call_id") or item.get("id") or key,
@@ -275,61 +326,103 @@ async def stream_chat_turn(
                     item = event.get("item") or {}
                     if not isinstance(item, dict) or item.get("type") != "function_call":
                         continue
-                    key = _stream_tool_key(event, item)
+                    key = _merge_streamed_tool_call(streamed_calls, event, item)
                     call = streamed_calls.get(key, {})
-                    tool_call = ToolCall(
-                        call_id=str(item.get("call_id") or call.get("call_id") or item.get("id") or key),
-                        name=str(item.get("name") or call.get("name") or ""),
-                        arguments=_parse_tool_arguments(item.get("arguments") or call.get("arguments") or "{}"),
-                    )
-                    _persist_tool_call(chat_repo, runtime.turn.id, tool_call)
-                    chat_repo.conn.commit()
-                    yield {
-                        "type": "tool_call_done",
-                        "turn_id": runtime.turn.id,
-                        "call_id": tool_call.call_id,
-                        "name": tool_call.name,
-                        "arguments": tool_call.arguments,
+                    streamed_calls[key] = {
+                        **call,
+                        "call_id": item.get("call_id") or call.get("call_id") or item.get("id") or key,
+                        "name": item.get("name") or call.get("name") or "",
+                        "arguments": item.get("arguments") or call.get("arguments") or "{}",
                     }
-                    tool = runtime.registry.get(tool_call.name)
-                    try:
-                        result = await tool.handler(tool_call.arguments)
-                    except Exception as exc:
-                        result = {
-                            "ok": False,
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
-                    payload = json.dumps(result, default=str)
-                    chat_repo.append_message(
-                        turn_id=runtime.turn.id,
-                        role="tool",
-                        content=payload,
-                        tool_result=result,
-                    )
-                    chat_repo.conn.commit()
-                    yield {
-                        "type": "tool_result",
-                        "turn_id": runtime.turn.id,
-                        "call_id": tool_call.call_id,
-                        "name": tool_call.name,
-                        "result": result,
-                    }
-                    tool_outputs.append(
-                        {
-                            "type": "function_call_output",
-                            "call_id": tool_call.call_id,
-                            "output": payload,
-                        }
-                    )
                     continue
                 if event_type == "response.completed":
                     response = event.get("response") or {}
                     if isinstance(response, dict):
                         response_id = response.get("id") or response_id
+                        completed_response = response
+
+            tool_calls = (
+                _tool_calls_from_completed_response(completed_response)
+                if completed_response is not None
+                else []
+            )
+            if not tool_calls:
+                tool_calls = _tool_calls_from_streamed_items(streamed_calls)
+            completed_text = _assistant_text_from_completed_response(completed_response)
+            if completed_text and not streamed_text:
+                final_message += completed_text
+                yield {
+                    "type": "assistant_delta",
+                    "turn_id": runtime.turn.id,
+                    "delta": completed_text,
+                }
+
+            logger.info(
+                "event=chat.llm.stream.completed session_id=%s turn_id=%s conversation_id=%s call_index=%s response_id=%s tool_calls=%s assistant_chars=%s",
+                session_id,
+                runtime.turn.id,
+                runtime.conversation_id,
+                call_count,
+                response_id,
+                len(tool_calls),
+                len(final_message),
+            )
+
+            for tool_call in tool_calls:
+                if not tool_call.call_id:
+                    raise RuntimeError(f"tool call {tool_call.name or '<unnamed>'} is missing call_id")
+                result = await _execute_tool_call(
+                    runtime=runtime,
+                    tool_call=tool_call,
+                    session_id=session_id,
+                    call_index=call_count,
+                )
+                payload = json.dumps(result, default=str)
+                _persist_tool_call(chat_repo, runtime.turn.id, tool_call)
+                chat_repo.append_message(
+                    turn_id=runtime.turn.id,
+                    role="tool",
+                    content=payload,
+                    tool_call_id=tool_call.call_id,
+                    tool_result=result,
+                )
+                chat_repo.conn.commit()
+                logger.info(
+                    "event=chat.tool.persisted session_id=%s turn_id=%s call_id=%s tool_name=%s result_ok=%s payload_bytes=%s",
+                    session_id,
+                    runtime.turn.id,
+                    tool_call.call_id,
+                    tool_call.name,
+                    result.get("ok"),
+                    len(payload.encode()),
+                )
+                yield {
+                    "type": "tool_call_done",
+                    "turn_id": runtime.turn.id,
+                    "call_id": tool_call.call_id,
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                }
+                yield {
+                    "type": "tool_result",
+                    "turn_id": runtime.turn.id,
+                    "call_id": tool_call.call_id,
+                    "name": tool_call.name,
+                    "result": result,
+                }
+                tool_outputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": tool_call.call_id,
+                        "output": payload,
+                    }
+                )
 
             if tool_outputs and call_count < settings.chat_max_llm_calls:
                 pending_input = tool_outputs
                 continue
+            if tool_outputs:
+                raise RuntimeError("chat reached the maximum LLM call limit before a final answer")
             break
 
         final_chat_message = None
@@ -362,6 +455,16 @@ async def stream_chat_turn(
             },
         )
         chat_repo.conn.commit()
+        logger.info(
+            "event=chat.stream.completed session_id=%s turn_id=%s conversation_id=%s response_id=%s llm_calls=%s assistant_chars=%s widgets=%s",
+            session_id,
+            runtime.turn.id,
+            runtime.conversation_id,
+            response_id,
+            call_count,
+            len(final_message),
+            len(runtime.ctx.rendered_widgets),
+        )
         yield {
             "type": "done",
             "turn_id": runtime.turn.id,
@@ -370,10 +473,20 @@ async def stream_chat_turn(
             "response_id": response_id,
             "widgets": [widget.model_dump(mode="json") for widget in runtime.ctx.rendered_widgets],
         }
-    except Exception as exc:
+    except Exception:
+        error_id = _error_id()
+        logger.exception(
+            "event=chat.stream.failed error_id=%s session_id=%s turn_id=%s conversation_id=%s response_id=%s llm_calls=%s",
+            error_id,
+            session_id,
+            runtime.turn.id,
+            runtime.conversation_id,
+            response_id,
+            call_count,
+        )
         chat_repo.set_turn_state(runtime.turn.id, "failed")
         chat_repo.conn.commit()
-        yield {"type": "error", "turn_id": runtime.turn.id, "message": str(exc)}
+        yield {"type": "error", "turn_id": runtime.turn.id, "message": USER_SAFE_CHAT_ERROR}
 
 
 async def _prepare_chat_runtime(
@@ -398,6 +511,26 @@ async def _prepare_chat_runtime(
             user_message=user_message,
             title=_default_turn_title(user_message),
             metadata={"version": 2},
+        )
+    elif turn.state == "failed":
+        previous_turn_id = turn.id
+        previous_conversation_id = str(turn.metadata.get("openai_conversation_id") or "")
+        turn = chat_repo.create_turn(
+            session_id=session_id,
+            user_message=user_message,
+            title=_default_turn_title(user_message),
+            metadata={
+                "version": 2,
+                "recovered_from_turn_id": previous_turn_id,
+                "recovered_from_conversation_id": previous_conversation_id,
+            },
+        )
+        logger.info(
+            "event=chat.turn.recovered session_id=%s failed_turn_id=%s new_turn_id=%s previous_conversation_id=%s",
+            session_id,
+            previous_turn_id,
+            turn.id,
+            previous_conversation_id,
         )
     else:
         chat_repo.set_turn_state(turn.id, "pending")
@@ -829,6 +962,7 @@ def _persist_loop_message(
                     turn_id=turn_id,
                     role="assistant",
                     content=content,
+                    tool_call_id=tc.get("id") or tc.get("tool_call_id"),
                     tool_name=fn.get("name"),
                     tool_args=args,
                 )
@@ -845,6 +979,7 @@ def _persist_loop_message(
             turn_id=turn_id,
             role="tool",
             content=raw if isinstance(raw, str) else json.dumps(raw),
+            tool_call_id=message.get("tool_call_id"),
             tool_result=result if isinstance(result, dict) else {"value": result},
         )
     return None
@@ -855,9 +990,54 @@ def _persist_tool_call(chat_repo: ChatRepository, turn_id: str, call: ToolCall) 
         turn_id=turn_id,
         role="assistant",
         content="",
+        tool_call_id=call.call_id,
         tool_name=call.name,
         tool_args=call.arguments,
     )
+
+
+async def _execute_tool_call(
+    *,
+    runtime: ChatRuntime,
+    tool_call: ToolCall,
+    session_id: str,
+    call_index: int,
+) -> dict[str, Any]:
+    logger.info(
+        "event=chat.tool.started session_id=%s turn_id=%s conversation_id=%s call_index=%s call_id=%s tool_name=%s arg_keys=%s",
+        session_id,
+        runtime.turn.id,
+        runtime.conversation_id,
+        call_index,
+        tool_call.call_id,
+        tool_call.name,
+        sorted(tool_call.arguments.keys()),
+    )
+    try:
+        tool = runtime.registry.get(tool_call.name)
+        result = await tool.handler(tool_call.arguments)
+        if not isinstance(result, dict):
+            result = {"ok": True, "value": result}
+        logger.info(
+            "event=chat.tool.completed session_id=%s turn_id=%s call_id=%s tool_name=%s result_ok=%s result_keys=%s",
+            session_id,
+            runtime.turn.id,
+            tool_call.call_id,
+            tool_call.name,
+            result.get("ok"),
+            sorted(result.keys()),
+        )
+        return result
+    except Exception as exc:
+        logger.exception(
+            "event=chat.tool.failed session_id=%s turn_id=%s conversation_id=%s call_id=%s tool_name=%s",
+            session_id,
+            runtime.turn.id,
+            runtime.conversation_id,
+            tool_call.call_id,
+            tool_call.name,
+        )
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _update_turn_metadata(
@@ -889,6 +1069,99 @@ def _stream_tool_key(event: dict[str, Any], item: dict[str, Any] | None = None) 
     return "tool_call"
 
 
+def _merge_streamed_tool_call(
+    streamed_calls: dict[str, dict[str, Any]],
+    event: dict[str, Any],
+    item: dict[str, Any],
+) -> str:
+    key = _stream_tool_key(event, item)
+    alternate_keys = [
+        _stream_output_index_key(event),
+        item.get("id") if isinstance(item.get("id"), str) else None,
+        event.get("item_id") if isinstance(event.get("item_id"), str) else None,
+        event.get("output_item_id") if isinstance(event.get("output_item_id"), str) else None,
+    ]
+    for alternate_key in alternate_keys:
+        if not alternate_key or alternate_key == key or alternate_key not in streamed_calls:
+            continue
+        pending = streamed_calls.pop(alternate_key)
+        current = streamed_calls.get(key, {})
+        streamed_calls[key] = {**pending, **current}
+    return key
+
+
+def _stream_output_index_key(event: dict[str, Any]) -> str | None:
+    output_index = event.get("output_index")
+    if isinstance(output_index, int):
+        return f"output:{output_index}"
+    return None
+
+
+def _tool_calls_from_completed_response(response: dict[str, Any] | None) -> list[ToolCall]:
+    if not response:
+        return []
+    output = response.get("output")
+    if not isinstance(output, list):
+        return []
+    tool_calls: list[ToolCall] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        call_id = str(item.get("call_id") or item.get("id") or "")
+        if not item.get("call_id") and item.get("id"):
+            logger.warning(
+                "event=chat.tool.missing_call_id_fallback response_id=%s output_item_id=%s tool_name=%s",
+                response.get("id"),
+                item.get("id"),
+                item.get("name"),
+            )
+        tool_calls.append(
+            ToolCall(
+                call_id=call_id,
+                name=str(item.get("name") or ""),
+                arguments=_parse_tool_arguments(item.get("arguments") or "{}"),
+            )
+        )
+    return tool_calls
+
+
+def _assistant_text_from_completed_response(response: dict[str, Any] | None) -> str:
+    if not response:
+        return ""
+    output = response.get("output")
+    if not isinstance(output, list):
+        return ""
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "output_text":
+                parts.append(str(part.get("text") or ""))
+    return "".join(parts)
+
+
+def _tool_calls_from_streamed_items(streamed_calls: dict[str, dict[str, Any]]) -> list[ToolCall]:
+    tool_calls: list[ToolCall] = []
+    seen: set[str] = set()
+    for key, item in streamed_calls.items():
+        call_id = str(item.get("call_id") or key)
+        if call_id in seen:
+            continue
+        seen.add(call_id)
+        tool_calls.append(
+            ToolCall(
+                call_id=call_id,
+                name=str(item.get("name") or ""),
+                arguments=_parse_tool_arguments(item.get("arguments") or "{}"),
+            )
+        )
+    return tool_calls
+
+
 def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -899,6 +1172,10 @@ def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {"_raw": raw}
     return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+
+def _error_id() -> str:
+    return uuid.uuid4().hex[:12]
 
 
 def _default_turn_title(user_message: str) -> str:

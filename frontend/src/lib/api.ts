@@ -24,6 +24,7 @@ export type Health = {
 };
 
 const API_BASE = "/api";
+const USER_SAFE_ERROR = "Something went wrong. Please try again.";
 
 export class UnauthorizedError extends Error {
   constructor() {
@@ -248,8 +249,8 @@ export async function streamChat(
   });
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText} ${text}`.trim());
+    await res.text().catch(() => "");
+    throw new Error(USER_SAFE_ERROR);
   }
 
   const reader = res.body.getReader();
@@ -269,6 +270,12 @@ export async function streamChat(
       if (!dataLine) continue;
       onEvent(JSON.parse(dataLine.slice(6)) as ChatStreamEvent);
     }
+  }
+  if (buffer.trim()) {
+    const dataLine = buffer
+      .split("\n")
+      .find((line) => line.startsWith("data: "));
+    if (dataLine) onEvent(JSON.parse(dataLine.slice(6)) as ChatStreamEvent);
   }
 }
 

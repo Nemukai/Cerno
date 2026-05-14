@@ -93,6 +93,7 @@ type AppRoute =
   | { kind: "session"; sessionId: string; tab: TabKey; legacyFiles?: boolean };
 
 const SESSION_TABS: TabKey[] = ["ask", "insights"];
+const USER_SAFE_CHAT_ERROR = "Something went wrong. Please try again.";
 
 function isTabKey(value: string | undefined): value is TabKey {
   return SESSION_TABS.includes(value as TabKey);
@@ -815,10 +816,11 @@ export function App() {
               return;
             }
             if (event.type === "error") {
+              const message = event.message || USER_SAFE_CHAT_ERROR;
               setLiveChat((current) =>
-                current ? { ...current, turnId: event.turn_id, error: event.message } : current,
+                current ? { ...current, turnId: event.turn_id || current.turnId, error: message } : current,
               );
-              setError(event.message);
+              setError(message);
             }
           },
         );
@@ -826,7 +828,12 @@ export function App() {
         await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
         setLiveChat(null);
       } catch (err) {
-        setError((err as Error).message);
+        const message =
+          err instanceof Error && err.message === "unauthorized"
+            ? err.message
+            : USER_SAFE_CHAT_ERROR;
+        setError(message);
+        setLiveChat((current) => (current ? { ...current, error: message } : current));
       } finally {
         setSending(false);
       }

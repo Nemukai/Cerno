@@ -9,7 +9,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-POSTGRES_SCHEMA_VERSION = 5
+POSTGRES_SCHEMA_VERSION = 6
 
 
 class DbRow:
@@ -225,6 +225,10 @@ _POSTGRES_MIGRATIONS = {
           AND lower(email) NOT IN (SELECT lower(email) FROM approved_emails)
         """,
     ],
+    6: [
+        "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tool_call_id TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_messages_tool_call ON chat_messages(turn_id, tool_call_id)",
+    ],
 }
 
 
@@ -400,6 +404,7 @@ _POSTGRES_SCHEMA = [
         turn_id TEXT NOT NULL REFERENCES chat_turns(id) ON DELETE CASCADE,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        tool_call_id TEXT,
         tool_name TEXT,
         tool_args TEXT,
         tool_result TEXT,

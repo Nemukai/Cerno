@@ -205,6 +205,7 @@ export type ChatMessage = {
   turn_id: string;
   role: MessageRole;
   content: string;
+  tool_call_id: string | null;
   tool_name: string | null;
   tool_args: Record<string, unknown> | null;
   tool_result: Record<string, unknown> | null;

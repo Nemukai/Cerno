@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -24,6 +25,8 @@ from cerno.repositories import (
 from cerno.services.chat import run_chat_turn, stream_chat_turn
 
 router = APIRouter(tags=["chat"])
+logger = logging.getLogger(__name__)
+USER_SAFE_CHAT_ERROR = "Something went wrong. Please try again."
 
 
 def _require_session_owned(conn: DbConnection, session_id: str, user_id: str) -> None:
@@ -95,7 +98,13 @@ async def post_chat(
             data_docs_repo=DataDocRepository(conn),
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.exception(
+            "event=chat.request.failed session_id=%s user_id=%s turn_id=%s",
+            session_id,
+            user.id,
+            body.turn_id,
+        )
+        raise HTTPException(status_code=500, detail=USER_SAFE_CHAT_ERROR) from exc
     return ChatResponse(
         turn_id=result.turn.id,
         assistant_message=result.assistant_message,
@@ -123,21 +132,35 @@ async def stream_chat(
         raise HTTPException(status_code=400, detail="message is required")
 
     async def events() -> AsyncIterator[str]:
-        async for event in stream_chat_turn(
-            session_id=session_id,
-            user_message=message,
-            turn_id=body.turn_id,
-            settings=settings,
-            llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
-            files_repo=FileRepository(conn),
-            schemas_repo=SchemaRepository(conn),
-            chat_repo=ChatRepository(conn),
-            chat_artifacts_repo=ChatArtifactRepository(conn),
-            artifacts_repo=AssetArtifactRepository(conn),
-            data_docs_repo=DataDocRepository(conn),
-        ):
-            event_name = str(event.get("type") or "message")
-            yield f"event: {event_name}\ndata: {json.dumps(event, default=str)}\n\n"
+        try:
+            async for event in stream_chat_turn(
+                session_id=session_id,
+                user_message=message,
+                turn_id=body.turn_id,
+                settings=settings,
+                llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
+                files_repo=FileRepository(conn),
+                schemas_repo=SchemaRepository(conn),
+                chat_repo=ChatRepository(conn),
+                chat_artifacts_repo=ChatArtifactRepository(conn),
+                artifacts_repo=AssetArtifactRepository(conn),
+                data_docs_repo=DataDocRepository(conn),
+            ):
+                event_name = str(event.get("type") or "message")
+                yield f"event: {event_name}\ndata: {json.dumps(event, default=str)}\n\n"
+        except Exception:
+            logger.exception(
+                "event=chat.stream.unhandled session_id=%s user_id=%s turn_id=%s",
+                session_id,
+                user.id,
+                body.turn_id,
+            )
+            event = {
+                "type": "error",
+                "turn_id": body.turn_id or "",
+                "message": USER_SAFE_CHAT_ERROR,
+            }
+            yield f"event: error\ndata: {json.dumps(event, default=str)}\n\n"
 
     return StreamingResponse(
         events(),
