@@ -1922,13 +1922,22 @@ class LLMUsageRepository:
         ).fetchone()
         return int(row["tokens_used"]) if row else 0
 
-    def add_tokens(self, user_id: str, day: str, tokens: int) -> int:
+    def add_tokens(self, user_id: str, day: str, tokens: int, model: str | None = None) -> int:
         self.conn.execute(
             """INSERT INTO llm_usage (user_id, day, tokens_used) VALUES (?, ?, ?)
                ON CONFLICT(user_id, day) DO UPDATE
                SET tokens_used = llm_usage.tokens_used + excluded.tokens_used""",
             (user_id, day, tokens),
         )
+        normalized_model = model.strip() if model else ""
+        if normalized_model:
+            self.conn.execute(
+                """INSERT INTO llm_usage_by_model (user_id, day, model, tokens_used)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, day, model) DO UPDATE
+                   SET tokens_used = llm_usage_by_model.tokens_used + excluded.tokens_used""",
+                (user_id, day, normalized_model, tokens),
+            )
         if self.auto_commit:
             self.conn.commit()
         return self.get(user_id, day)

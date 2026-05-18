@@ -6,6 +6,7 @@ Commands:
   approve-email  Add an email to the approved access list
   remove-email   Remove an email from the approved access list
   list-emails    List approved access emails
+  list-usage     List daily LLM token usage, including model breakdown
   list-users     List signed-in users with their access status
   grant          Grant a user access without a code (by email)
   revoke         Revoke a user's access (by email)
@@ -241,6 +242,51 @@ def cmd_storage_gc(args: argparse.Namespace) -> None:
         conn.close()
 
 
+def cmd_list_usage(args: argparse.Namespace) -> None:
+    clauses: list[str] = []
+    params: list[str] = []
+    if args.email:
+        clauses.append("lower(u.email) = lower(?)")
+        params.append(args.email)
+    if args.day:
+        clauses.append("l.day = ?")
+        params.append(args.day)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    conn = _open_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                u.email,
+                l.day,
+                l.tokens_used AS total_tokens,
+                m.model,
+                m.tokens_used AS model_tokens
+            FROM llm_usage l
+            JOIN users u ON u.id = l.user_id
+            LEFT JOIN llm_usage_by_model m
+              ON m.user_id = l.user_id AND m.day = l.day
+            {where}
+            ORDER BY l.day DESC, u.email, m.tokens_used DESC NULLS LAST, m.model
+            """,
+            tuple(params),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        print("(no usage)")
+        return
+    print(f"{'email':<40}  {'day':<10}  {'total':>10}  {'model':<24}  model_tokens")
+    print("-" * 104)
+    for row in rows:
+        model = row["model"] or "(unattributed)"
+        model_tokens = row["model_tokens"] if row["model_tokens"] is not None else row["total_tokens"]
+        print(
+            f"{row['email']:<40}  {row['day']:<10}  "
+            f"{row['total_tokens']:>10}  {model:<24}  {model_tokens}"
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cerno-admin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -273,6 +319,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("list-users", help="list users + access status")
     p.set_defaults(func=cmd_list_users)
+
+    p = sub.add_parser("list-usage", help="list daily LLM token usage")
+    p.add_argument("--email", help="limit to one user email")
+    p.add_argument("--day", help="limit to a UTC day like 2026-05-18")
+    p.set_defaults(func=cmd_list_usage)
 
     p = sub.add_parser("grant", help="grant a user access without a code")
     p.add_argument("email")

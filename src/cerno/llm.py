@@ -174,7 +174,7 @@ class LLMClient:
         response = await self._call_with_retry(url, body)
         parsed = _parse_response(response)
 
-        self._record_token_usage(parsed.usage_total_tokens)
+        self._record_token_usage(parsed.usage_total_tokens, model=body["model"])
         return parsed
 
     async def create_conversation(self, *, metadata: dict[str, str] | None = None) -> str:
@@ -227,6 +227,10 @@ class LLMClient:
         url = f"{self.settings.llm_base_url.rstrip('/')}/responses"
         self._ensure_token_budget()
         async for event in self._stream_sse(url, body):
+            if event.get("type") == "response.completed":
+                response = event.get("response")
+                if isinstance(response, dict):
+                    self._record_token_usage(_parse_total_tokens(response.get("usage")), model=body["model"])
             yield event
 
     def _response_body(
@@ -411,10 +415,10 @@ class LLMClient:
         if self._usage_repo.get(self._user_id, self._usage_day()) >= self.settings.daily_token_cap:
             raise LLMRateLimitError("daily LLM token cap exceeded")
 
-    def _record_token_usage(self, tokens: int) -> None:
+    def _record_token_usage(self, tokens: int, *, model: str | None = None) -> None:
         if tokens <= 0 or self._usage_repo is None or self._user_id is None:
             return
-        self._usage_repo.add_tokens(self._user_id, self._usage_day(), tokens)
+        self._usage_repo.add_tokens(self._user_id, self._usage_day(), tokens, model=model)
 
 
 class _HttpxTransport:

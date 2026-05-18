@@ -9,7 +9,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-POSTGRES_SCHEMA_VERSION = 6
+POSTGRES_SCHEMA_VERSION = 7
 
 
 class DbRow:
@@ -228,6 +228,18 @@ _POSTGRES_MIGRATIONS = {
     6: [
         "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tool_call_id TEXT",
         "CREATE INDEX IF NOT EXISTS idx_messages_tool_call ON chat_messages(turn_id, tool_call_id)",
+    ],
+    7: [
+        """
+        CREATE TABLE IF NOT EXISTS llm_usage_by_model (
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            model TEXT NOT NULL,
+            tokens_used INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, day, model)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_llm_usage_by_model_day ON llm_usage_by_model(day, model)",
     ],
 }
 
@@ -458,6 +470,16 @@ _POSTGRES_SCHEMA = [
         PRIMARY KEY (user_id, day)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS llm_usage_by_model (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day TEXT NOT NULL,
+        model TEXT NOT NULL,
+        tokens_used INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, day, model)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_llm_usage_by_model_day ON llm_usage_by_model(day, model)",
     """
     CREATE TABLE IF NOT EXISTS source_assets (
         id TEXT PRIMARY KEY,
