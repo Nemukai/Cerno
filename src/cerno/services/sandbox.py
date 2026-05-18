@@ -23,13 +23,11 @@ except ImportError:  # pragma: no cover - Windows desktop build fallback.
     resource = None  # type: ignore[assignment]
 
 _SAFE_BUILTIN_NAMES = (
-    "__import__",
     "abs",
     "all",
     "any",
     "bool",
     "bytes",
-    "callable",
     "chr",
     "dict",
     "divmod",
@@ -38,11 +36,7 @@ _SAFE_BUILTIN_NAMES = (
     "float",
     "format",
     "frozenset",
-    "getattr",
-    "hasattr",
-    "hash",
     "hex",
-    "id",
     "int",
     "isinstance",
     "issubclass",
@@ -53,7 +47,6 @@ _SAFE_BUILTIN_NAMES = (
     "max",
     "min",
     "next",
-    "object",
     "oct",
     "ord",
     "pow",
@@ -68,7 +61,6 @@ _SAFE_BUILTIN_NAMES = (
     "str",
     "sum",
     "tuple",
-    "type",
     "zip",
     "True",
     "False",
@@ -88,15 +80,39 @@ SAFE_BUILTINS: dict[str, Any] = {name: getattr(builtins, name) for name in _SAFE
 DEFAULT_TIMEOUT_SECONDS = 5.0
 DEFAULT_MEMORY_BYTES = 1024 * 1024 * 1024
 
-_BLOCKED_CALL_NAMES = {"eval", "exec", "compile", "input", "open", "__import__"}
+_BLOCKED_CALL_NAMES = {
+    "__import__",
+    "breakpoint",
+    "compile",
+    "delattr",
+    "dir",
+    "eval",
+    "exec",
+    "getattr",
+    "globals",
+    "hasattr",
+    "input",
+    "locals",
+    "memoryview",
+    "open",
+    "setattr",
+    "super",
+    "vars",
+}
 _BLOCKED_ATTRS = {
+    "eval",
     "from_file",
+    "fromfile",
     "fromregex",
     "genfromtxt",
+    "get_handle",
     "load",
     "loads",
     "loadtxt",
     "memmap",
+    "option_context",
+    "pipe",
+    "query",
     "read_clipboard",
     "read_csv",
     "read_excel",
@@ -139,9 +155,97 @@ _BLOCKED_ATTRS = {
     "to_xml",
 }
 
+_ALLOWED_PANDAS_ATTRS = frozenset(
+    {
+        "Categorical",
+        "DataFrame",
+        "Index",
+        "Interval",
+        "MultiIndex",
+        "NA",
+        "NaT",
+        "Series",
+        "Timestamp",
+        "Timedelta",
+        "array",
+        "concat",
+        "crosstab",
+        "cut",
+        "date_range",
+        "isna",
+        "isnull",
+        "merge",
+        "notna",
+        "notnull",
+        "pivot_table",
+        "qcut",
+        "to_datetime",
+        "to_numeric",
+        "to_timedelta",
+        "unique",
+    }
+)
+
+_ALLOWED_NUMPY_ATTRS = frozenset(
+    {
+        "abs",
+        "arange",
+        "array",
+        "asarray",
+        "ceil",
+        "clip",
+        "corrcoef",
+        "e",
+        "exp",
+        "floor",
+        "full",
+        "histogram",
+        "inf",
+        "isclose",
+        "isfinite",
+        "isinf",
+        "isnan",
+        "linspace",
+        "log",
+        "log10",
+        "max",
+        "mean",
+        "median",
+        "min",
+        "nan",
+        "ones",
+        "percentile",
+        "pi",
+        "polyfit",
+        "quantile",
+        "round",
+        "select",
+        "sqrt",
+        "std",
+        "sum",
+        "var",
+        "where",
+        "zeros",
+    }
+)
+
 
 class SandboxError(RuntimeError):
     pass
+
+
+class _SafeModule:
+    __slots__ = ("_allowed", "_module", "_name")
+
+    def __init__(self, name: str, module: Any, allowed: frozenset[str]) -> None:
+        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_module", module)
+        object.__setattr__(self, "_allowed", allowed)
+
+    def __getattr__(self, attr: str) -> Any:
+        if attr.startswith("_") or attr not in self._allowed:
+            raise SandboxError(f"{self._name} attribute is not available: {attr}")
+        return getattr(self._module, attr)
 
 
 @dataclass
@@ -193,7 +297,9 @@ def _validate_ast(tree: ast.AST) -> None:
         if isinstance(node, ast.Name) and node.id.startswith("__"):
             raise SandboxError("dunder names are not allowed")
         if isinstance(node, ast.Attribute):
-            if node.attr.startswith("__") or node.attr in _BLOCKED_ATTRS:
+            if node.attr.startswith("_"):
+                raise SandboxError(f"private attribute is not allowed: {node.attr}")
+            if node.attr in _BLOCKED_ATTRS:
                 raise SandboxError(f"attribute is not allowed: {node.attr}")
         if isinstance(node, ast.Call):
             name = _call_name(node.func)
@@ -356,8 +462,8 @@ def _run_python_in_process(
 
     env: dict[str, Any] = {
         "__builtins__": SAFE_BUILTINS,
-        "pd": pd,
-        "np": np,
+        "pd": _SafeModule("pandas", pd, _ALLOWED_PANDAS_ATTRS),
+        "np": _SafeModule("numpy", np, _ALLOWED_NUMPY_ATTRS),
     }
     env.update(tables)
 

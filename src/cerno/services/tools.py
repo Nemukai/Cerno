@@ -173,7 +173,7 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
                 "Run Python in a restricted, read-only sandbox for analysis. "
                 f"Available pandas DataFrames: {', '.join(available_table_names) if available_table_names else '(none currently available)'}. "
                 "Do not write import statements; imports will fail. "
-                "Already available libraries: pandas as pd, numpy as np. "
+                "Already available libraries: pandas as pd, numpy as np through a curated read-only helper surface. "
                 "No other libraries are available. "
                 "Use only those dataframe variable names plus pd and np. "
                 "Allowed: pandas/numpy calculations, filtering, grouping, sorting, joins/merges, simple statistics, "
@@ -407,9 +407,9 @@ def _table_profile(table: ToolTable) -> dict[str, Any]:
         }
     return {
         "ok": True,
-        "row_count": int(len(frame.index)),
-        "column_count": int(len(frame.columns)),
-        "profiled_column_count": int(min(len(frame.columns), len(table.columns) or len(frame.columns))),
+        "row_count": len(frame.index),
+        "column_count": len(frame.columns),
+        "profiled_column_count": min(len(frame.columns), len(table.columns) or len(frame.columns)),
         "notes": [
             "This profile is computed from the processed dataframe available to run_python.",
             "No sample rows are included.",
@@ -440,7 +440,7 @@ def _profile_column(column: dict[str, Any], frame: pd.DataFrame) -> dict[str, An
         return profiled
 
     series = frame[name]
-    row_count = int(len(series.index))
+    row_count = len(series.index)
     null_count = int(series.isna().sum())
     non_null_count = row_count - null_count
     distinct_count = int(series.nunique(dropna=True))
