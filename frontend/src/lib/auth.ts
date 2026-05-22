@@ -8,6 +8,7 @@ export type CurrentUser = {
   name: string | null;
   picture: string | null;
   access_status: AccessStatus;
+  site_role: "user" | "site_owner";
   organizations: Array<{
     id: string;
     name: string;

@@ -45,11 +45,149 @@ export type ProcessingEventKind =
 
 export type Session = {
   id: string;
+  organization_id?: string | null;
+  user_id?: string | null;
+  created_by_user_id?: string | null;
   name: string;
   status: SessionStatus;
   discovery_status: DiscoveryStatus;
   overview: string | null;
   created_at: string;
+};
+
+export type Organization = {
+  id: string;
+  name: string;
+  slug: string;
+  status: "active" | "suspended" | "archived";
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrganizationEntitlements = {
+  organization_id: string;
+  plan_name: string;
+  contract_status: "trial" | "active" | "paused" | "suspended" | "archived";
+  seat_limit: number;
+  daily_token_limit: number | null;
+  monthly_token_limit: number;
+  storage_quota_bytes: number;
+  monthly_upload_bytes: number | null;
+  max_file_size_bytes: number | null;
+  max_workspaces: number | null;
+  max_concurrent_jobs: number | null;
+  soft_limit_percent: number;
+  hard_limit_percent: number;
+  feature_flags: Record<string, unknown>;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrganizationMember = {
+  organization_id: string;
+  user_id: string;
+  role: "owner" | "admin" | "member" | "viewer";
+  status: "active" | "revoked";
+  created_at: string;
+  updated_at: string;
+};
+
+export type UserOrganizationLimits = {
+  organization_id: string;
+  user_id: string;
+  daily_token_limit: number | null;
+  monthly_token_limit: number | null;
+  storage_quota_bytes: number | null;
+  monthly_upload_bytes: number | null;
+  max_file_size_bytes: number | null;
+  max_sessions: number | null;
+  max_concurrent_jobs: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EffectiveUsageLimits = {
+  organization_id: string;
+  user_id: string;
+  daily_token_limit: number | null;
+  user_monthly_token_limit: number | null;
+  organization_monthly_token_limit: number | null;
+  user_storage_quota_bytes: number | null;
+  organization_storage_quota_bytes: number | null;
+  user_monthly_upload_bytes: number | null;
+  organization_monthly_upload_bytes: number | null;
+  user_max_file_size_bytes: number | null;
+  organization_max_file_size_bytes: number | null;
+  user_max_sessions: number | null;
+  organization_max_sessions: number | null;
+  user_max_concurrent_jobs: number | null;
+  organization_max_concurrent_jobs: number | null;
+  soft_limit_percent: number;
+  hard_limit_percent: number;
+};
+
+export type OwnerDashboard = {
+  generated_at: string;
+  month: string;
+  totals: {
+    organizations: number;
+    users: number;
+    sessions: number;
+    storage_bytes: number;
+    upload_bytes_month: number;
+    llm_tokens_month: number;
+    chat_turns_month: number;
+    upload_count_month: number;
+    active_jobs: number;
+    failed_jobs_month: number;
+    errors_month: number;
+    avg_chat_response_ms: number | null;
+    avg_processing_ms: number | null;
+  };
+  organizations: Array<{
+    organization: Organization;
+    entitlements: OrganizationEntitlements;
+    user_count: number;
+    session_count: number;
+    storage_bytes: number;
+    upload_bytes_month: number;
+    upload_count_month: number;
+    llm_tokens_month: number;
+    active_jobs: number;
+    failed_jobs_month: number;
+    chat_turns_month: number;
+    avg_chat_response_ms: number | null;
+    avg_processing_ms: number | null;
+    last_activity_at: string | null;
+  }>;
+  users: Array<{
+    organization_id: string;
+    membership: OrganizationMember;
+    user_id: string;
+    email: string;
+    name: string | null;
+    access_status: string;
+    last_seen_at: string;
+    effective_limits: EffectiveUsageLimits;
+    user_limits: UserOrganizationLimits | null;
+    session_count: number;
+    storage_bytes: number;
+    upload_bytes_month: number;
+    llm_tokens_month: number;
+    chat_turns_month: number;
+    avg_chat_response_ms: number | null;
+  }>;
+  recent_events: Array<{
+    occurred_at: string;
+    organization_id: string | null;
+    user_id: string | null;
+    session_id: string | null;
+    event_name: string;
+    metric_value: number | null;
+    metadata: Record<string, unknown>;
+  }>;
 };
 
 export type FileRecord = {

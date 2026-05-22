@@ -8,12 +8,19 @@ import {
   type MotionValue,
 } from "framer-motion";
 import {
+  Activity,
+  AlertTriangle,
   ArrowRight,
+  Building2,
+  Clock3,
   Database,
   FileSpreadsheet,
+  HardDrive,
   MessageSquare,
+  RefreshCw,
   ShieldCheck,
   Table2,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -24,6 +31,7 @@ import {
   deleteTurn,
   getChatFeed,
   getDiscovery,
+  getOwnerDashboard,
   getProcessingEvents,
   getSchemaGuide,
   getWorkspace,
@@ -46,6 +54,7 @@ import type {
   DiscoveryResponse,
   FileRecord,
   Link,
+  OwnerDashboard,
   ProcessingEvent,
   Session,
   WorkspaceResponse,
@@ -89,6 +98,7 @@ type HomeView = "landing" | "sessions";
 
 type AppRoute =
   | { kind: "landing" }
+  | { kind: "owner" }
   | { kind: "sessions" }
   | { kind: "session"; sessionId: string; tab: TabKey; legacyFiles?: boolean };
 
@@ -102,6 +112,7 @@ function isTabKey(value: string | undefined): value is TabKey {
 function readRoute(): AppRoute {
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts.length === 0) return { kind: "landing" };
+  if (parts[0] === "owner") return { kind: "owner" };
   if (parts[0] === "sessions") {
     if (parts.length === 1) return { kind: "sessions" };
     const sessionId = parts[1];
@@ -125,6 +136,7 @@ function readRoute(): AppRoute {
 
 function routePath(route: AppRoute): string {
   if (route.kind === "landing") return "/";
+  if (route.kind === "owner") return "/owner";
   if (route.kind === "sessions") return "/sessions";
   return `/sessions/${encodeURIComponent(route.sessionId)}/${route.tab}`;
 }
@@ -437,6 +449,15 @@ export function App() {
     }
 
     if (route.kind === "sessions") {
+      if (session) {
+        setSession(null);
+        clearSessionState();
+      }
+      setHomeView("sessions");
+      return;
+    }
+
+    if (route.kind === "owner") {
       if (session) {
         setSession(null);
         clearSessionState();
@@ -911,6 +932,24 @@ export function App() {
     if (homeView === "landing") {
       return <LandingPage onEnter={() => navigateHome("sessions")} />;
     }
+    if (route.kind === "owner") {
+      return (
+        <AuthGate>
+          {(user, signOut, onUserUpdate) => (
+            <BetaGate user={user} onUserUpdate={onUserUpdate}>
+              <OwnerDashboardPage
+                user={user}
+                onBack={() => navigateHome("sessions")}
+                onSignOut={async () => {
+                  await signOut();
+                  navigateHome("landing");
+                }}
+              />
+            </BetaGate>
+          )}
+        </AuthGate>
+      );
+    }
     return (
       <AuthGate>
         {(user, signOut, onUserUpdate) => (
@@ -927,6 +966,7 @@ export function App() {
               error={error}
               onDismissError={() => setError(null)}
               onBackToLanding={() => navigateHome("landing")}
+              onOpenOwnerDashboard={() => navigate({ kind: "owner" })}
               onSignOut={async () => {
                 await signOut();
                 navigateHome("landing");
@@ -1532,6 +1572,7 @@ function WorkspacesPage({
   error,
   onDismissError,
   onBackToLanding,
+  onOpenOwnerDashboard,
   onSignOut,
 }: {
   user: CurrentUser;
@@ -1545,6 +1586,7 @@ function WorkspacesPage({
   error: string | null;
   onDismissError: () => void;
   onBackToLanding: () => void;
+  onOpenOwnerDashboard: () => void;
   onSignOut: () => Promise<void>;
 }) {
   const [name, setName] = useState("");
@@ -1723,7 +1765,11 @@ function WorkspacesPage({
             </motion.section>
           </div>
 
-          <UserProfilePanel user={user} onSignOut={onSignOut} />
+          <UserProfilePanel
+            user={user}
+            onOpenOwnerDashboard={onOpenOwnerDashboard}
+            onSignOut={onSignOut}
+          />
         </div>
       </main>
     </div>
@@ -1732,9 +1778,11 @@ function WorkspacesPage({
 
 function UserProfilePanel({
   user,
+  onOpenOwnerDashboard,
   onSignOut,
 }: {
   user: CurrentUser;
+  onOpenOwnerDashboard: () => void;
   onSignOut: () => Promise<void>;
 }) {
   const displayName = userDisplayName(user);
@@ -1786,12 +1834,15 @@ function UserProfilePanel({
       </section>
 
       <div className="grid gap-2 pt-4">
-        <button
-          type="button"
-          className="small-caps border border-[#176B7D]/25 bg-[#F2EBDD] px-4 py-3 text-sm text-[#176B7D] transition hover:border-[#176B7D] hover:bg-[#C9E3E2]/20"
-        >
-          upgrade plan
-        </button>
+        {user.site_role === "site_owner" ? (
+          <button
+            type="button"
+            onClick={onOpenOwnerDashboard}
+            className="small-caps border border-[#176B7D]/25 bg-[#F2EBDD] px-4 py-3 text-sm text-[#176B7D] transition hover:border-[#176B7D] hover:bg-[#C9E3E2]/20"
+          >
+            owner dashboard
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onSignOut}
@@ -1802,6 +1853,391 @@ function UserProfilePanel({
       </div>
     </motion.aside>
   );
+}
+
+function OwnerDashboardPage({
+  user,
+  onBack,
+  onSignOut,
+}: {
+  user: CurrentUser;
+  onBack: () => void;
+  onSignOut: () => Promise<void>;
+}) {
+  const dashboardQuery = useQuery({
+    queryKey: ["owner", "dashboard"],
+    queryFn: getOwnerDashboard,
+    enabled: user.site_role === "site_owner",
+    refetchInterval: 30_000,
+  });
+  const dashboard = dashboardQuery.data;
+
+  if (user.site_role !== "site_owner") {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-[#F2EBDD] px-6 text-[#141210]">
+        <div className="max-w-md border border-red-900/20 bg-red-50 p-6">
+          <div className="small-caps text-sm text-red-600">owner access required</div>
+          <p className="mt-3 text-sm leading-6 text-red-700">
+            This dashboard is only available to the configured site owner account.
+          </p>
+          <button
+            type="button"
+            onClick={onBack}
+            className="small-caps mt-5 border border-red-900/20 bg-white px-4 py-2 text-sm text-red-700"
+          >
+            back to workspaces
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cerno-paper-grain min-h-full bg-[#F2EBDD] px-5 py-6 text-[#141210] sm:px-8 lg:px-10">
+      <main className="mx-auto flex max-w-[92rem] flex-col gap-6">
+        <header className="flex flex-col gap-4 border-b border-[#141210]/12 pb-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={onBack}
+              className="text-[#141210]/64 transition hover:text-[#176B7D]"
+              title="Back to workspaces"
+            >
+              <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base" />
+            </button>
+            <div>
+              <div className="small-caps text-sm text-[#176B7D]">site owner</div>
+              <h1 className="mt-1 font-serif text-4xl leading-none text-[#141210]">
+                Usage and limits
+              </h1>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="border border-[#141210]/12 bg-[#F7F1E7]/74 px-3 py-2 font-mono text-xs text-[#141210]/58">
+              {dashboard ? `month ${dashboard.month}` : "loading"}
+            </span>
+            <button
+              type="button"
+              onClick={() => dashboardQuery.refetch()}
+              className="inline-flex items-center gap-2 border border-[#176B7D]/25 bg-[#F2EBDD] px-3 py-2 small-caps text-sm text-[#176B7D] transition hover:border-[#176B7D]"
+            >
+              <RefreshCw className="h-4 w-4" />
+              refresh
+            </button>
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="border border-red-900/20 bg-red-50 px-3 py-2 small-caps text-sm text-red-600 transition hover:bg-red-100"
+            >
+              sign out
+            </button>
+          </div>
+        </header>
+
+        {dashboardQuery.error ? (
+          <div className="border border-red-300 bg-red-50 px-4 py-3 font-mono text-sm text-red-700">
+            {(dashboardQuery.error as Error).message}
+          </div>
+        ) : null}
+
+        {dashboard ? (
+          <>
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {ownerMetricItems(dashboard).map((item) => (
+                <OwnerMetric key={item.label} {...item} />
+              ))}
+            </section>
+
+            <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(24rem,0.9fr)]">
+              <OwnerOrganizationsTable dashboard={dashboard} />
+              <OwnerEventsPanel dashboard={dashboard} />
+            </section>
+
+            <OwnerUsersTable dashboard={dashboard} />
+          </>
+        ) : (
+          <div className="border border-[#141210]/12 bg-[#F7F1E7]/74 px-4 py-12 text-center font-mono text-sm text-[#141210]/56">
+            Loading owner dashboard...
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function OwnerMetric({
+  label,
+  value,
+  detail,
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  icon: LucideIcon;
+}) {
+  return (
+    <div className="border border-[#141210]/12 bg-[#F7F1E7]/74 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="small-caps text-sm text-[#141210]/50">{label}</div>
+        <Icon className="h-4 w-4 text-[#176B7D]" />
+      </div>
+      <div className="mt-4 font-mono text-3xl text-[#141210]">{value}</div>
+      <div className="mt-2 truncate text-sm text-[#141210]/56">{detail}</div>
+    </div>
+  );
+}
+
+function OwnerOrganizationsTable({ dashboard }: { dashboard: OwnerDashboard }) {
+  return (
+    <section className="min-w-0 border border-[#141210]/12 bg-[#F7F1E7]/74">
+      <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 px-4 py-3">
+        <div>
+          <div className="small-caps text-sm text-[#176B7D]">organizations</div>
+          <h2 className="mt-1 font-serif text-2xl text-[#141210]">Org usage and limits</h2>
+        </div>
+        <Building2 className="h-5 w-5 text-[#176B7D]" />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-[58rem] w-full border-collapse text-left text-sm">
+          <thead className="small-caps border-b border-[#141210]/10 text-xs text-[#141210]/50">
+            <tr>
+              <th className="px-4 py-3 font-medium">org</th>
+              <th className="px-4 py-3 font-medium">users</th>
+              <th className="px-4 py-3 font-medium">sessions</th>
+              <th className="px-4 py-3 font-medium">storage</th>
+              <th className="px-4 py-3 font-medium">tokens</th>
+              <th className="px-4 py-3 font-medium">uploads</th>
+              <th className="px-4 py-3 font-medium">jobs</th>
+              <th className="px-4 py-3 font-medium">limits</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dashboard.organizations.map((row) => (
+              <tr key={row.organization.id} className="border-b border-[#141210]/8 last:border-0">
+                <td className="px-4 py-3">
+                  <div className="font-mono text-sm text-[#141210]">{row.organization.name}</div>
+                  <div className="mt-1 text-xs text-[#141210]/48">
+                    {row.entitlements.plan_name} · {row.entitlements.contract_status} · {formatActivity(row.last_activity_at ?? row.organization.updated_at)}
+                  </div>
+                </td>
+                <td className="px-4 py-3 font-mono">{row.user_count}</td>
+                <td className="px-4 py-3 font-mono">{row.session_count}</td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatBytes(row.storage_bytes)}</div>
+                  <div className="text-xs text-[#141210]/48">
+                    of {formatLimitBytes(row.entitlements.storage_quota_bytes)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatCompactNumber(row.llm_tokens_month)}</div>
+                  <div className="text-xs text-[#141210]/48">
+                    of {formatLimitNumber(row.entitlements.monthly_token_limit)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatBytes(row.upload_bytes_month)}</div>
+                  <div className="text-xs text-[#141210]/48">{row.upload_count_month} files</div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{row.active_jobs} active</div>
+                  <div className="text-xs text-[#141210]/48">{row.failed_jobs_month} failed</div>
+                </td>
+                <td className="px-4 py-3 text-xs leading-5 text-[#141210]/62">
+                  seats {row.entitlements.seat_limit}
+                  <br />
+                  sessions {formatLimitNumber(row.entitlements.max_workspaces)}
+                  <br />
+                  jobs {formatLimitNumber(row.entitlements.max_concurrent_jobs)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function OwnerUsersTable({ dashboard }: { dashboard: OwnerDashboard }) {
+  const orgNames = new Map(
+    dashboard.organizations.map((row) => [row.organization.id, row.organization.name]),
+  );
+  return (
+    <section className="border border-[#141210]/12 bg-[#F7F1E7]/74">
+      <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 px-4 py-3">
+        <div>
+          <div className="small-caps text-sm text-[#176B7D]">users</div>
+          <h2 className="mt-1 font-serif text-2xl text-[#141210]">Per-user usage inside orgs</h2>
+        </div>
+        <Users className="h-5 w-5 text-[#176B7D]" />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-[74rem] w-full border-collapse text-left text-sm">
+          <thead className="small-caps border-b border-[#141210]/10 text-xs text-[#141210]/50">
+            <tr>
+              <th className="px-4 py-3 font-medium">user</th>
+              <th className="px-4 py-3 font-medium">org</th>
+              <th className="px-4 py-3 font-medium">role</th>
+              <th className="px-4 py-3 font-medium">sessions</th>
+              <th className="px-4 py-3 font-medium">storage</th>
+              <th className="px-4 py-3 font-medium">tokens</th>
+              <th className="px-4 py-3 font-medium">uploads</th>
+              <th className="px-4 py-3 font-medium">chat</th>
+              <th className="px-4 py-3 font-medium">user limits</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dashboard.users.map((row) => (
+              <tr
+                key={`${row.organization_id}:${row.user_id}`}
+                className="border-b border-[#141210]/8 last:border-0"
+              >
+                <td className="px-4 py-3">
+                  <div className="font-mono text-sm text-[#141210]">{row.email}</div>
+                  <div className="mt-1 text-xs text-[#141210]/48">
+                    {row.name || "unnamed"} · {row.access_status} · seen {formatActivity(row.last_seen_at)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">{orgNames.get(row.organization_id) ?? row.organization_id}</td>
+                <td className="px-4 py-3">
+                  <span className="border border-[#141210]/12 px-2 py-1 font-mono text-xs">
+                    {row.membership.role}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{row.session_count}</div>
+                  <div className="text-xs text-[#141210]/48">
+                    cap {formatLimitNumber(row.effective_limits.user_max_sessions)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatBytes(row.storage_bytes)}</div>
+                  <div className="text-xs text-[#141210]/48">
+                    cap {formatLimitBytes(row.effective_limits.user_storage_quota_bytes)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatCompactNumber(row.llm_tokens_month)}</div>
+                  <div className="text-xs text-[#141210]/48">
+                    cap {formatLimitNumber(row.effective_limits.user_monthly_token_limit)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatBytes(row.upload_bytes_month)}</div>
+                  <div className="text-xs text-[#141210]/48">
+                    cap {formatLimitBytes(row.effective_limits.user_monthly_upload_bytes)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{row.chat_turns_month} turns</div>
+                  <div className="text-xs text-[#141210]/48">
+                    avg {formatMs(row.avg_chat_response_ms)}
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-xs leading-5 text-[#141210]/62">
+                  daily tokens {formatLimitNumber(row.effective_limits.daily_token_limit)}
+                  <br />
+                  file {formatLimitBytes(row.effective_limits.user_max_file_size_bytes)}
+                  <br />
+                  jobs {formatLimitNumber(row.effective_limits.user_max_concurrent_jobs)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function OwnerEventsPanel({ dashboard }: { dashboard: OwnerDashboard }) {
+  return (
+    <section className="border border-[#141210]/12 bg-[#F7F1E7]/74">
+      <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 px-4 py-3">
+        <div>
+          <div className="small-caps text-sm text-[#176B7D]">events</div>
+          <h2 className="mt-1 font-serif text-2xl text-[#141210]">Recent product activity</h2>
+        </div>
+        <Activity className="h-5 w-5 text-[#176B7D]" />
+      </div>
+      <div className="max-h-[34rem] overflow-y-auto">
+        {dashboard.recent_events.length > 0 ? (
+          dashboard.recent_events.map((event) => (
+            <div
+              key={`${event.occurred_at}:${event.event_name}:${event.user_id ?? ""}`}
+              className="grid gap-2 border-b border-[#141210]/8 px-4 py-3 last:border-0"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-mono text-sm text-[#141210]">{event.event_name}</div>
+                <div className="text-xs text-[#141210]/48">{formatActivity(event.occurred_at)}</div>
+              </div>
+              <div className="truncate text-xs text-[#141210]/52">
+                {event.user_id ?? "system"} · {event.session_id ?? "no session"}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="px-4 py-10 font-mono text-sm text-[#141210]/52">
+            No product events recorded yet.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ownerMetricItems(dashboard: OwnerDashboard) {
+  return [
+    {
+      label: "organizations",
+      value: formatCompactNumber(dashboard.totals.organizations),
+      detail: `${formatCompactNumber(dashboard.totals.users)} users`,
+      icon: Building2,
+    },
+    {
+      label: "llm tokens",
+      value: formatCompactNumber(dashboard.totals.llm_tokens_month),
+      detail: `${dashboard.month} across all orgs`,
+      icon: Activity,
+    },
+    {
+      label: "storage",
+      value: formatBytes(dashboard.totals.storage_bytes),
+      detail: `${formatBytes(dashboard.totals.upload_bytes_month)} uploaded this month`,
+      icon: HardDrive,
+    },
+    {
+      label: "response time",
+      value: formatMs(dashboard.totals.avg_chat_response_ms),
+      detail: `${formatCompactNumber(dashboard.totals.chat_turns_month)} chat turns`,
+      icon: Clock3,
+    },
+    {
+      label: "sessions",
+      value: formatCompactNumber(dashboard.totals.sessions),
+      detail: `${formatCompactNumber(dashboard.totals.upload_count_month)} uploads this month`,
+      icon: Table2,
+    },
+    {
+      label: "jobs",
+      value: formatCompactNumber(dashboard.totals.active_jobs),
+      detail: `${formatCompactNumber(dashboard.totals.failed_jobs_month)} failed this month`,
+      icon: Database,
+    },
+    {
+      label: "processing",
+      value: formatMs(dashboard.totals.avg_processing_ms),
+      detail: "average job duration",
+      icon: RefreshCw,
+    },
+    {
+      label: "errors",
+      value: formatCompactNumber(dashboard.totals.errors_month),
+      detail: "last 30 days",
+      icon: AlertTriangle,
+    },
+  ] satisfies Array<{ label: string; value: string; detail: string; icon: LucideIcon }>;
 }
 
 function WorkspacesCartographyBackground({
@@ -2076,6 +2512,32 @@ function formatCompactNumber(value: number): string {
   }
   const compact = value / 1_000_000;
   return `${compact >= 10 ? compact.toFixed(0) : compact.toFixed(1)}M`;
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value.toLocaleString()} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = value / 1024;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+}
+
+function formatLimitNumber(value: number | null): string {
+  return value === null ? "org default" : formatCompactNumber(value);
+}
+
+function formatLimitBytes(value: number | null): string {
+  return value === null ? "org default" : formatBytes(value);
+}
+
+function formatMs(value: number | null): string {
+  if (value === null) return "n/a";
+  if (value < 1000) return `${Math.round(value)} ms`;
+  return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)} s`;
 }
 
 function formatActivity(value: string): string {

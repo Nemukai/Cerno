@@ -12,6 +12,7 @@ import type {
   FilePreviewResponse,
   FileRecord,
   Link,
+  OwnerDashboard,
   ProcessingEvent,
   ProcessingJobResponse,
   Session,
@@ -62,6 +63,10 @@ async function postMultipart<T>(path: string, form: FormData): Promise<T> {
 
 export function getHealth(): Promise<Health> {
   return request<Health>("/health");
+}
+
+export function getOwnerDashboard(): Promise<OwnerDashboard> {
+  return request<OwnerDashboard>("/owner/dashboard");
 }
 
 export function createSession(name: string): Promise<Session> {
