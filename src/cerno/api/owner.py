@@ -348,9 +348,9 @@ def _owner_totals(
             conn,
             """SELECT COUNT(*) AS value
                FROM product_events
-               WHERE event_name LIKE '%failed%'
+               WHERE event_name LIKE ?
                  AND occurred_at >= ?""",
-            (errors_since,),
+            ("%failed%", errors_since),
         ),
         avg_chat_response_ms=_global_event_avg(conn, "chat_turn_completed", month),
         avg_processing_ms=_global_event_avg(conn, "processing_job_completed", month),
