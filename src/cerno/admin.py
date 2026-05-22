@@ -24,7 +24,12 @@ from datetime import UTC, datetime, timedelta
 
 from cerno.config import get_settings
 from cerno.db import DbConnection, connect
-from cerno.repositories import ApprovedEmailRepository, BetaCodeRepository, UserRepository
+from cerno.repositories import (
+    ApprovedEmailRepository,
+    BetaCodeRepository,
+    OrganizationRepository,
+    UserRepository,
+)
 from cerno.services.storage_gc import cleanup_unused_storage_for_user
 
 # Avoid look-alike characters: no I, O, 0, 1.
@@ -133,7 +138,9 @@ def cmd_approve_email(args: argparse.Namespace) -> None:
         approved = ApprovedEmailRepository(conn).add(args.email, args.note)
         user = UserRepository(conn).get_by_email(approved.email)
         if user is not None and user.access_status != "revoked":
-            UserRepository(conn).sync_allowlist_status(user.id, email_approved=True)
+            user = UserRepository(conn).sync_allowlist_status(user.id, email_approved=True)
+            if user is not None:
+                OrganizationRepository(conn).ensure_personal_for_user(user)
         conn.commit()
     finally:
         conn.close()
@@ -180,7 +187,9 @@ def cmd_grant(args: argparse.Namespace) -> None:
         repo = UserRepository(conn)
         user = repo.get_by_email(args.email)
         if user is not None:
-            repo.sync_allowlist_status(user.id, email_approved=True)
+            user = repo.sync_allowlist_status(user.id, email_approved=True)
+            if user is not None:
+                OrganizationRepository(conn).ensure_personal_for_user(user)
         conn.commit()
     finally:
         conn.close()
@@ -287,6 +296,69 @@ def cmd_list_usage(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_list_orgs(args: argparse.Namespace) -> None:
+    conn = _open_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                o.id,
+                o.name,
+                o.slug,
+                o.status,
+                COUNT(m.user_id) FILTER (WHERE m.status = 'active') AS active_members
+            FROM organizations o
+            LEFT JOIN organization_members m ON m.organization_id = o.id
+            GROUP BY o.id, o.name, o.slug, o.status
+            ORDER BY o.created_at DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        print("(no organizations)")
+        return
+    print(f"{'id':<38}  {'slug':<28}  {'members':>7}  {'status':<10}  name")
+    print("-" * 110)
+    for row in rows:
+        print(
+            f"{row['id']:<38}  {row['slug']:<28}  "
+            f"{row['active_members']:>7}  {row['status']:<10}  {row['name']}"
+        )
+
+
+def cmd_create_org(args: argparse.Namespace) -> None:
+    conn = _open_conn()
+    try:
+        org = OrganizationRepository(conn).create(name=args.name, slug=args.slug)
+        OrganizationRepository(conn).ensure_entitlements(org.id)
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"created organization {org.name} ({org.id})")
+
+
+def cmd_add_org_member(args: argparse.Namespace) -> None:
+    conn = _open_conn()
+    try:
+        user = UserRepository(conn).get_by_email(args.email)
+        if user is None:
+            sys.exit(f"no user with email: {args.email}")
+        org_repo = OrganizationRepository(conn)
+        org = org_repo.get(args.organization_id)
+        if org is None:
+            sys.exit(f"no organization with id: {args.organization_id}")
+        org_repo.add_member(
+            organization_id=args.organization_id,
+            user_id=user.id,
+            role=args.role,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"added {args.email} to {args.organization_id} as {args.role}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cerno-admin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -324,6 +396,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--email", help="limit to one user email")
     p.add_argument("--day", help="limit to a UTC day like 2026-05-18")
     p.set_defaults(func=cmd_list_usage)
+
+    p = sub.add_parser("list-orgs", help="list organizations")
+    p.set_defaults(func=cmd_list_orgs)
+
+    p = sub.add_parser("create-org", help="create a manually managed organization")
+    p.add_argument("name")
+    p.add_argument("--slug", required=True)
+    p.set_defaults(func=cmd_create_org)
+
+    p = sub.add_parser("add-org-member", help="add an existing user to an organization")
+    p.add_argument("organization_id")
+    p.add_argument("email")
+    p.add_argument("--role", choices=["owner", "admin", "member", "viewer"], default="member")
+    p.set_defaults(func=cmd_add_org_member)
 
     p = sub.add_parser("grant", help="grant a user access without a code")
     p.add_argument("email")

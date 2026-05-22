@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
-from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, SettingsDep
+from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, OrgDep, SettingsDep
 from cerno.db import DbConnection
 from cerno.models import ChatArtifact, ChatMessage, ChatTurn, Widget
 from cerno.repositories import (
@@ -29,16 +29,34 @@ logger = logging.getLogger(__name__)
 USER_SAFE_CHAT_ERROR = "Something went wrong. Please try again."
 
 
-def _require_session_owned(conn: DbConnection, session_id: str, user_id: str) -> None:
-    if SessionRepository(conn).get(session_id, user_id=user_id) is None:
+def _require_session_owned(
+    conn: DbConnection,
+    session_id: str,
+    user_id: str,
+    organization_id: str | None = None,
+) -> None:
+    if SessionRepository(conn).get(
+        session_id,
+        user_id=user_id,
+        organization_id=organization_id,
+    ) is None:
         raise HTTPException(status_code=404, detail="session not found")
 
 
-def _require_turn_owned(conn: DbConnection, turn_id: str, user_id: str) -> ChatTurn:
+def _require_turn_owned(
+    conn: DbConnection,
+    turn_id: str,
+    user_id: str,
+    organization_id: str | None = None,
+) -> ChatTurn:
     turn = ChatRepository(conn).get_turn(turn_id)
     if turn is None:
         raise HTTPException(status_code=404, detail="turn not found")
-    if SessionRepository(conn).get(turn.session_id, user_id=user_id) is None:
+    if SessionRepository(conn).get(
+        turn.session_id,
+        user_id=user_id,
+        organization_id=organization_id,
+    ) is None:
         raise HTTPException(status_code=404, detail="turn not found")
     return turn
 
@@ -74,10 +92,11 @@ async def post_chat(
     settings: SettingsDep,
     llm_client: LLMDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> ChatResponse:
-    _require_session_owned(conn, session_id, user.id)
+    _require_session_owned(conn, session_id, user.id, organization.id)
     if body.turn_id is not None:
-        turn = _require_turn_owned(conn, body.turn_id, user.id)
+        turn = _require_turn_owned(conn, body.turn_id, user.id, organization.id)
         if turn.session_id != session_id:
             raise HTTPException(status_code=404, detail="turn not found")
     message = body.message.strip()
@@ -89,7 +108,11 @@ async def post_chat(
             user_message=message,
             turn_id=body.turn_id,
             settings=settings,
-            llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
+            llm_client=llm_client.with_usage(
+                LLMUsageRepository(conn, auto_commit=True),
+                user.id,
+                organization_id=organization.id,
+            ),
             files_repo=FileRepository(conn),
             schemas_repo=SchemaRepository(conn),
             chat_repo=ChatRepository(conn),
@@ -121,10 +144,11 @@ async def stream_chat(
     settings: SettingsDep,
     llm_client: LLMDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> StreamingResponse:
-    _require_session_owned(conn, session_id, user.id)
+    _require_session_owned(conn, session_id, user.id, organization.id)
     if body.turn_id is not None:
-        turn = _require_turn_owned(conn, body.turn_id, user.id)
+        turn = _require_turn_owned(conn, body.turn_id, user.id, organization.id)
         if turn.session_id != session_id:
             raise HTTPException(status_code=404, detail="turn not found")
     message = body.message.strip()
@@ -138,7 +162,11 @@ async def stream_chat(
                 user_message=message,
                 turn_id=body.turn_id,
                 settings=settings,
-                llm_client=llm_client.with_usage(LLMUsageRepository(conn, auto_commit=True), user.id),
+                llm_client=llm_client.with_usage(
+                    LLMUsageRepository(conn, auto_commit=True),
+                    user.id,
+                    organization_id=organization.id,
+                ),
                 files_repo=FileRepository(conn),
                 schemas_repo=SchemaRepository(conn),
                 chat_repo=ChatRepository(conn),
@@ -170,8 +198,13 @@ async def stream_chat(
 
 
 @router.get("/sessions/{session_id}/turns", response_model=list[ChatTurn])
-def get_session_turns(session_id: str, conn: ConnDep, user: GrantedUserDep) -> list[ChatTurn]:
-    _require_session_owned(conn, session_id, user.id)
+def get_session_turns(
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> list[ChatTurn]:
+    _require_session_owned(conn, session_id, user.id, organization.id)
     return ChatRepository(conn).list_turns(session_id)
 
 
@@ -180,8 +213,9 @@ def get_session_chat_feed(
     session_id: str,
     conn: ConnDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> list[ChatFeedTurn]:
-    _require_session_owned(conn, session_id, user.id)
+    _require_session_owned(conn, session_id, user.id, organization.id)
     chat_repo = ChatRepository(conn)
     artifact_repo = ChatArtifactRepository(conn)
     messages_by_turn = chat_repo.list_messages_for_session(session_id)
@@ -197,8 +231,13 @@ def get_session_chat_feed(
 
 
 @router.get("/turns/{turn_id}/messages", response_model=list[ChatMessage])
-def get_turn_messages(turn_id: str, conn: ConnDep, user: GrantedUserDep) -> list[ChatMessage]:
-    _require_turn_owned(conn, turn_id, user.id)
+def get_turn_messages(
+    turn_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> list[ChatMessage]:
+    _require_turn_owned(conn, turn_id, user.id, organization.id)
     return ChatRepository(conn).list_messages(turn_id)
 
 
@@ -208,8 +247,9 @@ def update_turn(
     body: ChatUpdateRequest,
     conn: ConnDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> ChatTurn:
-    _require_turn_owned(conn, turn_id, user.id)
+    _require_turn_owned(conn, turn_id, user.id, organization.id)
     title = body.title.strip() if body.title is not None else None
     if body.title is not None and not title:
         raise HTTPException(status_code=400, detail="title cannot be empty")
@@ -225,7 +265,12 @@ def update_turn(
 
 
 @router.delete("/turns/{turn_id}", status_code=204)
-def delete_turn(turn_id: str, conn: ConnDep, user: GrantedUserDep) -> None:
-    _require_turn_owned(conn, turn_id, user.id)
+def delete_turn(
+    turn_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> None:
+    _require_turn_owned(conn, turn_id, user.id, organization.id)
     ChatRepository(conn).delete_turn(turn_id)
     conn.commit()

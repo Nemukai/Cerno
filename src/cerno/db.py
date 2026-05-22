@@ -9,7 +9,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-POSTGRES_SCHEMA_VERSION = 7
+POSTGRES_SCHEMA_VERSION = 8
 
 
 class DbRow:
@@ -240,6 +240,222 @@ _POSTGRES_MIGRATIONS = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_llm_usage_by_model_day ON llm_usage_by_model(day, model)",
+    ],
+    8: [
+        """
+        CREATE TABLE IF NOT EXISTS organizations (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT UNIQUE NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS organization_members (
+            organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL DEFAULT 'member',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (organization_id, user_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id, status)",
+        """
+        CREATE TABLE IF NOT EXISTS organization_invites (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            email TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            invited_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            token TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            accepted_at TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_org_invites_email ON organization_invites(email, status)",
+        """
+        CREATE TABLE IF NOT EXISTS organization_entitlements (
+            organization_id TEXT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+            plan_name TEXT NOT NULL DEFAULT 'manual',
+            contract_status TEXT NOT NULL DEFAULT 'trial',
+            seat_limit INTEGER NOT NULL DEFAULT 1,
+            monthly_token_limit INTEGER NOT NULL DEFAULT 6000000,
+            storage_quota_bytes BIGINT NOT NULL DEFAULT 5368709120,
+            monthly_upload_bytes BIGINT,
+            max_file_size_bytes BIGINT,
+            max_workspaces INTEGER,
+            soft_limit_percent INTEGER NOT NULL DEFAULT 100,
+            hard_limit_percent INTEGER NOT NULL DEFAULT 120,
+            feature_flags TEXT NOT NULL DEFAULT '{}',
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_by_user_id TEXT REFERENCES users(id) ON DELETE CASCADE",
+        "ALTER TABLE source_assets ADD COLUMN IF NOT EXISTS organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE",
+        "ALTER TABLE upload_intents ADD COLUMN IF NOT EXISTS organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE",
+        "ALTER TABLE asset_artifacts ADD COLUMN IF NOT EXISTS organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE",
+        "ALTER TABLE processing_jobs ADD COLUMN IF NOT EXISTS organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE",
+        "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS organization_id TEXT REFERENCES organizations(id) ON DELETE SET NULL",
+        "ALTER TABLE llm_usage_by_model ADD COLUMN IF NOT EXISTS organization_id TEXT REFERENCES organizations(id) ON DELETE SET NULL",
+        """
+        CREATE TABLE IF NOT EXISTS usage_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+            session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+            event_type TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            amount BIGINT NOT NULL,
+            model TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            occurred_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_usage_events_org_time ON usage_events(organization_id, occurred_at)",
+        "CREATE INDEX IF NOT EXISTS idx_usage_events_user_time ON usage_events(user_id, occurred_at)",
+        """
+        CREATE TABLE IF NOT EXISTS organization_usage_daily (
+            organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            amount BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY (organization_id, day, metric)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS organization_usage_daily_by_model (
+            organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            model TEXT NOT NULL,
+            amount BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY (organization_id, day, metric, model)
+        )
+        """,
+        """
+        INSERT INTO organizations (id, name, slug, status, created_at, updated_at)
+        SELECT
+            'org_' || replace(u.id, '-', ''),
+            COALESCE(NULLIF(u.name, ''), u.email) || '''s Organization',
+            'user-' || replace(u.id, '-', ''),
+            'active',
+            u.created_at,
+            u.created_at
+        FROM users u
+        WHERE NOT EXISTS (
+            SELECT 1 FROM organization_members m WHERE m.user_id = u.id
+        )
+        ON CONFLICT (id) DO NOTHING
+        """,
+        """
+        INSERT INTO organization_members
+            (organization_id, user_id, role, status, created_at, updated_at)
+        SELECT
+            'org_' || replace(u.id, '-', ''),
+            u.id,
+            'owner',
+            'active',
+            u.created_at,
+            u.created_at
+        FROM users u
+        WHERE NOT EXISTS (
+            SELECT 1 FROM organization_members m WHERE m.user_id = u.id
+        )
+        ON CONFLICT (organization_id, user_id) DO NOTHING
+        """,
+        """
+        INSERT INTO organization_entitlements
+            (organization_id, plan_name, contract_status, seat_limit,
+             monthly_token_limit, storage_quota_bytes, soft_limit_percent,
+             hard_limit_percent, feature_flags, created_at, updated_at)
+        SELECT
+            m.organization_id,
+            'manual',
+            'trial',
+            1,
+            6000000,
+            5368709120,
+            100,
+            120,
+            '{}',
+            MIN(m.created_at),
+            MIN(m.created_at)
+        FROM organization_members m
+        GROUP BY m.organization_id
+        ON CONFLICT (organization_id) DO NOTHING
+        """,
+        """
+        UPDATE sessions s
+        SET organization_id = m.organization_id,
+            created_by_user_id = COALESCE(s.created_by_user_id, s.user_id)
+        FROM organization_members m
+        WHERE s.user_id = m.user_id
+          AND m.status = 'active'
+          AND s.organization_id IS NULL
+        """,
+        """
+        UPDATE source_assets sa
+        SET organization_id = m.organization_id
+        FROM organization_members m
+        WHERE sa.user_id = m.user_id
+          AND m.status = 'active'
+          AND sa.organization_id IS NULL
+        """,
+        """
+        UPDATE upload_intents ui
+        SET organization_id = m.organization_id
+        FROM organization_members m
+        WHERE ui.user_id = m.user_id
+          AND m.status = 'active'
+          AND ui.organization_id IS NULL
+        """,
+        """
+        UPDATE asset_artifacts aa
+        SET organization_id = m.organization_id
+        FROM organization_members m
+        WHERE aa.user_id = m.user_id
+          AND m.status = 'active'
+          AND aa.organization_id IS NULL
+        """,
+        """
+        UPDATE processing_jobs pj
+        SET organization_id = m.organization_id
+        FROM organization_members m
+        WHERE pj.user_id = m.user_id
+          AND m.status = 'active'
+          AND pj.organization_id IS NULL
+        """,
+        """
+        UPDATE llm_usage lu
+        SET organization_id = m.organization_id
+        FROM organization_members m
+        WHERE lu.user_id = m.user_id
+          AND m.status = 'active'
+          AND lu.organization_id IS NULL
+        """,
+        """
+        UPDATE llm_usage_by_model lm
+        SET organization_id = m.organization_id
+        FROM organization_members m
+        WHERE lm.user_id = m.user_id
+          AND m.status = 'active'
+          AND lm.organization_id IS NULL
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_sessions_org_user ON sessions(organization_id, created_by_user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_source_assets_org ON source_assets(organization_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_upload_intents_org ON upload_intents(organization_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_processing_jobs_org ON processing_jobs(organization_id, status, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_llm_usage_org_day ON llm_usage(organization_id, day)",
+        "CREATE INDEX IF NOT EXISTS idx_llm_usage_by_model_org_day ON llm_usage_by_model(organization_id, day, model)",
     ],
 }
 

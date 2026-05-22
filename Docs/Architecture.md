@@ -83,7 +83,16 @@ should not store large uploaded files or generated binary artifacts.
 Main existing tables and roles:
 
 - `users`: Google identity, beta access status, profile metadata.
-- `sessions`: user-owned workspace/session records and `discovery_status`.
+- `organizations`: customer account containers. Payments/contracts remain
+  outside the app, while Cerno stores the manually managed org record.
+- `organization_members`: user membership and role hierarchy for each org:
+  owner, admin, member, or viewer.
+- `organization_entitlements`: manual contract limits for seats, storage,
+  tokens, uploads, workspaces, feature flags, and soft/hard limit thresholds.
+- `organization_invites`: pending org invitations for future customer-admin
+  onboarding.
+- `sessions`: organization-scoped, user-private workspace/session records and
+  `discovery_status`.
 - `upload_intents`: short-lived direct-to-R2 upload records created by the API,
   completed by the browser, and consumed by the worker.
 - `files`: session-level uploaded/ingested table records; currently the legacy
@@ -104,7 +113,11 @@ Main existing tables and roles:
   dashboard/widget state.
 - `chat_turns`, `chat_messages`, `chat_artifacts`: chat transcript, tool calls,
   assistant messages, and generated chat artifacts.
-- `llm_usage`: daily per-user token usage accounting.
+- `llm_usage`: daily per-user token usage accounting kept for the existing
+  daily cap path.
+- `usage_events`, `organization_usage_daily`, and
+  `organization_usage_daily_by_model`: org-level usage ledger and rollups for
+  B2B analytics, soft limits, and the future master dashboard.
 - `processing_events`: durable user-visible processing checkpoints.
 
 Durable job additions:
@@ -139,14 +152,23 @@ data needed by pandas, Polars, or Python tools.
 The cache is not authoritative. If a cache file is missing, it should be fetched
 or regenerated from R2/Postgres metadata.
 
-## 4. User, Session, And File Isolation
+## 4. Organization, User, Session, And File Isolation
 
-Ownership must always flow through `users.id`.
+Organization membership grants account access and org-level metering. It does
+not automatically make every member's sessions visible to every other member.
+By default, sessions stay private to the user who created them.
 
 ```mermaid
 flowchart LR
-  User["users.id"] --> Session["sessions.user_id"]
-  User --> Source["source_assets.user_id + sha256"]
+  Org["organizations.id"] --> Membership["organization_members"]
+  User["users.id"] --> Membership
+  Org --> Session["sessions.organization_id"]
+  User --> SessionOwner["sessions.created_by_user_id"]
+  SessionOwner --> Session
+  Org --> Usage["usage_events / org usage rollups"]
+  Org --> Source["source_assets.organization_id"]
+  User --> SourceUser["source_assets.user_id + sha256"]
+  SourceUser --> Source
   Session --> WorkspaceAsset["workspace_assets.session_id"]
   Source --> WorkspaceAsset
   WorkspaceAsset --> Table["tables.workspace_asset_id"]
@@ -158,9 +180,13 @@ flowchart LR
 
 Important rules:
 
-- Every API route must validate that the current user owns the session or file.
-- Deduplication should happen per user using content hash. This prevents
-  cross-user leakage and still saves storage for repeated uploads by one user.
+- Every API route must validate that the current user is an active member of the
+  selected organization and owns the target session or file.
+- Session visibility is private by default even inside the same organization.
+- Deduplication still happens per user using content hash. This prevents
+  cross-user leakage while org ids allow aggregate storage/usage checks.
+- Org ids are denormalized onto high-value tenant tables so usage dashboards and
+  enforcement queries do not need deep joins.
 - A single source asset can appear in multiple workspaces through
   `workspace_assets`.
 - Processing should operate on session-scoped file/table records, not directly

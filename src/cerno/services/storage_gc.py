@@ -92,7 +92,8 @@ def _live_object_key_queries(
             FROM source_assets sa
             JOIN workspace_assets wa ON wa.source_asset_id = sa.id
             JOIN sessions s ON s.id = wa.session_id
-            WHERE s.user_id = ? AND sa.storage_backend = ?
+            WHERE COALESCE(s.created_by_user_id, s.user_id) = ?
+              AND sa.storage_backend = ?
             """,
             (user_id, storage_backend),
         ),
@@ -106,11 +107,14 @@ def _live_object_key_queries(
             WHERE aa.user_id = ?
               AND aa.storage_backend = ?
               AND (
-                (aa.session_id IS NOT NULL AND s.user_id = ?)
+                (
+                  aa.session_id IS NOT NULL
+                  AND COALESCE(s.created_by_user_id, s.user_id) = ?
+                )
                 OR (
                   aa.session_id IS NULL
                   AND aa.source_asset_id IS NOT NULL
-                  AND ws.user_id = ?
+                  AND COALESCE(ws.created_by_user_id, ws.user_id) = ?
                 )
               )
             """,
@@ -130,7 +134,7 @@ def _live_object_key_queries(
             SELECT DISTINCT ca.object_key
             FROM chat_artifacts ca
             JOIN sessions s ON s.id = ca.session_id
-            WHERE s.user_id = ?
+            WHERE COALESCE(s.created_by_user_id, s.user_id) = ?
               AND ca.storage_backend = ?
               AND ca.object_key IS NOT NULL
             """,
@@ -154,7 +158,7 @@ def _prune_unreferenced_source_assets(
             FROM workspace_assets wa
             JOIN sessions s ON s.id = wa.session_id
             WHERE wa.source_asset_id = sa.id
-              AND s.user_id = ?
+              AND COALESCE(s.created_by_user_id, s.user_id) = ?
           )
         """,
         (user_id, user_id),

@@ -8,6 +8,11 @@ export type CurrentUser = {
   name: string | null;
   picture: string | null;
   access_status: AccessStatus;
+  organizations: Array<{
+    id: string;
+    name: string;
+    slug: string;
+  }>;
 };
 
 const AUTH_BASE = "/api/auth";

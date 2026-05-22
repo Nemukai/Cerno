@@ -26,6 +26,11 @@ from cerno.models import (
     Link,
     LinkReview,
     MessageRole,
+    Organization,
+    OrganizationEntitlements,
+    OrganizationInvite,
+    OrganizationMember,
+    OrganizationRole,
     ProcessingEvent,
     ProcessingEventKind,
     ProcessingJob,
@@ -60,34 +65,256 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+def _organization_slug_from_email(email: str, user_id: str) -> str:
+    local = email.split("@", 1)[0].strip().lower() or "user"
+    safe = "".join(ch if ch.isalnum() else "-" for ch in local).strip("-")
+    suffix = user_id.replace("-", "")[:8]
+    return f"{safe or 'user'}-{suffix}"
+
+
+class OrganizationRepository:
+    def __init__(self, conn: DbConnection) -> None:
+        self.conn = conn
+
+    def create(
+        self,
+        *,
+        name: str,
+        slug: str,
+        organization_id: str | None = None,
+        status: str = "active",
+    ) -> Organization:
+        oid = organization_id or new_id()
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO organizations (id, name, slug, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (oid, name, slug, status, now.isoformat(), now.isoformat()),
+        )
+        row = self.conn.execute("SELECT * FROM organizations WHERE id = ?", (oid,)).fetchone()
+        if row is None:
+            raise LookupError(f"organization not found after create: {oid}")
+        return _row_to_organization(row)
+
+    def get(self, organization_id: str) -> Organization | None:
+        row = self.conn.execute(
+            "SELECT * FROM organizations WHERE id = ?",
+            (organization_id,),
+        ).fetchone()
+        return _row_to_organization(row) if row else None
+
+    def list_for_user(self, user_id: str) -> list[Organization]:
+        rows = self.conn.execute(
+            """SELECT o.*
+               FROM organizations o
+               JOIN organization_members m ON m.organization_id = o.id
+               WHERE m.user_id = ?
+                 AND m.status = 'active'
+                 AND o.status = 'active'
+               ORDER BY o.created_at""",
+            (user_id,),
+        ).fetchall()
+        return [_row_to_organization(row) for row in rows]
+
+    def primary_for_user(self, user_id: str) -> Organization | None:
+        orgs = self.list_for_user(user_id)
+        return orgs[0] if orgs else None
+
+    def add_member(
+        self,
+        *,
+        organization_id: str,
+        user_id: str,
+        role: OrganizationRole = "member",
+        status: str = "active",
+    ) -> OrganizationMember:
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO organization_members
+               (organization_id, user_id, role, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(organization_id, user_id) DO UPDATE
+               SET role = excluded.role,
+                   status = excluded.status,
+                   updated_at = excluded.updated_at""",
+            (organization_id, user_id, role, status, now.isoformat(), now.isoformat()),
+        )
+        row = self.conn.execute(
+            """SELECT * FROM organization_members
+               WHERE organization_id = ? AND user_id = ?""",
+            (organization_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"organization member not found after upsert: {organization_id}:{user_id}")
+        return _row_to_organization_member(row)
+
+    def get_member(
+        self,
+        *,
+        organization_id: str,
+        user_id: str,
+    ) -> OrganizationMember | None:
+        row = self.conn.execute(
+            """SELECT * FROM organization_members
+               WHERE organization_id = ? AND user_id = ?""",
+            (organization_id, user_id),
+        ).fetchone()
+        return _row_to_organization_member(row) if row else None
+
+    def ensure_personal_for_user(self, user: User) -> Organization:
+        existing = self.primary_for_user(user.id)
+        if existing is not None:
+            return existing
+        name = f"{user.name or user.email}'s Organization"
+        slug = _organization_slug_from_email(user.email, user.id)
+        org = self.create(name=name, slug=slug)
+        self.add_member(organization_id=org.id, user_id=user.id, role="owner")
+        self.ensure_entitlements(org.id)
+        return org
+
+    def ensure_entitlements(self, organization_id: str) -> OrganizationEntitlements:
+        existing = self.get_entitlements(organization_id)
+        if existing is not None:
+            return existing
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO organization_entitlements
+               (organization_id, plan_name, contract_status, seat_limit,
+                monthly_token_limit, storage_quota_bytes, soft_limit_percent,
+                hard_limit_percent, feature_flags, created_at, updated_at)
+               VALUES (?, 'manual', 'trial', 1, 6000000, 5368709120, 100, 120, '{}', ?, ?)""",
+            (organization_id, now.isoformat(), now.isoformat()),
+        )
+        entitlements = self.get_entitlements(organization_id)
+        if entitlements is None:
+            raise LookupError(f"organization entitlements not found after create: {organization_id}")
+        return entitlements
+
+    def get_entitlements(self, organization_id: str) -> OrganizationEntitlements | None:
+        row = self.conn.execute(
+            "SELECT * FROM organization_entitlements WHERE organization_id = ?",
+            (organization_id,),
+        ).fetchone()
+        return _row_to_organization_entitlements(row) if row else None
+
+    def create_invite(
+        self,
+        *,
+        organization_id: str,
+        email: str,
+        role: OrganizationRole = "member",
+        invited_by_user_id: str | None = None,
+        token: str | None = None,
+        expires_at: datetime | None = None,
+    ) -> OrganizationInvite:
+        invite_id = new_id()
+        now = _now()
+        normalized_email = ApprovedEmailRepository.normalize(email)
+        self.conn.execute(
+            """INSERT INTO organization_invites
+               (id, organization_id, email, role, invited_by_user_id, status,
+                token, expires_at, created_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
+            (
+                invite_id,
+                organization_id,
+                normalized_email,
+                role,
+                invited_by_user_id,
+                token,
+                expires_at.isoformat() if expires_at else None,
+                now.isoformat(),
+            ),
+        )
+        row = self.conn.execute(
+            "SELECT * FROM organization_invites WHERE id = ?",
+            (invite_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"organization invite not found after create: {invite_id}")
+        return _row_to_organization_invite(row)
+
+
 class SessionRepository:
     def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
-    def create(self, name: str, user_id: str, session_id: str | None = None) -> Session:
+    def create(
+        self,
+        name: str,
+        user_id: str,
+        organization_id: str,
+        session_id: str | None = None,
+    ) -> Session:
         sid = session_id or new_id()
         created_at = _now()
         self.conn.execute(
-            "INSERT INTO sessions (id, user_id, name, status, created_at) VALUES (?, ?, ?, ?, ?)",
-            (sid, user_id, name, "new", created_at.isoformat()),
+            """INSERT INTO sessions
+               (id, organization_id, user_id, created_by_user_id, name, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (sid, organization_id, user_id, user_id, name, "new", created_at.isoformat()),
         )
-        return Session(id=sid, user_id=user_id, name=name, status="new", created_at=created_at)
+        return Session(
+            id=sid,
+            organization_id=organization_id,
+            user_id=user_id,
+            created_by_user_id=user_id,
+            name=name,
+            status="new",
+            created_at=created_at,
+        )
 
-    def get(self, session_id: str, user_id: str | None = None) -> Session | None:
+    def get(
+        self,
+        session_id: str,
+        user_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> Session | None:
         if user_id is None:
-            row = self.conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if organization_id is None:
+                row = self.conn.execute(
+                    "SELECT * FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+            else:
+                row = self.conn.execute(
+                    "SELECT * FROM sessions WHERE id = ? AND organization_id = ?",
+                    (session_id, organization_id),
+                ).fetchone()
         else:
-            row = self.conn.execute(
-                "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
-                (session_id, user_id),
-            ).fetchone()
+            if organization_id is None:
+                row = self.conn.execute(
+                    """SELECT * FROM sessions
+                       WHERE id = ?
+                         AND COALESCE(created_by_user_id, user_id) = ?""",
+                    (session_id, user_id),
+                ).fetchone()
+            else:
+                row = self.conn.execute(
+                    """SELECT * FROM sessions
+                       WHERE id = ?
+                         AND organization_id = ?
+                         AND COALESCE(created_by_user_id, user_id) = ?""",
+                    (session_id, organization_id, user_id),
+                ).fetchone()
         return _row_to_session(row) if row else None
 
-    def list(self, user_id: str) -> list[Session]:
-        rows = self.conn.execute(
-            "SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC",
-            (user_id,),
-        ).fetchall()
+    def list(self, user_id: str, organization_id: str | None = None) -> list[Session]:
+        if organization_id is None:
+            rows = self.conn.execute(
+                """SELECT * FROM sessions
+                   WHERE COALESCE(created_by_user_id, user_id) = ?
+                   ORDER BY created_at DESC""",
+                (user_id,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT * FROM sessions
+                   WHERE organization_id = ?
+                     AND COALESCE(created_by_user_id, user_id) = ?
+                   ORDER BY created_at DESC""",
+                (organization_id, user_id),
+            ).fetchall()
         return [_row_to_session(r) for r in rows]
 
     def set_status(self, session_id: str, status: SessionStatus) -> None:
@@ -105,14 +332,36 @@ class SessionRepository:
             (overview, session_id),
         )
 
-    def delete(self, session_id: str, user_id: str | None = None) -> bool:
+    def delete(
+        self,
+        session_id: str,
+        user_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> bool:
         if user_id is None:
-            cur = self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            if organization_id is None:
+                cur = self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            else:
+                cur = self.conn.execute(
+                    "DELETE FROM sessions WHERE id = ? AND organization_id = ?",
+                    (session_id, organization_id),
+                )
         else:
-            cur = self.conn.execute(
-                "DELETE FROM sessions WHERE id = ? AND user_id = ?",
-                (session_id, user_id),
-            )
+            if organization_id is None:
+                cur = self.conn.execute(
+                    """DELETE FROM sessions
+                       WHERE id = ?
+                         AND COALESCE(created_by_user_id, user_id) = ?""",
+                    (session_id, user_id),
+                )
+            else:
+                cur = self.conn.execute(
+                    """DELETE FROM sessions
+                       WHERE id = ?
+                         AND organization_id = ?
+                         AND COALESCE(created_by_user_id, user_id) = ?""",
+                    (session_id, organization_id, user_id),
+                )
         return cur.rowcount > 0
 
 
@@ -242,12 +491,33 @@ class SourceAssetRepository:
     def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
 
-    def get_by_hash(self, user_id: str, sha256: str) -> SourceAsset | None:
+    def get_by_hash(
+        self,
+        user_id: str,
+        sha256: str,
+        organization_id: str | None = None,
+    ) -> SourceAsset | None:
+        if organization_id is not None:
+            row = self.conn.execute(
+                """SELECT * FROM source_assets
+                   WHERE user_id = ? AND organization_id = ? AND sha256 = ?""",
+                (user_id, organization_id, sha256),
+            ).fetchone()
+            return _row_to_source_asset(row) if row else None
         row = self.conn.execute(
             "SELECT * FROM source_assets WHERE user_id = ? AND sha256 = ?",
             (user_id, sha256),
         ).fetchone()
         return _row_to_source_asset(row) if row else None
+
+    def total_size_for_organization(self, organization_id: str) -> int:
+        row = self.conn.execute(
+            """SELECT COALESCE(SUM(size_bytes), 0) AS total
+               FROM source_assets
+               WHERE organization_id = ?""",
+            (organization_id,),
+        ).fetchone()
+        return int(row["total"] or 0) if row else 0
 
     def total_size_for_user(self, user_id: str) -> int:
         row = self.conn.execute(
@@ -260,6 +530,7 @@ class SourceAssetRepository:
         self,
         *,
         user_id: str,
+        organization_id: str | None = None,
         sha256: str,
         original_filename: str,
         mime_type: str | None,
@@ -272,11 +543,12 @@ class SourceAssetRepository:
         created_at = _now()
         self.conn.execute(
             """INSERT INTO source_assets
-               (id, user_id, sha256, original_filename, mime_type, size_bytes,
+               (id, organization_id, user_id, sha256, original_filename, mime_type, size_bytes,
                 storage_backend, object_key, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 aid,
+                organization_id,
                 user_id,
                 sha256,
                 original_filename,
@@ -289,6 +561,7 @@ class SourceAssetRepository:
         )
         return SourceAsset(
             id=aid,
+            organization_id=organization_id,
             user_id=user_id,
             sha256=sha256,
             original_filename=original_filename,
@@ -344,6 +617,7 @@ class AssetArtifactRepository:
         self,
         *,
         user_id: str,
+        organization_id: str | None = None,
         artifact_type: str,
         storage_backend: str,
         object_key: str,
@@ -359,11 +633,12 @@ class AssetArtifactRepository:
         created_at = _now()
         self.conn.execute(
             """INSERT INTO asset_artifacts
-               (id, user_id, session_id, source_asset_id, file_id, artifact_type,
+               (id, organization_id, user_id, session_id, source_asset_id, file_id, artifact_type,
                 storage_backend, object_key, content_hash, size_bytes, mime_type, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 aid,
+                organization_id,
                 user_id,
                 session_id,
                 source_asset_id,
@@ -379,6 +654,7 @@ class AssetArtifactRepository:
         )
         return AssetArtifact(
             id=aid,
+            organization_id=organization_id,
             user_id=user_id,
             session_id=session_id,
             source_asset_id=source_asset_id,
@@ -482,6 +758,7 @@ class UploadIntentRepository:
         self,
         *,
         user_id: str,
+        organization_id: str | None = None,
         session_id: str,
         original_filename: str,
         mime_type: str | None,
@@ -494,11 +771,12 @@ class UploadIntentRepository:
         created_at = _now()
         self.conn.execute(
             """INSERT INTO upload_intents
-               (id, user_id, session_id, original_filename, mime_type,
+               (id, organization_id, user_id, session_id, original_filename, mime_type,
                 expected_size_bytes, storage_backend, object_key, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 iid,
+                organization_id,
                 user_id,
                 session_id,
                 original_filename,
@@ -512,6 +790,7 @@ class UploadIntentRepository:
         )
         return UploadIntent(
             id=iid,
+            organization_id=organization_id,
             user_id=user_id,
             session_id=session_id,
             original_filename=original_filename,
@@ -574,6 +853,7 @@ class ProcessingJobRepository:
         self,
         *,
         user_id: str,
+        organization_id: str | None = None,
         session_id: str,
         kind: ProcessingJobKind,
         idempotency_key: str,
@@ -588,11 +868,12 @@ class ProcessingJobRepository:
         payload = checkpoint_json or {}
         self.conn.execute(
             """INSERT INTO processing_jobs
-               (id, user_id, session_id, kind, status, attempts, checkpoint_json,
+               (id, organization_id, user_id, session_id, kind, status, attempts, checkpoint_json,
                 idempotency_key, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)""",
             (
                 jid,
+                organization_id,
                 user_id,
                 session_id,
                 kind,
@@ -604,6 +885,7 @@ class ProcessingJobRepository:
         )
         return ProcessingJob(
             id=jid,
+            organization_id=organization_id,
             user_id=user_id,
             session_id=session_id,
             kind=kind,
@@ -1450,7 +1732,9 @@ def _row_to_session(row: DbRow) -> Session:
     keys = row.keys()
     return Session(
         id=row["id"],
+        organization_id=row["organization_id"] if "organization_id" in keys else None,
         user_id=row["user_id"] if "user_id" in keys else None,
+        created_by_user_id=row["created_by_user_id"] if "created_by_user_id" in keys else None,
         name=row["name"],
         status=row["status"],
         discovery_status=row["discovery_status"] if "discovery_status" in keys else "empty",
@@ -1481,8 +1765,10 @@ def _row_to_file(row: DbRow) -> File:
 
 
 def _row_to_source_asset(row: DbRow) -> SourceAsset:
+    keys = row.keys()
     return SourceAsset(
         id=row["id"],
+        organization_id=row["organization_id"] if "organization_id" in keys else None,
         user_id=row["user_id"],
         sha256=row["sha256"],
         original_filename=row["original_filename"],
@@ -1521,8 +1807,10 @@ def _row_to_workspace_table(row: DbRow) -> WorkspaceTable:
 
 
 def _row_to_asset_artifact(row: DbRow) -> AssetArtifact:
+    keys = row.keys()
     return AssetArtifact(
         id=row["id"],
+        organization_id=row["organization_id"] if "organization_id" in keys else None,
         user_id=row["user_id"],
         session_id=row["session_id"],
         source_asset_id=row["source_asset_id"],
@@ -1538,8 +1826,10 @@ def _row_to_asset_artifact(row: DbRow) -> AssetArtifact:
 
 
 def _row_to_upload_intent(row: DbRow) -> UploadIntent:
+    keys = row.keys()
     return UploadIntent(
         id=row["id"],
+        organization_id=row["organization_id"] if "organization_id" in keys else None,
         user_id=row["user_id"],
         session_id=row["session_id"],
         original_filename=row["original_filename"],
@@ -1557,11 +1847,13 @@ def _row_to_upload_intent(row: DbRow) -> UploadIntent:
 
 
 def _row_to_processing_job(row: DbRow) -> ProcessingJob:
+    keys = row.keys()
     checkpoint = loads_json(row["checkpoint_json"], {})
     if not isinstance(checkpoint, dict):
         checkpoint = {}
     return ProcessingJob(
         id=row["id"],
+        organization_id=row["organization_id"] if "organization_id" in keys else None,
         user_id=row["user_id"],
         session_id=row["session_id"],
         kind=row["kind"],
@@ -1624,6 +1916,66 @@ def _row_to_user(row: DbRow) -> User:
         access_code_used=row["access_code_used"] if "access_code_used" in keys else None,
         created_at=datetime.fromisoformat(row["created_at"]),
         last_seen_at=datetime.fromisoformat(row["last_seen_at"]),
+    )
+
+
+def _row_to_organization(row: DbRow) -> Organization:
+    return Organization(
+        id=row["id"],
+        name=row["name"],
+        slug=row["slug"],
+        status=row["status"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _row_to_organization_member(row: DbRow) -> OrganizationMember:
+    return OrganizationMember(
+        organization_id=row["organization_id"],
+        user_id=row["user_id"],
+        role=row["role"],
+        status=row["status"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _row_to_organization_invite(row: DbRow) -> OrganizationInvite:
+    return OrganizationInvite(
+        id=row["id"],
+        organization_id=row["organization_id"],
+        email=row["email"],
+        role=row["role"],
+        invited_by_user_id=row["invited_by_user_id"],
+        status=row["status"],
+        token=row["token"],
+        expires_at=_parse_dt(row["expires_at"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+        accepted_at=_parse_dt(row["accepted_at"]),
+    )
+
+
+def _row_to_organization_entitlements(row: DbRow) -> OrganizationEntitlements:
+    flags = loads_json(row["feature_flags"], default={})
+    if not isinstance(flags, dict):
+        flags = {}
+    return OrganizationEntitlements(
+        organization_id=row["organization_id"],
+        plan_name=row["plan_name"],
+        contract_status=row["contract_status"],
+        seat_limit=row["seat_limit"],
+        monthly_token_limit=row["monthly_token_limit"],
+        storage_quota_bytes=row["storage_quota_bytes"],
+        monthly_upload_bytes=row["monthly_upload_bytes"],
+        max_file_size_bytes=row["max_file_size_bytes"],
+        max_workspaces=row["max_workspaces"],
+        soft_limit_percent=row["soft_limit_percent"],
+        hard_limit_percent=row["hard_limit_percent"],
+        feature_flags=flags,
+        notes=row["notes"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
     )
 
 
@@ -1915,32 +2267,103 @@ class LLMUsageRepository:
         self.conn = conn
         self.auto_commit = auto_commit
 
-    def get(self, user_id: str, day: str) -> int:
-        row = self.conn.execute(
-            "SELECT tokens_used FROM llm_usage WHERE user_id = ? AND day = ?",
-            (user_id, day),
-        ).fetchone()
+    def get(self, user_id: str, day: str, organization_id: str | None = None) -> int:
+        if organization_id is not None:
+            row = self.conn.execute(
+                """SELECT tokens_used FROM llm_usage
+                   WHERE user_id = ? AND organization_id = ? AND day = ?""",
+                (user_id, organization_id, day),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT tokens_used FROM llm_usage WHERE user_id = ? AND day = ?",
+                (user_id, day),
+            ).fetchone()
         return int(row["tokens_used"]) if row else 0
 
-    def add_tokens(self, user_id: str, day: str, tokens: int, model: str | None = None) -> int:
-        self.conn.execute(
-            """INSERT INTO llm_usage (user_id, day, tokens_used) VALUES (?, ?, ?)
-               ON CONFLICT(user_id, day) DO UPDATE
-               SET tokens_used = llm_usage.tokens_used + excluded.tokens_used""",
-            (user_id, day, tokens),
-        )
+    def add_tokens(
+        self,
+        user_id: str,
+        day: str,
+        tokens: int,
+        model: str | None = None,
+        organization_id: str | None = None,
+    ) -> int:
+        if organization_id is not None:
+            self.conn.execute(
+                """INSERT INTO llm_usage
+                   (organization_id, user_id, day, tokens_used)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, day) DO UPDATE
+                   SET tokens_used = llm_usage.tokens_used + excluded.tokens_used,
+                       organization_id = COALESCE(llm_usage.organization_id, excluded.organization_id)""",
+                (organization_id, user_id, day, tokens),
+            )
+        else:
+            self.conn.execute(
+                """INSERT INTO llm_usage (user_id, day, tokens_used) VALUES (?, ?, ?)
+                   ON CONFLICT(user_id, day) DO UPDATE
+                   SET tokens_used = llm_usage.tokens_used + excluded.tokens_used""",
+                (user_id, day, tokens),
+            )
         normalized_model = model.strip() if model else ""
         if normalized_model:
+            if organization_id is not None:
+                self.conn.execute(
+                    """INSERT INTO llm_usage_by_model
+                       (organization_id, user_id, day, model, tokens_used)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(user_id, day, model) DO UPDATE
+                       SET tokens_used = llm_usage_by_model.tokens_used + excluded.tokens_used,
+                           organization_id = COALESCE(
+                               llm_usage_by_model.organization_id,
+                               excluded.organization_id
+                           )""",
+                    (organization_id, user_id, day, normalized_model, tokens),
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO llm_usage_by_model (user_id, day, model, tokens_used)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(user_id, day, model) DO UPDATE
+                       SET tokens_used = llm_usage_by_model.tokens_used + excluded.tokens_used""",
+                    (user_id, day, normalized_model, tokens),
+                )
+        if organization_id is not None:
             self.conn.execute(
-                """INSERT INTO llm_usage_by_model (user_id, day, model, tokens_used)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(user_id, day, model) DO UPDATE
-                   SET tokens_used = llm_usage_by_model.tokens_used + excluded.tokens_used""",
-                (user_id, day, normalized_model, tokens),
+                """INSERT INTO usage_events
+                   (id, organization_id, user_id, event_type, resource_type,
+                    amount, model, metadata, occurred_at)
+                   VALUES (?, ?, ?, 'llm_tokens', 'tokens', ?, ?, '{}', ?)""",
+                (
+                    new_id(),
+                    organization_id,
+                    user_id,
+                    tokens,
+                    normalized_model or None,
+                    _now().isoformat(),
+                ),
             )
+            self.conn.execute(
+                """INSERT INTO organization_usage_daily
+                   (organization_id, day, metric, amount)
+                   VALUES (?, ?, 'llm_tokens', ?)
+                   ON CONFLICT(organization_id, day, metric) DO UPDATE
+                   SET amount = organization_usage_daily.amount + excluded.amount""",
+                (organization_id, day, tokens),
+            )
+            if normalized_model:
+                self.conn.execute(
+                    """INSERT INTO organization_usage_daily_by_model
+                       (organization_id, day, metric, model, amount)
+                       VALUES (?, ?, 'llm_tokens', ?, ?)
+                       ON CONFLICT(organization_id, day, metric, model) DO UPDATE
+                       SET amount = organization_usage_daily_by_model.amount + excluded.amount""",
+                    (organization_id, day, normalized_model, tokens),
+                )
         if self.auto_commit:
             self.conn.commit()
-        return self.get(user_id, day)
+        return self.get(user_id, day, organization_id)
 
 
 def _row_to_schema_column(row: DbRow) -> SchemaColumn:

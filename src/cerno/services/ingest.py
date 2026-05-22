@@ -134,6 +134,7 @@ def ingest_file(
     original_content_type: str | None = None,
     original_size_bytes: int | None = None,
     user_id: str,
+    organization_id: str | None = None,
     session_id: str,
     settings: Settings,
     files_repo: FileRepository,
@@ -163,7 +164,11 @@ def ingest_file(
     ):
         raise IngestError("Postgres/R2 storage repositories are required")
 
-    source_asset = source_assets_repo.get_by_hash(user_id, content_hash)
+    source_asset = source_assets_repo.get_by_hash(
+        user_id,
+        content_hash,
+        organization_id=organization_id,
+    )
     if source_asset is None:
         asset_id = new_id()
         object_key = source_object_key(user_id, asset_id, content_hash, original_filename)
@@ -174,6 +179,7 @@ def ingest_file(
         )
         source_asset = source_assets_repo.create(
             user_id=user_id,
+            organization_id=organization_id,
             sha256=content_hash,
             original_filename=original_filename,
             mime_type=original_content_type,
@@ -184,6 +190,7 @@ def ingest_file(
         )
         artifacts_repo.create(
             user_id=user_id,
+            organization_id=organization_id,
             source_asset_id=source_asset.id,
             artifact_type="source",
             storage_backend=stored.backend,
@@ -223,6 +230,7 @@ def ingest_file(
         stored = object_store.put_path(raw_path, key, content_type="application/vnd.apache.parquet")
         artifacts_repo.create(
             user_id=user_id,
+            organization_id=organization_id,
             session_id=session_id,
             source_asset_id=source_asset.id,
             file_id=file.id,

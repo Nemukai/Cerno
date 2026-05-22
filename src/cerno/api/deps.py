@@ -9,8 +9,8 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from cerno.config import Settings, get_settings
 from cerno.db import DbConnection, connect
 from cerno.llm import LLMClient
-from cerno.models import User
-from cerno.repositories import UserRepository
+from cerno.models import Organization, User
+from cerno.repositories import OrganizationRepository, UserRepository
 
 
 def get_conn(
@@ -68,8 +68,30 @@ def get_granted_user(
     return user
 
 
+def get_granted_organization(
+    request: Request,
+    user: Annotated[User, Depends(get_granted_user)],
+    conn: Annotated[DbConnection, Depends(get_conn)],
+) -> Organization:
+    org_repo = OrganizationRepository(conn)
+    requested_org_id = request.headers.get("x-cerno-organization-id")
+    if requested_org_id:
+        membership = org_repo.get_member(
+            organization_id=requested_org_id,
+            user_id=user.id,
+        )
+        org = org_repo.get(requested_org_id)
+        if membership is None or membership.status != "active" or org is None:
+            raise HTTPException(status_code=403, detail="organization access denied")
+        if org.status != "active":
+            raise HTTPException(status_code=403, detail="organization is not active")
+        return org
+    return org_repo.ensure_personal_for_user(user)
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 ConnDep = Annotated[DbConnection, Depends(get_conn)]
 LLMDep = Annotated[LLMClient, Depends(get_llm_client)]
 UserDep = Annotated[User, Depends(get_current_user)]
 GrantedUserDep = Annotated[User, Depends(get_granted_user)]
+OrgDep = Annotated[Organization, Depends(get_granted_organization)]

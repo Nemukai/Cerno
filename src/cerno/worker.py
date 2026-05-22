@@ -9,8 +9,8 @@ from pathlib import Path
 
 from cerno.config import Settings, get_settings
 from cerno.db import DbConnection, connect
-from cerno.log_config import configure_logging
 from cerno.llm import LLMClient
+from cerno.log_config import configure_logging
 from cerno.models import ProcessingJob
 from cerno.repositories import (
     AssetArtifactRepository,
@@ -124,6 +124,7 @@ async def _run_ingest_upload(settings: Settings, job: ProcessingJob, worker_id: 
             original_content_type=intent.mime_type,
             original_size_bytes=intent.observed_size_bytes or intent.expected_size_bytes,
             user_id=job.user_id,
+            organization_id=job.organization_id,
             session_id=job.session_id,
             settings=settings,
             files_repo=FileRepository(conn),
@@ -134,7 +135,11 @@ async def _run_ingest_upload(settings: Settings, job: ProcessingJob, worker_id: 
             object_store=object_store,
         )
         content_hash = hash_file(Path(local_path))
-        source_asset = SourceAssetRepository(conn).get_by_hash(job.user_id, content_hash)
+        source_asset = SourceAssetRepository(conn).get_by_hash(
+            job.user_id,
+            content_hash,
+            organization_id=job.organization_id,
+        )
         intents_repo.mark_processed(
             intent.id,
             source_asset_id=source_asset.id if source_asset is not None else None,
@@ -224,7 +229,9 @@ async def _run_discovery(settings: Settings, job: ProcessingJob) -> None:
             data_docs_repo=DataDocRepository(conn),
             events_repo=ProcessingEventRepository(conn),
             llm_client=LLMClient(settings=settings).with_usage(
-                LLMUsageRepository(conn, auto_commit=True), job.user_id
+                LLMUsageRepository(conn, auto_commit=True),
+                job.user_id,
+                organization_id=job.organization_id,
             ),
             artifacts_repo=AssetArtifactRepository(conn),
             object_store=get_object_store(settings),

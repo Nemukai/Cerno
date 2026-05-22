@@ -111,18 +111,26 @@ class LLMClient:
         transport: HTTPTransport | None = None,
         usage_repo: LLMUsageRepository | None = None,
         user_id: str | None = None,
+        organization_id: str | None = None,
     ) -> None:
         self.settings = settings
         self._transport = transport or _HttpxTransport(settings.llm_timeout_seconds)
         self._usage_repo = usage_repo
         self._user_id = user_id
+        self._organization_id = organization_id
 
-    def with_usage(self, usage_repo: LLMUsageRepository, user_id: str) -> LLMClient:
+    def with_usage(
+        self,
+        usage_repo: LLMUsageRepository,
+        user_id: str,
+        organization_id: str | None = None,
+    ) -> LLMClient:
         return LLMClient(
             settings=self.settings,
             transport=self._transport,
             usage_repo=usage_repo,
             user_id=user_id,
+            organization_id=organization_id,
         )
 
     def _headers(self) -> dict[str, str]:
@@ -418,7 +426,13 @@ class LLMClient:
     def _record_token_usage(self, tokens: int, *, model: str | None = None) -> None:
         if tokens <= 0 or self._usage_repo is None or self._user_id is None:
             return
-        self._usage_repo.add_tokens(self._user_id, self._usage_day(), tokens, model=model)
+        self._usage_repo.add_tokens(
+            self._user_id,
+            self._usage_day(),
+            tokens,
+            model=model,
+            organization_id=self._organization_id,
+        )
 
 
 class _HttpxTransport:

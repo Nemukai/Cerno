@@ -4,13 +4,13 @@ from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from cerno.api.deps import ConnDep, SettingsDep, UserDep, cookie_serializer
 from cerno.auth import build_oauth
 from cerno.config import Settings
 from cerno.models import AccessStatus
-from cerno.repositories import ApprovedEmailRepository, UserRepository
+from cerno.repositories import ApprovedEmailRepository, OrganizationRepository, UserRepository
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -21,6 +21,13 @@ class CurrentUser(BaseModel):
     name: str | None = None
     picture: str | None = None
     access_status: AccessStatus = "pending"
+    organizations: list[CurrentOrganization] = Field(default_factory=list)
+
+
+class CurrentOrganization(BaseModel):
+    id: str
+    name: str
+    slug: str
 
 
 def _set_session_cookie(response: Response, *, settings: Settings, user_id: str) -> None:
@@ -76,6 +83,10 @@ def me(conn: ConnDep, user: UserDep) -> CurrentUser:
     synced = UserRepository(conn).sync_allowlist_status(user.id, email_approved=approved)
     if synced is None:
         raise HTTPException(status_code=401, detail="user not found")
+    org_repo = OrganizationRepository(conn)
+    if synced.access_status == "granted":
+        org_repo.ensure_personal_for_user(synced)
+    organizations = org_repo.list_for_user(synced.id)
     conn.commit()
     return CurrentUser(
         id=synced.id,
@@ -83,6 +94,10 @@ def me(conn: ConnDep, user: UserDep) -> CurrentUser:
         name=synced.name,
         picture=synced.picture,
         access_status=synced.access_status,
+        organizations=[
+            CurrentOrganization(id=org.id, name=org.name, slug=org.slug)
+            for org in organizations
+        ],
     )
 
 

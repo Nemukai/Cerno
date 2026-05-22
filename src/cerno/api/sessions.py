@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from cerno.api.deps import ConnDep, GrantedUserDep, SettingsDep
+from cerno.api.deps import ConnDep, GrantedUserDep, OrgDep, SettingsDep
 from cerno.config import Settings
 from cerno.db import DbConnection, session_scope
 from cerno.models import (
@@ -59,20 +59,36 @@ router = APIRouter(tags=["sessions"])
 logger = logging.getLogger(__name__)
 
 
-def _require_session(conn: DbConnection, session_id: str, user_id: str) -> Session:
-    session = SessionRepository(conn).get(session_id, user_id=user_id)
+def _require_session(
+    conn: DbConnection,
+    session_id: str,
+    user_id: str,
+    organization_id: str | None = None,
+) -> Session:
+    session = SessionRepository(conn).get(
+        session_id,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     return session
 
 
 def _require_file_for_user(
-    conn: DbConnection, file_id: str, user_id: str
+    conn: DbConnection,
+    file_id: str,
+    user_id: str,
+    organization_id: str | None = None,
 ) -> tuple[FileModel, Session]:
     file = FileRepository(conn).get(file_id)
     if file is None:
         raise HTTPException(status_code=404, detail="file not found")
-    session = SessionRepository(conn).get(file.session_id, user_id=user_id)
+    session = SessionRepository(conn).get(
+        file.session_id,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
     if session is None:
         raise HTTPException(status_code=404, detail="file not found")
     return file, session
@@ -83,18 +99,32 @@ class CreateSessionBody(BaseModel):
 
 
 @router.post("/sessions", response_model=Session)
-def create_session(body: CreateSessionBody, conn: ConnDep, user: GrantedUserDep) -> Session:
-    return SessionRepository(conn).create(body.name, user_id=user.id)
+def create_session(
+    body: CreateSessionBody,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> Session:
+    return SessionRepository(conn).create(
+        body.name,
+        user_id=user.id,
+        organization_id=organization.id,
+    )
 
 
 @router.get("/sessions", response_model=list[Session])
-def list_sessions(conn: ConnDep, user: GrantedUserDep) -> list[Session]:
-    return SessionRepository(conn).list(user_id=user.id)
+def list_sessions(conn: ConnDep, user: GrantedUserDep, organization: OrgDep) -> list[Session]:
+    return SessionRepository(conn).list(user_id=user.id, organization_id=organization.id)
 
 
 @router.get("/sessions/{session_id}", response_model=Session)
-def get_session(session_id: str, conn: ConnDep, user: GrantedUserDep) -> Session:
-    return _require_session(conn, session_id, user.id)
+def get_session(
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> Session:
+    return _require_session(conn, session_id, user.id, organization.id)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
@@ -104,8 +134,13 @@ def delete_session(
     conn: ConnDep,
     settings: SettingsDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> None:
-    deleted = SessionRepository(conn).delete(session_id, user_id=user.id)
+    deleted = SessionRepository(conn).delete(
+        session_id,
+        user_id=user.id,
+        organization_id=organization.id,
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="session not found")
     conn.commit()
@@ -191,15 +226,16 @@ def create_upload_intents(
     conn: ConnDep,
     settings: SettingsDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> CreateUploadIntentsResponse:
-    _require_session(conn, session_id, user.id)
+    _require_session(conn, session_id, user.id, organization.id)
     object_store = get_object_store(settings)
     if object_store.backend != "r2":
         raise HTTPException(status_code=501, detail="direct uploads require R2 storage")
 
     intents_repo = UploadIntentRepository(conn)
     source_assets_repo = SourceAssetRepository(conn)
-    current_usage = source_assets_repo.total_size_for_user(user.id)
+    current_usage = source_assets_repo.total_size_for_organization(organization.id)
     intents: list[UploadIntentBody] = []
     for item in body.files:
         if current_usage + item.size_bytes > settings.per_user_quota_bytes():
@@ -210,6 +246,7 @@ def create_upload_intents(
         object_key = staging_upload_key(user.id, session_id, intent_id, item.filename)
         intent = intents_repo.create(
             user_id=user.id,
+            organization_id=organization.id,
             session_id=session_id,
             original_filename=item.filename,
             mime_type=item.content_type,
@@ -255,8 +292,9 @@ def complete_upload_intent(
     conn: ConnDep,
     settings: SettingsDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> ProcessingJobBody:
-    session = _require_session(conn, session_id, user.id)
+    session = _require_session(conn, session_id, user.id, organization.id)
     intent_repo = UploadIntentRepository(conn)
     intent = intent_repo.get(intent_id, user_id=user.id)
     if intent is None or intent.session_id != session_id:
@@ -282,6 +320,7 @@ def complete_upload_intent(
     events_repo.clear(session_id)
     job = jobs_repo.create(
         user_id=user.id,
+        organization_id=session.organization_id or organization.id,
         session_id=session_id,
         kind="ingest_upload",
         idempotency_key=idempotency_key,
@@ -305,7 +344,11 @@ def complete_upload_intent(
         job.id,
         stored.size_bytes,
     )
-    fresh = SessionRepository(conn).get(session.id, user_id=user.id) or session
+    fresh = SessionRepository(conn).get(
+        session.id,
+        user_id=user.id,
+        organization_id=organization.id,
+    ) or session
     return _build_job_response(conn=conn, job=job, discovery_status=fresh.discovery_status)
 
 
@@ -315,10 +358,11 @@ def upload_files(
     conn: ConnDep,
     settings: SettingsDep,
     user: GrantedUserDep,
+    organization: OrgDep,
     uploads: Annotated[list[UploadFile], File()],
 ) -> FileUploadResponse:
     sessions_repo = SessionRepository(conn)
-    _require_session(conn, session_id, user.id)
+    _require_session(conn, session_id, user.id, organization.id)
     if not uploads:
         raise HTTPException(status_code=400, detail="no files provided")
 
@@ -339,7 +383,7 @@ def upload_files(
         with tmp_path.open("wb") as dest:
             shutil.copyfileobj(upload.file, dest)
         upload_size = tmp_path.stat().st_size
-        current_usage = source_assets_repo.total_size_for_user(user.id)
+        current_usage = source_assets_repo.total_size_for_organization(organization.id)
         if current_usage + upload_size > settings.per_user_quota_bytes():
             tmp_path.unlink(missing_ok=True)
             raise HTTPException(status_code=413, detail="per-user storage quota exceeded")
@@ -350,6 +394,7 @@ def upload_files(
                 original_content_type=upload.content_type,
                 original_size_bytes=upload_size,
                 user_id=user.id,
+                organization_id=organization.id,
                 session_id=session_id,
                 settings=settings,
                 files_repo=files_repo,
@@ -374,8 +419,14 @@ def upload_files(
 
 
 @router.delete("/files/{file_id}", status_code=204)
-def delete_file(file_id: str, conn: ConnDep, settings: SettingsDep, user: GrantedUserDep) -> None:
-    file, session = _require_file_for_user(conn, file_id, user.id)
+def delete_file(
+    file_id: str,
+    conn: ConnDep,
+    settings: SettingsDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> None:
+    file, session = _require_file_for_user(conn, file_id, user.id, organization.id)
     files_repo = FileRepository(conn)
     raw = settings.raw_parquet_path(user.id, session.id, file.id)
     processed = settings.parquet_path(user.id, session.id, file.id)
@@ -386,21 +437,31 @@ def delete_file(file_id: str, conn: ConnDep, settings: SettingsDep, user: Grante
         except OSError:
             pass
     sessions_repo = SessionRepository(conn)
-    fresh = sessions_repo.get(session.id, user_id=user.id)
+    fresh = sessions_repo.get(session.id, user_id=user.id, organization_id=organization.id)
     if fresh is not None and fresh.discovery_status != "empty":
         sessions_repo.set_discovery_status(session.id, "empty")
         sessions_repo.set_overview(session.id, None)
 
 
 @router.get("/sessions/{session_id}/files", response_model=list[FileModel])
-def list_files(session_id: str, conn: ConnDep, user: GrantedUserDep) -> list[FileModel]:
-    _require_session(conn, session_id, user.id)
+def list_files(
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> list[FileModel]:
+    _require_session(conn, session_id, user.id, organization.id)
     return FileRepository(conn).list_for_session(session_id)
 
 
 @router.get("/files/{file_id}", response_model=FileModel)
-def get_file(file_id: str, conn: ConnDep, user: GrantedUserDep) -> FileModel:
-    file, _ = _require_file_for_user(conn, file_id, user.id)
+def get_file(
+    file_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> FileModel:
+    file, _ = _require_file_for_user(conn, file_id, user.id, organization.id)
     return file
 
 
@@ -417,9 +478,10 @@ def get_file_preview(
     conn: ConnDep,
     settings: SettingsDep,
     user: GrantedUserDep,
+    organization: OrgDep,
     limit: int = 100,
 ) -> FilePreviewResponse:
-    _require_file_for_user(conn, file_id, user.id)
+    _require_file_for_user(conn, file_id, user.id, organization.id)
     try:
         data = preview_rows(
             file_id=file_id,
@@ -494,14 +556,21 @@ _INFERRED_TO_SIMPLE = {
 
 
 def _build_discovery_response(
-    session_id: str, conn: DbConnection, user_id: str
+    session_id: str,
+    conn: DbConnection,
+    user_id: str,
+    organization_id: str | None = None,
 ) -> DiscoveryResponse:
     sessions_repo = SessionRepository(conn)
     files_repo = FileRepository(conn)
     schemas_repo = SchemaRepository(conn)
     links_repo = LinkRepository(conn)
 
-    session = sessions_repo.get(session_id, user_id=user_id)
+    session = sessions_repo.get(
+        session_id,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     files = files_repo.list_for_session(session_id)
@@ -553,8 +622,9 @@ def post_process(
     session_id: str,
     conn: ConnDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> ProcessingJobBody:
-    session = _require_session(conn, session_id, user.id)
+    session = _require_session(conn, session_id, user.id, organization.id)
     sessions_repo = SessionRepository(conn)
     files_repo = FileRepository(conn)
     events_repo = ProcessingEventRepository(conn)
@@ -571,6 +641,7 @@ def post_process(
     events_repo.clear(session_id)
     job = jobs_repo.create(
         user_id=user.id,
+        organization_id=organization.id,
         session_id=session_id,
         kind="discovery",
         idempotency_key=f"discovery:{session_id}:{datetime.now(UTC).isoformat()}",
@@ -599,16 +670,26 @@ def post_process(
 
 
 @router.get("/sessions/{session_id}/discovery", response_model=DiscoveryResponse)
-def get_discovery(session_id: str, conn: ConnDep, user: GrantedUserDep) -> DiscoveryResponse:
-    return _build_discovery_response(session_id, conn, user.id)
+def get_discovery(
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> DiscoveryResponse:
+    return _build_discovery_response(session_id, conn, user.id, organization.id)
 
 
 @router.get("/sessions/{session_id}/workspace", response_model=WorkspaceResponse)
-def get_workspace(session_id: str, conn: ConnDep, user: GrantedUserDep) -> WorkspaceResponse:
-    session = _require_session(conn, session_id, user.id)
+def get_workspace(
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> WorkspaceResponse:
+    session = _require_session(conn, session_id, user.id, organization.id)
     files = FileRepository(conn).list_for_session(session_id)
     links = LinkRepository(conn).list_for_session(session_id)
-    discovery = _build_discovery_response(session_id, conn, user.id)
+    discovery = _build_discovery_response(session_id, conn, user.id, organization.id)
     events = ProcessingEventRepository(conn).list_for_session(session_id)
 
     chat_repo = ChatRepository(conn)
@@ -632,6 +713,7 @@ def get_workspace(session_id: str, conn: ConnDep, user: GrantedUserDep) -> Works
             _synthesize_docs_from_current_schema(
                 session_id=session_id,
                 user_id=user.id,
+                organization_id=organization.id,
                 conn=conn,
                 data_docs_repo=data_docs_repo,
             )
@@ -650,8 +732,13 @@ def get_workspace(session_id: str, conn: ConnDep, user: GrantedUserDep) -> Works
 
 
 @router.get("/sessions/{session_id}/docs", response_model=DataDoc)
-def get_data_docs(session_id: str, conn: ConnDep, user: GrantedUserDep) -> DataDoc:
-    session = _require_session(conn, session_id, user.id)
+def get_data_docs(
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> DataDoc:
+    session = _require_session(conn, session_id, user.id, organization.id)
     if session.discovery_status not in {"pending_review", "approved"}:
         raise HTTPException(status_code=404, detail="data docs not generated yet")
 
@@ -661,6 +748,7 @@ def get_data_docs(session_id: str, conn: ConnDep, user: GrantedUserDep) -> DataD
         _synthesize_docs_from_current_schema(
             session_id=session_id,
             user_id=user.id,
+            organization_id=organization.id,
             conn=conn,
             data_docs_repo=data_docs_repo,
         )
@@ -684,8 +772,9 @@ def post_approve(
     conn: ConnDep,
     settings: SettingsDep,
     user: GrantedUserDep,
+    organization: OrgDep,
 ) -> DiscoveryResponse:
-    _require_session(conn, session_id, user.id)
+    _require_session(conn, session_id, user.id, organization.id)
 
     payload = ApprovalPayload(
         files=[
@@ -725,6 +814,7 @@ def post_approve(
         apply_approval(
             session_id=session_id,
             user_id=user.id,
+            organization_id=organization.id,
             payload=payload,
             settings=settings,
             files_repo=files_repo,
@@ -746,17 +836,23 @@ def post_approve(
     except ReingestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return _build_discovery_response(session_id, conn, user.id)
+    return _build_discovery_response(session_id, conn, user.id, organization.id)
 
 
 def _synthesize_docs_from_current_schema(
     *,
     session_id: str,
     user_id: str,
+    organization_id: str | None = None,
     conn: DbConnection,
     data_docs_repo: DataDocRepository,
 ) -> None:
-    discovery = _build_discovery_response(session_id, conn, user_id=user_id)
+    discovery = _build_discovery_response(
+        session_id,
+        conn,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
     if not discovery.files:
         return
     payload = ApprovalPayload(
@@ -871,13 +967,21 @@ def _refresh_docs_from_approval(
 
 @router.get("/sessions/{session_id}/processing", response_model=list[ProcessingEvent])
 def get_processing_events(
-    session_id: str, conn: ConnDep, user: GrantedUserDep
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
 ) -> list[ProcessingEvent]:
-    _require_session(conn, session_id, user.id)
+    _require_session(conn, session_id, user.id, organization.id)
     return ProcessingEventRepository(conn).list_for_session(session_id)
 
 
 @router.get("/sessions/{session_id}/links", response_model=list[Link])
-def get_session_links(session_id: str, conn: ConnDep, user: GrantedUserDep) -> list[Link]:
-    _require_session(conn, session_id, user.id)
+def get_session_links(
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> list[Link]:
+    _require_session(conn, session_id, user.id, organization.id)
     return LinkRepository(conn).list_for_session(session_id)

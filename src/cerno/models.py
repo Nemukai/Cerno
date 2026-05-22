@@ -60,6 +60,60 @@ MessageRole = Literal["user", "assistant", "tool", "system"]
 
 
 AccessStatus = Literal["pending", "granted", "revoked"]
+OrganizationStatus = Literal["active", "suspended", "archived"]
+OrganizationRole = Literal["owner", "admin", "member", "viewer"]
+MembershipStatus = Literal["active", "revoked"]
+InviteStatus = Literal["pending", "accepted", "revoked", "expired"]
+ContractStatus = Literal["trial", "active", "paused", "suspended", "archived"]
+
+
+class Organization(BaseModel):
+    id: str
+    name: str
+    slug: str
+    status: OrganizationStatus = "active"
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrganizationMember(BaseModel):
+    organization_id: str
+    user_id: str
+    role: OrganizationRole = "member"
+    status: MembershipStatus = "active"
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrganizationInvite(BaseModel):
+    id: str
+    organization_id: str
+    email: str
+    role: OrganizationRole = "member"
+    invited_by_user_id: str | None = None
+    status: InviteStatus = "pending"
+    token: str | None = None
+    expires_at: datetime | None = None
+    created_at: datetime
+    accepted_at: datetime | None = None
+
+
+class OrganizationEntitlements(BaseModel):
+    organization_id: str
+    plan_name: str = "manual"
+    contract_status: ContractStatus = "trial"
+    seat_limit: int = 1
+    monthly_token_limit: int = 6_000_000
+    storage_quota_bytes: int = 5 * 1024 * 1024 * 1024
+    monthly_upload_bytes: int | None = None
+    max_file_size_bytes: int | None = None
+    max_workspaces: int | None = None
+    soft_limit_percent: int = 100
+    hard_limit_percent: int = 120
+    feature_flags: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class User(BaseModel):
@@ -98,7 +152,9 @@ class ApprovedEmail(BaseModel):
 
 class Session(BaseModel):
     id: str
+    organization_id: str | None = None
     user_id: str | None = None
+    created_by_user_id: str | None = None
     name: str
     status: SessionStatus = "new"
     discovery_status: DiscoveryStatus = "empty"
@@ -124,6 +180,7 @@ class File(BaseModel):
 
 class SourceAsset(BaseModel):
     id: str
+    organization_id: str | None = None
     user_id: str
     sha256: str
     original_filename: str
@@ -144,6 +201,7 @@ class WorkspaceAsset(BaseModel):
 
 class AssetArtifact(BaseModel):
     id: str
+    organization_id: str | None = None
     user_id: str
     session_id: str | None = None
     source_asset_id: str | None = None
@@ -173,6 +231,7 @@ class WorkspaceTable(BaseModel):
 
 class UploadIntent(BaseModel):
     id: str
+    organization_id: str | None = None
     user_id: str
     session_id: str
     original_filename: str
@@ -190,6 +249,7 @@ class UploadIntent(BaseModel):
 
 class ProcessingJob(BaseModel):
     id: str
+    organization_id: str | None = None
     user_id: str
     session_id: str
     kind: ProcessingJobKind

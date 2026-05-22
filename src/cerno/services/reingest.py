@@ -136,6 +136,7 @@ def reingest_file(
     file_id: str,
     spec: FileSpec,
     user_id: str,
+    organization_id: str | None = None,
     settings: Settings,
     files_repo: FileRepository,
     schemas_repo: SchemaRepository,
@@ -209,6 +210,7 @@ def reingest_file(
     )
     artifact = artifacts_repo.create(
         user_id=user_id,
+        organization_id=organization_id,
         session_id=file.session_id,
         file_id=file.id,
         artifact_type="processed_parquet",
@@ -260,6 +262,7 @@ def apply_approval(
     *,
     session_id: str,
     user_id: str,
+    organization_id: str | None = None,
     payload: ApprovalPayload,
     settings: Settings,
     files_repo: FileRepository,
@@ -286,6 +289,7 @@ def apply_approval(
             file_id=spec.file_id,
             spec=spec,
             user_id=user_id,
+            organization_id=organization_id,
             settings=settings,
             files_repo=files_repo,
             schemas_repo=schemas_repo,
