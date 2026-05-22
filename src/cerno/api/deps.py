@@ -68,6 +68,15 @@ def get_granted_user(
     return user
 
 
+def get_site_owner_user(
+    user: Annotated[User, Depends(get_granted_user)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> User:
+    if user.email.strip().lower() not in settings.site_owner_email_set():
+        raise HTTPException(status_code=403, detail="site owner access required")
+    return user
+
+
 def get_granted_organization(
     request: Request,
     user: Annotated[User, Depends(get_granted_user)],
@@ -94,4 +103,5 @@ ConnDep = Annotated[DbConnection, Depends(get_conn)]
 LLMDep = Annotated[LLMClient, Depends(get_llm_client)]
 UserDep = Annotated[User, Depends(get_current_user)]
 GrantedUserDep = Annotated[User, Depends(get_granted_user)]
+SiteOwnerDep = Annotated[User, Depends(get_site_owner_user)]
 OrgDep = Annotated[Organization, Depends(get_granted_organization)]

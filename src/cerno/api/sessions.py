@@ -26,6 +26,7 @@ from cerno.models import (
 )
 from cerno.models import File as FileModel
 from cerno.repositories import (
+    AnalyticsRepository,
     AssetArtifactRepository,
     ChatArtifactRepository,
     ChatRepository,
@@ -38,6 +39,7 @@ from cerno.repositories import (
     SessionRepository,
     SourceAssetRepository,
     UploadIntentRepository,
+    UsageLimitRepository,
     WorkspaceAssetRepository,
     WorkspaceTableRepository,
     new_id,
@@ -94,6 +96,149 @@ def _require_file_for_user(
     return file, session
 
 
+def _min_cap(*values: int | None) -> int | None:
+    caps = [value for value in values if value is not None]
+    return min(caps) if caps else None
+
+
+def _ensure_session_limit(conn: DbConnection, *, organization_id: str, user_id: str) -> None:
+    limits = UsageLimitRepository(conn).effective_for(
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    sessions_repo = SessionRepository(conn)
+    org_cap = UsageLimitRepository.hard_cap(limits.organization_max_sessions, limits)
+    if org_cap is not None and sessions_repo.count_for_organization(organization_id) >= org_cap:
+        raise HTTPException(status_code=429, detail="organization session limit exceeded")
+    user_cap = UsageLimitRepository.hard_cap(limits.user_max_sessions, limits)
+    if user_cap is not None and sessions_repo.count_for_user(user_id, organization_id) >= user_cap:
+        raise HTTPException(status_code=429, detail="user session limit exceeded")
+
+
+def _ensure_upload_allowed(
+    conn: DbConnection,
+    *,
+    organization_id: str,
+    user_id: str,
+    size_bytes: int,
+    filename: str,
+    reserved_bytes: int = 0,
+) -> None:
+    limits = UsageLimitRepository(conn).effective_for(
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    file_cap = _min_cap(
+        UsageLimitRepository.hard_cap(limits.organization_max_file_size_bytes, limits),
+        UsageLimitRepository.hard_cap(limits.user_max_file_size_bytes, limits),
+    )
+    if file_cap is not None and size_bytes > file_cap:
+        raise HTTPException(status_code=413, detail=f"{filename}: file size limit exceeded")
+
+    source_assets_repo = SourceAssetRepository(conn)
+    org_storage_cap = UsageLimitRepository.hard_cap(
+        limits.organization_storage_quota_bytes,
+        limits,
+    )
+    if (
+        org_storage_cap is not None
+        and source_assets_repo.total_size_for_organization(organization_id)
+        + reserved_bytes
+        + size_bytes
+        > org_storage_cap
+    ):
+        raise HTTPException(status_code=413, detail="organization storage quota exceeded")
+
+    user_storage_cap = UsageLimitRepository.hard_cap(limits.user_storage_quota_bytes, limits)
+    if (
+        user_storage_cap is not None
+        and source_assets_repo.total_size_for_user(user_id) + reserved_bytes + size_bytes
+        > user_storage_cap
+    ):
+        raise HTTPException(status_code=413, detail="user storage quota exceeded")
+
+    analytics = AnalyticsRepository(conn)
+    org_upload_cap = UsageLimitRepository.hard_cap(
+        limits.organization_monthly_upload_bytes,
+        limits,
+    )
+    if org_upload_cap is not None:
+        used = analytics.monthly_usage_amount(
+            event_type="upload_completed",
+            resource_type="bytes",
+            organization_id=organization_id,
+        )
+        if used + reserved_bytes + size_bytes > org_upload_cap:
+            raise HTTPException(status_code=413, detail="organization monthly upload limit exceeded")
+
+    user_upload_cap = UsageLimitRepository.hard_cap(limits.user_monthly_upload_bytes, limits)
+    if user_upload_cap is not None:
+        used = analytics.monthly_usage_amount(
+            event_type="upload_completed",
+            resource_type="bytes",
+            organization_id=organization_id,
+            user_id=user_id,
+        )
+        if used + reserved_bytes + size_bytes > user_upload_cap:
+            raise HTTPException(status_code=413, detail="user monthly upload limit exceeded")
+
+
+def _ensure_job_limit(conn: DbConnection, *, organization_id: str, user_id: str) -> None:
+    limits = UsageLimitRepository(conn).effective_for(
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    jobs_repo = ProcessingJobRepository(conn)
+    org_cap = UsageLimitRepository.hard_cap(limits.organization_max_concurrent_jobs, limits)
+    if org_cap is not None and jobs_repo.active_count(organization_id=organization_id) >= org_cap:
+        raise HTTPException(status_code=429, detail="organization concurrent job limit exceeded")
+    user_cap = UsageLimitRepository.hard_cap(limits.user_max_concurrent_jobs, limits)
+    if (
+        user_cap is not None
+        and jobs_repo.active_count(organization_id=organization_id, user_id=user_id) >= user_cap
+    ):
+        raise HTTPException(status_code=429, detail="user concurrent job limit exceeded")
+
+
+def _record_upload_completed(
+    conn: DbConnection,
+    *,
+    organization_id: str,
+    user_id: str,
+    session_id: str,
+    size_bytes: int,
+    count: int,
+    source: str,
+) -> None:
+    analytics = AnalyticsRepository(conn)
+    analytics.record_usage_event(
+        event_type="upload_completed",
+        resource_type="bytes",
+        amount=size_bytes,
+        organization_id=organization_id,
+        user_id=user_id,
+        session_id=session_id,
+        metadata={"source": source, "count": count},
+    )
+    analytics.record_usage_event(
+        event_type="upload_completed",
+        resource_type="count",
+        amount=count,
+        organization_id=organization_id,
+        user_id=user_id,
+        session_id=session_id,
+        metadata={"source": source, "bytes": size_bytes},
+    )
+    analytics.record_product_event(
+        event_name="upload_completed",
+        organization_id=organization_id,
+        user_id=user_id,
+        session_id=session_id,
+        metric_value=float(size_bytes),
+        metadata={"source": source, "count": count},
+    )
+
+
 class CreateSessionBody(BaseModel):
     name: str
 
@@ -105,11 +250,19 @@ def create_session(
     user: GrantedUserDep,
     organization: OrgDep,
 ) -> Session:
-    return SessionRepository(conn).create(
+    _ensure_session_limit(conn, organization_id=organization.id, user_id=user.id)
+    session = SessionRepository(conn).create(
         body.name,
         user_id=user.id,
         organization_id=organization.id,
     )
+    AnalyticsRepository(conn).record_product_event(
+        event_name="session_created",
+        organization_id=organization.id,
+        user_id=user.id,
+        session_id=session.id,
+    )
+    return session
 
 
 @router.get("/sessions", response_model=list[Session])
@@ -143,6 +296,12 @@ def delete_session(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="session not found")
+    AnalyticsRepository(conn).record_product_event(
+        event_name="session_deleted",
+        organization_id=organization.id,
+        user_id=user.id,
+        session_id=session_id,
+    )
     conn.commit()
     session_dir = settings.session_dir(user.id, session_id)
     if session_dir.exists():
@@ -233,18 +392,22 @@ def create_upload_intents(
     if object_store.backend != "r2":
         raise HTTPException(status_code=501, detail="direct uploads require R2 storage")
 
-    intents_repo = UploadIntentRepository(conn)
-    source_assets_repo = SourceAssetRepository(conn)
-    current_usage = source_assets_repo.total_size_for_organization(organization.id)
     intents: list[UploadIntentBody] = []
+    reserved_bytes = 0
     for item in body.files:
-        if current_usage + item.size_bytes > settings.per_user_quota_bytes():
-            raise HTTPException(status_code=413, detail=f"{item.filename}: file exceeds quota")
-        current_usage += item.size_bytes
+        _ensure_upload_allowed(
+            conn,
+            organization_id=organization.id,
+            user_id=user.id,
+            size_bytes=item.size_bytes,
+            filename=item.filename,
+            reserved_bytes=reserved_bytes,
+        )
+        reserved_bytes += item.size_bytes
         content_type = item.content_type or "application/octet-stream"
         intent_id = new_id()
         object_key = staging_upload_key(user.id, session_id, intent_id, item.filename)
-        intent = intents_repo.create(
+        intent = UploadIntentRepository(conn).create(
             user_id=user.id,
             organization_id=organization.id,
             session_id=session_id,
@@ -273,6 +436,14 @@ def create_upload_intents(
             )
         )
     conn.commit()
+    AnalyticsRepository(conn, auto_commit=True).record_product_event(
+        event_name="upload_intents_created",
+        organization_id=organization.id,
+        user_id=user.id,
+        session_id=session_id,
+        metric_value=float(sum(file.size_bytes for file in body.files)),
+        metadata={"count": len(body.files)},
+    )
     logger.info(
         "event=upload_intents.created user_id=%s session_id=%s count=%s",
         user.id,
@@ -313,6 +484,14 @@ def complete_upload_intent(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if stored.size_bytes != intent.expected_size_bytes:
         raise HTTPException(status_code=400, detail="uploaded object size did not match intent")
+    _ensure_upload_allowed(
+        conn,
+        organization_id=session.organization_id or organization.id,
+        user_id=user.id,
+        size_bytes=stored.size_bytes,
+        filename=intent.original_filename,
+    )
+    _ensure_job_limit(conn, organization_id=session.organization_id or organization.id, user_id=user.id)
 
     intent_repo.mark_uploaded(intent.id, observed_size_bytes=stored.size_bytes)
     SessionRepository(conn).set_status(session_id, "ingesting")
@@ -334,6 +513,22 @@ def complete_upload_intent(
         level="info",
         progress=0,
         message=f"{intent.original_filename} uploaded to R2 and queued for ingest",
+    )
+    AnalyticsRepository(conn).record_product_event(
+        event_name="processing_job_queued",
+        organization_id=session.organization_id or organization.id,
+        user_id=user.id,
+        session_id=session_id,
+        metadata={"kind": "ingest_upload", "job_id": job.id},
+    )
+    _record_upload_completed(
+        conn,
+        organization_id=session.organization_id or organization.id,
+        user_id=user.id,
+        session_id=session_id,
+        size_bytes=stored.size_bytes,
+        count=1,
+        source="direct",
     )
     conn.commit()
     logger.info(
@@ -377,16 +572,25 @@ def upload_files(
 
     files_out: list[FileModel] = []
     any_new = False
+    total_uploaded_bytes = 0
+    uploaded_count = 0
     for upload in uploads:
         original = upload.filename or "upload.csv"
         tmp_path = tmp_dir / f"__upload_{original}"
         with tmp_path.open("wb") as dest:
             shutil.copyfileobj(upload.file, dest)
         upload_size = tmp_path.stat().st_size
-        current_usage = source_assets_repo.total_size_for_organization(organization.id)
-        if current_usage + upload_size > settings.per_user_quota_bytes():
+        try:
+            _ensure_upload_allowed(
+                conn,
+                organization_id=organization.id,
+                user_id=user.id,
+                size_bytes=upload_size,
+                filename=original,
+            )
+        except HTTPException:
             tmp_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=413, detail="per-user storage quota exceeded")
+            raise
         try:
             ingested: list[IngestedFile] = ingest_file(
                 source_path=tmp_path,
@@ -412,9 +616,21 @@ def upload_files(
             files_out.append(item.file)
             if not item.duplicate:
                 any_new = True
+        total_uploaded_bytes += upload_size
+        uploaded_count += 1
 
     if any_new:
         sessions_repo.set_discovery_status(session_id, "empty")
+    if uploaded_count:
+        _record_upload_completed(
+            conn,
+            organization_id=organization.id,
+            user_id=user.id,
+            session_id=session_id,
+            size_bytes=total_uploaded_bytes,
+            count=uploaded_count,
+            source="legacy",
+        )
     return FileUploadResponse(files=files_out)
 
 
@@ -636,6 +852,7 @@ def post_process(
         )
     if not files_repo.list_for_session(session_id):
         raise HTTPException(status_code=400, detail="no files in session")
+    _ensure_job_limit(conn, organization_id=organization.id, user_id=user.id)
 
     sessions_repo.set_discovery_status(session_id, "discovering")
     events_repo.clear(session_id)
@@ -655,6 +872,13 @@ def post_process(
         level="info",
         progress=0,
         message="schema discovery queued",
+    )
+    AnalyticsRepository(conn).record_product_event(
+        event_name="processing_job_queued",
+        organization_id=organization.id,
+        user_id=user.id,
+        session_id=session_id,
+        metadata={"kind": "discovery", "job_id": job.id},
     )
     conn.commit()
     logger.info(

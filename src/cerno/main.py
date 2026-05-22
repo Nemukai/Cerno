@@ -13,6 +13,7 @@ from cerno.api.auth import router as auth_router
 from cerno.api.chat import router as chat_router
 from cerno.api.dashboards import router as dashboards_router
 from cerno.api.organizations import router as organizations_router
+from cerno.api.owner import router as owner_router
 from cerno.api.sessions import router as sessions_router
 from cerno.config import get_settings
 from cerno.log_config import configure_logging
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(organizations_router)
+    app.include_router(owner_router)
     app.include_router(sessions_router)
     app.include_router(dashboards_router)
     app.include_router(chat_router)

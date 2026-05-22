@@ -21,6 +21,7 @@ from cerno.models import (
     DashboardPage,
     DataDoc,
     DiscoveryStatus,
+    EffectiveUsageLimits,
     File,
     FileSchema,
     Link,
@@ -44,6 +45,7 @@ from cerno.models import (
     TurnState,
     UploadIntent,
     User,
+    UserOrganizationLimits,
     WorkspaceAsset,
     WorkspaceTable,
 )
@@ -197,6 +199,73 @@ class OrganizationRepository:
         ).fetchone()
         return _row_to_organization_entitlements(row) if row else None
 
+    def update_entitlements(
+        self,
+        organization_id: str,
+        *,
+        plan_name: str | None = None,
+        contract_status: str | None = None,
+        seat_limit: int | None = None,
+        daily_token_limit: int | None = None,
+        monthly_token_limit: int | None = None,
+        storage_quota_bytes: int | None = None,
+        monthly_upload_bytes: int | None = None,
+        max_file_size_bytes: int | None = None,
+        max_workspaces: int | None = None,
+        max_concurrent_jobs: int | None = None,
+        soft_limit_percent: int | None = None,
+        hard_limit_percent: int | None = None,
+        feature_flags: dict[str, Any] | None = None,
+        notes: str | None = None,
+    ) -> OrganizationEntitlements:
+        self.ensure_entitlements(organization_id)
+        current = self.get_entitlements(organization_id)
+        if current is None:
+            raise LookupError(f"organization entitlements not found: {organization_id}")
+        now = _now().isoformat()
+        next_flags = feature_flags if feature_flags is not None else current.feature_flags
+        self.conn.execute(
+            """UPDATE organization_entitlements
+               SET plan_name = ?,
+                   contract_status = ?,
+                   seat_limit = ?,
+                   daily_token_limit = ?,
+                   monthly_token_limit = ?,
+                   storage_quota_bytes = ?,
+                   monthly_upload_bytes = ?,
+                   max_file_size_bytes = ?,
+                   max_workspaces = ?,
+                   max_concurrent_jobs = ?,
+                   soft_limit_percent = ?,
+                   hard_limit_percent = ?,
+                   feature_flags = ?,
+                   notes = ?,
+                   updated_at = ?
+               WHERE organization_id = ?""",
+            (
+                plan_name if plan_name is not None else current.plan_name,
+                contract_status if contract_status is not None else current.contract_status,
+                seat_limit if seat_limit is not None else current.seat_limit,
+                daily_token_limit if daily_token_limit is not None else current.daily_token_limit,
+                monthly_token_limit if monthly_token_limit is not None else current.monthly_token_limit,
+                storage_quota_bytes if storage_quota_bytes is not None else current.storage_quota_bytes,
+                monthly_upload_bytes if monthly_upload_bytes is not None else current.monthly_upload_bytes,
+                max_file_size_bytes if max_file_size_bytes is not None else current.max_file_size_bytes,
+                max_workspaces if max_workspaces is not None else current.max_workspaces,
+                max_concurrent_jobs if max_concurrent_jobs is not None else current.max_concurrent_jobs,
+                soft_limit_percent if soft_limit_percent is not None else current.soft_limit_percent,
+                hard_limit_percent if hard_limit_percent is not None else current.hard_limit_percent,
+                dumps_json(next_flags),
+                notes if notes is not None else current.notes,
+                now,
+                organization_id,
+            ),
+        )
+        refreshed = self.get_entitlements(organization_id)
+        if refreshed is None:
+            raise LookupError(f"organization entitlements not found after update: {organization_id}")
+        return refreshed
+
     def create_invite(
         self,
         *,
@@ -233,6 +302,269 @@ class OrganizationRepository:
         if row is None:
             raise LookupError(f"organization invite not found after create: {invite_id}")
         return _row_to_organization_invite(row)
+
+
+class UsageLimitRepository:
+    def __init__(self, conn: DbConnection) -> None:
+        self.conn = conn
+
+    def get_user_limits(
+        self, *, organization_id: str, user_id: str
+    ) -> UserOrganizationLimits | None:
+        row = self.conn.execute(
+            """SELECT * FROM user_organization_limits
+               WHERE organization_id = ? AND user_id = ?""",
+            (organization_id, user_id),
+        ).fetchone()
+        return _row_to_user_organization_limits(row) if row else None
+
+    def set_user_limits(
+        self,
+        *,
+        organization_id: str,
+        user_id: str,
+        daily_token_limit: int | None = None,
+        monthly_token_limit: int | None = None,
+        storage_quota_bytes: int | None = None,
+        monthly_upload_bytes: int | None = None,
+        max_file_size_bytes: int | None = None,
+        max_sessions: int | None = None,
+        max_concurrent_jobs: int | None = None,
+        notes: str | None = None,
+    ) -> UserOrganizationLimits:
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO user_organization_limits
+               (organization_id, user_id, daily_token_limit, monthly_token_limit,
+                storage_quota_bytes, monthly_upload_bytes, max_file_size_bytes,
+                max_sessions, max_concurrent_jobs, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(organization_id, user_id) DO UPDATE
+               SET daily_token_limit = excluded.daily_token_limit,
+                   monthly_token_limit = excluded.monthly_token_limit,
+                   storage_quota_bytes = excluded.storage_quota_bytes,
+                   monthly_upload_bytes = excluded.monthly_upload_bytes,
+                   max_file_size_bytes = excluded.max_file_size_bytes,
+                   max_sessions = excluded.max_sessions,
+                   max_concurrent_jobs = excluded.max_concurrent_jobs,
+                   notes = excluded.notes,
+                   updated_at = excluded.updated_at""",
+            (
+                organization_id,
+                user_id,
+                daily_token_limit,
+                monthly_token_limit,
+                storage_quota_bytes,
+                monthly_upload_bytes,
+                max_file_size_bytes,
+                max_sessions,
+                max_concurrent_jobs,
+                notes,
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+        limits = self.get_user_limits(organization_id=organization_id, user_id=user_id)
+        if limits is None:
+            raise LookupError(f"user organization limits not found after upsert: {organization_id}:{user_id}")
+        return limits
+
+    def effective_for(self, *, organization_id: str, user_id: str) -> EffectiveUsageLimits:
+        entitlements = OrganizationRepository(self.conn).ensure_entitlements(organization_id)
+        user_limits = self.get_user_limits(organization_id=organization_id, user_id=user_id)
+        return EffectiveUsageLimits(
+            organization_id=organization_id,
+            user_id=user_id,
+            daily_token_limit=(
+                user_limits.daily_token_limit
+                if user_limits and user_limits.daily_token_limit is not None
+                else entitlements.daily_token_limit
+            ),
+            user_monthly_token_limit=user_limits.monthly_token_limit if user_limits else None,
+            organization_monthly_token_limit=entitlements.monthly_token_limit,
+            user_storage_quota_bytes=user_limits.storage_quota_bytes if user_limits else None,
+            organization_storage_quota_bytes=entitlements.storage_quota_bytes,
+            user_monthly_upload_bytes=user_limits.monthly_upload_bytes if user_limits else None,
+            organization_monthly_upload_bytes=entitlements.monthly_upload_bytes,
+            user_max_file_size_bytes=user_limits.max_file_size_bytes if user_limits else None,
+            organization_max_file_size_bytes=entitlements.max_file_size_bytes,
+            user_max_sessions=user_limits.max_sessions if user_limits else None,
+            organization_max_sessions=entitlements.max_workspaces,
+            user_max_concurrent_jobs=user_limits.max_concurrent_jobs if user_limits else None,
+            organization_max_concurrent_jobs=entitlements.max_concurrent_jobs,
+            soft_limit_percent=entitlements.soft_limit_percent,
+            hard_limit_percent=entitlements.hard_limit_percent,
+        )
+
+    @staticmethod
+    def hard_cap(limit: int | None, limits: EffectiveUsageLimits) -> int | None:
+        if limit is None:
+            return None
+        return max(0, limit * limits.hard_limit_percent // 100)
+
+
+class AnalyticsRepository:
+    def __init__(self, conn: DbConnection, *, auto_commit: bool = False) -> None:
+        self.conn = conn
+        self.auto_commit = auto_commit
+
+    def record_product_event(
+        self,
+        *,
+        event_name: str,
+        organization_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        metric_value: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO product_events
+               (id, organization_id, user_id, session_id, event_name,
+                metric_value, metadata, occurred_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                new_id(),
+                organization_id,
+                user_id,
+                session_id,
+                event_name,
+                metric_value,
+                dumps_json(metadata or {}),
+                _now().isoformat(),
+            ),
+        )
+        if self.auto_commit:
+            self.conn.commit()
+
+    def record_usage_event(
+        self,
+        *,
+        event_type: str,
+        resource_type: str,
+        amount: int,
+        organization_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        model: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        occurred_at = _now()
+        self.conn.execute(
+            """INSERT INTO usage_events
+               (id, organization_id, user_id, session_id, event_type,
+                resource_type, amount, model, metadata, occurred_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                new_id(),
+                organization_id,
+                user_id,
+                session_id,
+                event_type,
+                resource_type,
+                amount,
+                model,
+                dumps_json(metadata or {}),
+                occurred_at.isoformat(),
+            ),
+        )
+        if organization_id is not None:
+            metric = f"{resource_type}:{event_type}"
+            self.conn.execute(
+                """INSERT INTO organization_usage_daily
+                   (organization_id, day, metric, amount)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(organization_id, day, metric) DO UPDATE
+                   SET amount = organization_usage_daily.amount + excluded.amount""",
+                (organization_id, occurred_at.date().isoformat(), metric, amount),
+            )
+        if self.auto_commit:
+            self.conn.commit()
+
+    def monthly_usage_amount(
+        self,
+        *,
+        event_type: str,
+        resource_type: str,
+        organization_id: str | None = None,
+        user_id: str | None = None,
+        month_prefix: str | None = None,
+    ) -> int:
+        prefix = month_prefix or _now().strftime("%Y-%m")
+        clauses = [
+            "event_type = ?",
+            "resource_type = ?",
+            "occurred_at LIKE ?",
+        ]
+        params: list[Any] = [event_type, resource_type, f"{prefix}-%"]
+        if organization_id is not None:
+            clauses.append("organization_id = ?")
+            params.append(organization_id)
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        row = self.conn.execute(
+            f"""SELECT COALESCE(SUM(amount), 0) AS total
+                FROM usage_events
+                WHERE {' AND '.join(clauses)}""",
+            params,
+        ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
+    def record_llm_call(
+        self,
+        *,
+        provider: str,
+        status: str,
+        organization_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        job_id: str | None = None,
+        model: str | None = None,
+        response_id: str | None = None,
+        request_id: str | None = None,
+        error_message: str | None = None,
+        duration_ms: int | None = None,
+        total_tokens: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO llm_call_events
+               (id, organization_id, user_id, session_id, turn_id, job_id,
+                provider, model, response_id, request_id, status, error_message,
+                duration_ms, total_tokens, input_tokens, output_tokens, cached_tokens,
+                reasoning_tokens, metadata, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                new_id(),
+                organization_id,
+                user_id,
+                session_id,
+                turn_id,
+                job_id,
+                provider,
+                model,
+                response_id,
+                request_id,
+                status,
+                error_message[:1000] if error_message else None,
+                duration_ms,
+                total_tokens,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                dumps_json(metadata or {}),
+                _now().isoformat(),
+            ),
+        )
+        if self.auto_commit:
+            self.conn.commit()
 
 
 class SessionRepository:
@@ -316,6 +648,31 @@ class SessionRepository:
                 (organization_id, user_id),
             ).fetchall()
         return [_row_to_session(r) for r in rows]
+
+    def count_for_organization(self, organization_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS count FROM sessions WHERE organization_id = ?",
+            (organization_id,),
+        ).fetchone()
+        return int(row["count"] or 0) if row else 0
+
+    def count_for_user(self, user_id: str, organization_id: str | None = None) -> int:
+        if organization_id is None:
+            row = self.conn.execute(
+                """SELECT COUNT(*) AS count
+                   FROM sessions
+                   WHERE COALESCE(created_by_user_id, user_id) = ?""",
+                (user_id,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                """SELECT COUNT(*) AS count
+                   FROM sessions
+                   WHERE organization_id = ?
+                     AND COALESCE(created_by_user_id, user_id) = ?""",
+                (organization_id, user_id),
+            ).fetchone()
+        return int(row["count"] or 0) if row else 0
 
     def set_status(self, session_id: str, status: SessionStatus) -> None:
         self.conn.execute("UPDATE sessions SET status = ? WHERE id = ?", (status, session_id))
@@ -917,6 +1274,26 @@ class ProcessingJobRepository:
             (session_id, kind),
         ).fetchone()
         return _row_to_processing_job(row) if row else None
+
+    def active_count(
+        self,
+        *,
+        organization_id: str | None = None,
+        user_id: str | None = None,
+    ) -> int:
+        clauses = ["status IN ('queued', 'running')"]
+        params: list[str] = []
+        if organization_id is not None:
+            clauses.append("organization_id = ?")
+            params.append(organization_id)
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS count FROM processing_jobs WHERE {' AND '.join(clauses)}",
+            params,
+        ).fetchone()
+        return int(row["count"] or 0) if row else 0
 
     def claim_next(
         self, *, worker_id: str, lock_seconds: int = 600
@@ -1957,6 +2334,7 @@ def _row_to_organization_invite(row: DbRow) -> OrganizationInvite:
 
 
 def _row_to_organization_entitlements(row: DbRow) -> OrganizationEntitlements:
+    keys = row.keys()
     flags = loads_json(row["feature_flags"], default={})
     if not isinstance(flags, dict):
         flags = {}
@@ -1965,14 +2343,35 @@ def _row_to_organization_entitlements(row: DbRow) -> OrganizationEntitlements:
         plan_name=row["plan_name"],
         contract_status=row["contract_status"],
         seat_limit=row["seat_limit"],
+        daily_token_limit=row["daily_token_limit"] if "daily_token_limit" in keys else None,
         monthly_token_limit=row["monthly_token_limit"],
         storage_quota_bytes=row["storage_quota_bytes"],
         monthly_upload_bytes=row["monthly_upload_bytes"],
         max_file_size_bytes=row["max_file_size_bytes"],
         max_workspaces=row["max_workspaces"],
+        max_concurrent_jobs=(
+            row["max_concurrent_jobs"] if "max_concurrent_jobs" in keys else None
+        ),
         soft_limit_percent=row["soft_limit_percent"],
         hard_limit_percent=row["hard_limit_percent"],
         feature_flags=flags,
+        notes=row["notes"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _row_to_user_organization_limits(row: DbRow) -> UserOrganizationLimits:
+    return UserOrganizationLimits(
+        organization_id=row["organization_id"],
+        user_id=row["user_id"],
+        daily_token_limit=row["daily_token_limit"],
+        monthly_token_limit=row["monthly_token_limit"],
+        storage_quota_bytes=row["storage_quota_bytes"],
+        monthly_upload_bytes=row["monthly_upload_bytes"],
+        max_file_size_bytes=row["max_file_size_bytes"],
+        max_sessions=row["max_sessions"],
+        max_concurrent_jobs=row["max_concurrent_jobs"],
         notes=row["notes"],
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
@@ -2270,9 +2669,14 @@ class LLMUsageRepository:
     def get(self, user_id: str, day: str, organization_id: str | None = None) -> int:
         if organization_id is not None:
             row = self.conn.execute(
-                """SELECT tokens_used FROM llm_usage
-                   WHERE user_id = ? AND organization_id = ? AND day = ?""",
-                (user_id, organization_id, day),
+                """SELECT COALESCE(SUM(amount), 0) AS tokens_used
+                   FROM usage_events
+                   WHERE user_id = ?
+                     AND organization_id = ?
+                     AND event_type = 'llm_tokens'
+                     AND resource_type = 'tokens'
+                     AND occurred_at LIKE ?""",
+                (user_id, organization_id, f"{day}%"),
             ).fetchone()
         else:
             row = self.conn.execute(
@@ -2281,6 +2685,43 @@ class LLMUsageRepository:
             ).fetchone()
         return int(row["tokens_used"]) if row else 0
 
+    def get_monthly_user_tokens(
+        self,
+        user_id: str,
+        month_prefix: str,
+        organization_id: str | None = None,
+    ) -> int:
+        if organization_id is not None:
+            row = self.conn.execute(
+                """SELECT COALESCE(SUM(amount), 0) AS total
+                   FROM usage_events
+                   WHERE user_id = ?
+                     AND organization_id = ?
+                     AND event_type = 'llm_tokens'
+                     AND resource_type = 'tokens'
+                     AND occurred_at LIKE ?""",
+                (user_id, organization_id, f"{month_prefix}-%"),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                """SELECT COALESCE(SUM(tokens_used), 0) AS total
+                   FROM llm_usage
+                   WHERE user_id = ? AND day LIKE ?""",
+                (user_id, f"{month_prefix}-%"),
+            ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
+    def get_monthly_organization_tokens(self, organization_id: str, month_prefix: str) -> int:
+        row = self.conn.execute(
+            """SELECT COALESCE(SUM(amount), 0) AS total
+               FROM organization_usage_daily
+               WHERE organization_id = ?
+                 AND metric = 'llm_tokens'
+                 AND day LIKE ?""",
+            (organization_id, f"{month_prefix}-%"),
+        ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
     def add_tokens(
         self,
         user_id: str,
@@ -2288,60 +2729,151 @@ class LLMUsageRepository:
         tokens: int,
         model: str | None = None,
         organization_id: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        duration_ms: int | None = None,
     ) -> int:
+        response_ms = max(0, int(duration_ms or 0))
+        occurred_at = _now()
+        if occurred_at.date().isoformat() != day:
+            occurred_at = datetime.fromisoformat(f"{day}T00:00:00+00:00")
         if organization_id is not None:
             self.conn.execute(
                 """INSERT INTO llm_usage
-                   (organization_id, user_id, day, tokens_used)
-                   VALUES (?, ?, ?, ?)
+                   (organization_id, user_id, day, tokens_used, input_tokens,
+                    output_tokens, cached_tokens, reasoning_tokens, call_count,
+                    total_response_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                    ON CONFLICT(user_id, day) DO UPDATE
                    SET tokens_used = llm_usage.tokens_used + excluded.tokens_used,
+                       input_tokens = llm_usage.input_tokens + excluded.input_tokens,
+                       output_tokens = llm_usage.output_tokens + excluded.output_tokens,
+                       cached_tokens = llm_usage.cached_tokens + excluded.cached_tokens,
+                       reasoning_tokens = llm_usage.reasoning_tokens + excluded.reasoning_tokens,
+                       call_count = llm_usage.call_count + 1,
+                       total_response_ms = llm_usage.total_response_ms + excluded.total_response_ms,
                        organization_id = COALESCE(llm_usage.organization_id, excluded.organization_id)""",
-                (organization_id, user_id, day, tokens),
+                (
+                    organization_id,
+                    user_id,
+                    day,
+                    tokens,
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    reasoning_tokens,
+                    response_ms,
+                ),
             )
         else:
             self.conn.execute(
-                """INSERT INTO llm_usage (user_id, day, tokens_used) VALUES (?, ?, ?)
+                """INSERT INTO llm_usage
+                   (user_id, day, tokens_used, input_tokens, output_tokens,
+                    cached_tokens, reasoning_tokens, call_count, total_response_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
                    ON CONFLICT(user_id, day) DO UPDATE
-                   SET tokens_used = llm_usage.tokens_used + excluded.tokens_used""",
-                (user_id, day, tokens),
+                   SET tokens_used = llm_usage.tokens_used + excluded.tokens_used,
+                       input_tokens = llm_usage.input_tokens + excluded.input_tokens,
+                       output_tokens = llm_usage.output_tokens + excluded.output_tokens,
+                       cached_tokens = llm_usage.cached_tokens + excluded.cached_tokens,
+                       reasoning_tokens = llm_usage.reasoning_tokens + excluded.reasoning_tokens,
+                       call_count = llm_usage.call_count + 1,
+                       total_response_ms = llm_usage.total_response_ms + excluded.total_response_ms""",
+                (
+                    user_id,
+                    day,
+                    tokens,
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    reasoning_tokens,
+                    response_ms,
+                ),
             )
         normalized_model = model.strip() if model else ""
         if normalized_model:
             if organization_id is not None:
                 self.conn.execute(
                     """INSERT INTO llm_usage_by_model
-                       (organization_id, user_id, day, model, tokens_used)
-                       VALUES (?, ?, ?, ?, ?)
+                       (organization_id, user_id, day, model, tokens_used,
+                        input_tokens, output_tokens, cached_tokens, reasoning_tokens,
+                        call_count, total_response_ms)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                        ON CONFLICT(user_id, day, model) DO UPDATE
                        SET tokens_used = llm_usage_by_model.tokens_used + excluded.tokens_used,
+                           input_tokens = llm_usage_by_model.input_tokens + excluded.input_tokens,
+                           output_tokens = llm_usage_by_model.output_tokens + excluded.output_tokens,
+                           cached_tokens = llm_usage_by_model.cached_tokens + excluded.cached_tokens,
+                           reasoning_tokens = llm_usage_by_model.reasoning_tokens + excluded.reasoning_tokens,
+                           call_count = llm_usage_by_model.call_count + 1,
+                           total_response_ms = llm_usage_by_model.total_response_ms + excluded.total_response_ms,
                            organization_id = COALESCE(
                                llm_usage_by_model.organization_id,
                                excluded.organization_id
                            )""",
-                    (organization_id, user_id, day, normalized_model, tokens),
+                    (
+                        organization_id,
+                        user_id,
+                        day,
+                        normalized_model,
+                        tokens,
+                        input_tokens,
+                        output_tokens,
+                        cached_tokens,
+                        reasoning_tokens,
+                        response_ms,
+                    ),
                 )
             else:
                 self.conn.execute(
-                    """INSERT INTO llm_usage_by_model (user_id, day, model, tokens_used)
-                       VALUES (?, ?, ?, ?)
+                    """INSERT INTO llm_usage_by_model
+                       (user_id, day, model, tokens_used, input_tokens, output_tokens,
+                        cached_tokens, reasoning_tokens, call_count, total_response_ms)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                        ON CONFLICT(user_id, day, model) DO UPDATE
-                       SET tokens_used = llm_usage_by_model.tokens_used + excluded.tokens_used""",
-                    (user_id, day, normalized_model, tokens),
+                       SET tokens_used = llm_usage_by_model.tokens_used + excluded.tokens_used,
+                           input_tokens = llm_usage_by_model.input_tokens + excluded.input_tokens,
+                           output_tokens = llm_usage_by_model.output_tokens + excluded.output_tokens,
+                           cached_tokens = llm_usage_by_model.cached_tokens + excluded.cached_tokens,
+                           reasoning_tokens = llm_usage_by_model.reasoning_tokens + excluded.reasoning_tokens,
+                           call_count = llm_usage_by_model.call_count + 1,
+                           total_response_ms = llm_usage_by_model.total_response_ms + excluded.total_response_ms""",
+                    (
+                        user_id,
+                        day,
+                        normalized_model,
+                        tokens,
+                        input_tokens,
+                        output_tokens,
+                        cached_tokens,
+                        reasoning_tokens,
+                        response_ms,
+                    ),
                 )
         if organization_id is not None:
             self.conn.execute(
                 """INSERT INTO usage_events
                    (id, organization_id, user_id, event_type, resource_type,
                     amount, model, metadata, occurred_at)
-                   VALUES (?, ?, ?, 'llm_tokens', 'tokens', ?, ?, '{}', ?)""",
+                   VALUES (?, ?, ?, 'llm_tokens', 'tokens', ?, ?, ?, ?)""",
                 (
                     new_id(),
                     organization_id,
                     user_id,
                     tokens,
                     normalized_model or None,
-                    _now().isoformat(),
+                    dumps_json(
+                        {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "cached_tokens": cached_tokens,
+                            "reasoning_tokens": reasoning_tokens,
+                            "duration_ms": response_ms,
+                        }
+                    ),
+                    occurred_at.isoformat(),
                 ),
             )
             self.conn.execute(

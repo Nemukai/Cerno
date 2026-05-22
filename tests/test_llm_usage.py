@@ -20,6 +20,13 @@ def _make_usage_conn() -> sqlite3.Connection:
             user_id TEXT NOT NULL,
             day TEXT NOT NULL,
             tokens_used INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            call_count INTEGER NOT NULL DEFAULT 0,
+            error_count INTEGER NOT NULL DEFAULT 0,
+            total_response_ms INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, day)
         )
         """
@@ -31,7 +38,40 @@ def _make_usage_conn() -> sqlite3.Connection:
             day TEXT NOT NULL,
             model TEXT NOT NULL,
             tokens_used INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            call_count INTEGER NOT NULL DEFAULT 0,
+            error_count INTEGER NOT NULL DEFAULT 0,
+            total_response_ms INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, day, model)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE llm_call_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT,
+            user_id TEXT,
+            session_id TEXT,
+            turn_id TEXT,
+            job_id TEXT,
+            provider TEXT NOT NULL,
+            model TEXT,
+            response_id TEXT,
+            request_id TEXT,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            duration_ms INTEGER,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -46,7 +86,13 @@ class FakeStreamLLMClient(LLMClient):
             "response": {
                 "id": "resp_1",
                 "status": "completed",
-                "usage": {"total_tokens": 37},
+                "usage": {
+                    "input_tokens": 10,
+                    "input_tokens_details": {"cached_tokens": 4},
+                    "output_tokens": 27,
+                    "output_tokens_details": {"reasoning_tokens": 3},
+                    "total_tokens": 37,
+                },
             },
         }
 
@@ -103,6 +149,15 @@ class LLMClientUsageTests(unittest.TestCase):
                 ("user_1",),
             ).fetchone()
             self.assertEqual((model_row["model"], model_row["tokens_used"]), ("gpt-5.4-mini", 37))
+            detail_row = conn.execute(
+                "SELECT input_tokens, output_tokens, cached_tokens, reasoning_tokens, call_count FROM llm_usage"
+            ).fetchone()
+            self.assertEqual(tuple(detail_row), (10, 27, 4, 3, 1))
+            event_row = conn.execute(
+                "SELECT model, response_id, total_tokens FROM llm_call_events WHERE user_id = ?",
+                ("user_1",),
+            ).fetchone()
+            self.assertEqual(tuple(event_row), ("gpt-5.4-mini", "resp_1", 37))
         finally:
             conn.close()
 

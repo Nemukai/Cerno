@@ -9,7 +9,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-POSTGRES_SCHEMA_VERSION = 8
+POSTGRES_SCHEMA_VERSION = 9
 
 
 class DbRow:
@@ -456,6 +456,85 @@ _POSTGRES_MIGRATIONS = {
         "CREATE INDEX IF NOT EXISTS idx_processing_jobs_org ON processing_jobs(organization_id, status, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_llm_usage_org_day ON llm_usage(organization_id, day)",
         "CREATE INDEX IF NOT EXISTS idx_llm_usage_by_model_org_day ON llm_usage_by_model(organization_id, day, model)",
+    ],
+    9: [
+        "ALTER TABLE organization_entitlements ADD COLUMN IF NOT EXISTS daily_token_limit BIGINT",
+        "ALTER TABLE organization_entitlements ADD COLUMN IF NOT EXISTS max_concurrent_jobs INTEGER",
+        """
+        CREATE TABLE IF NOT EXISTS user_organization_limits (
+            organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            daily_token_limit BIGINT,
+            monthly_token_limit BIGINT,
+            storage_quota_bytes BIGINT,
+            monthly_upload_bytes BIGINT,
+            max_file_size_bytes BIGINT,
+            max_sessions INTEGER,
+            max_concurrent_jobs INTEGER,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (organization_id, user_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_user_org_limits_user ON user_organization_limits(user_id)",
+        "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS input_tokens BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS output_tokens BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS cached_tokens BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS reasoning_tokens BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS call_count BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS error_count BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS total_response_ms BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage_by_model ADD COLUMN IF NOT EXISTS input_tokens BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage_by_model ADD COLUMN IF NOT EXISTS output_tokens BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage_by_model ADD COLUMN IF NOT EXISTS cached_tokens BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage_by_model ADD COLUMN IF NOT EXISTS reasoning_tokens BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage_by_model ADD COLUMN IF NOT EXISTS call_count BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage_by_model ADD COLUMN IF NOT EXISTS error_count BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE llm_usage_by_model ADD COLUMN IF NOT EXISTS total_response_ms BIGINT NOT NULL DEFAULT 0",
+        """
+        CREATE TABLE IF NOT EXISTS llm_call_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+            session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+            turn_id TEXT REFERENCES chat_turns(id) ON DELETE SET NULL,
+            job_id TEXT REFERENCES processing_jobs(id) ON DELETE SET NULL,
+            provider TEXT NOT NULL,
+            model TEXT,
+            response_id TEXT,
+            request_id TEXT,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            duration_ms BIGINT,
+            total_tokens BIGINT NOT NULL DEFAULT 0,
+            input_tokens BIGINT NOT NULL DEFAULT 0,
+            output_tokens BIGINT NOT NULL DEFAULT 0,
+            cached_tokens BIGINT NOT NULL DEFAULT 0,
+            reasoning_tokens BIGINT NOT NULL DEFAULT 0,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_llm_call_events_org_time ON llm_call_events(organization_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_llm_call_events_user_time ON llm_call_events(user_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_llm_call_events_session ON llm_call_events(session_id, turn_id)",
+        """
+        CREATE TABLE IF NOT EXISTS product_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+            session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+            event_name TEXT NOT NULL,
+            metric_value DOUBLE PRECISION,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            occurred_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_product_events_org_time ON product_events(organization_id, occurred_at)",
+        "CREATE INDEX IF NOT EXISTS idx_product_events_user_time ON product_events(user_id, occurred_at)",
+        "CREATE INDEX IF NOT EXISTS idx_product_events_name_time ON product_events(event_name, occurred_at)",
+        "CREATE INDEX IF NOT EXISTS idx_usage_events_type_time ON usage_events(event_type, occurred_at)",
     ],
 }
 

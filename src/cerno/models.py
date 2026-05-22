@@ -65,6 +65,7 @@ OrganizationRole = Literal["owner", "admin", "member", "viewer"]
 MembershipStatus = Literal["active", "revoked"]
 InviteStatus = Literal["pending", "accepted", "revoked", "expired"]
 ContractStatus = Literal["trial", "active", "paused", "suspended", "archived"]
+SiteRole = Literal["user", "site_owner"]
 
 
 class Organization(BaseModel):
@@ -103,17 +104,54 @@ class OrganizationEntitlements(BaseModel):
     plan_name: str = "manual"
     contract_status: ContractStatus = "trial"
     seat_limit: int = 1
+    daily_token_limit: int | None = None
     monthly_token_limit: int = 6_000_000
     storage_quota_bytes: int = 5 * 1024 * 1024 * 1024
     monthly_upload_bytes: int | None = None
     max_file_size_bytes: int | None = None
     max_workspaces: int | None = None
+    max_concurrent_jobs: int | None = None
     soft_limit_percent: int = 100
     hard_limit_percent: int = 120
     feature_flags: dict[str, Any] = Field(default_factory=dict)
     notes: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class UserOrganizationLimits(BaseModel):
+    organization_id: str
+    user_id: str
+    daily_token_limit: int | None = None
+    monthly_token_limit: int | None = None
+    storage_quota_bytes: int | None = None
+    monthly_upload_bytes: int | None = None
+    max_file_size_bytes: int | None = None
+    max_sessions: int | None = None
+    max_concurrent_jobs: int | None = None
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EffectiveUsageLimits(BaseModel):
+    organization_id: str
+    user_id: str
+    daily_token_limit: int | None = None
+    user_monthly_token_limit: int | None = None
+    organization_monthly_token_limit: int | None = None
+    user_storage_quota_bytes: int | None = None
+    organization_storage_quota_bytes: int | None = None
+    user_monthly_upload_bytes: int | None = None
+    organization_monthly_upload_bytes: int | None = None
+    user_max_file_size_bytes: int | None = None
+    organization_max_file_size_bytes: int | None = None
+    user_max_sessions: int | None = None
+    organization_max_sessions: int | None = None
+    user_max_concurrent_jobs: int | None = None
+    organization_max_concurrent_jobs: int | None = None
+    soft_limit_percent: int = 100
+    hard_limit_percent: int = 120
 
 
 class User(BaseModel):

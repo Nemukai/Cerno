@@ -62,11 +62,13 @@ def _make_conn() -> sqlite3.Connection:
             plan_name TEXT NOT NULL DEFAULT 'manual',
             contract_status TEXT NOT NULL DEFAULT 'trial',
             seat_limit INTEGER NOT NULL DEFAULT 1,
+            daily_token_limit INTEGER,
             monthly_token_limit INTEGER NOT NULL DEFAULT 6000000,
             storage_quota_bytes INTEGER NOT NULL DEFAULT 5368709120,
             monthly_upload_bytes INTEGER,
             max_file_size_bytes INTEGER,
             max_workspaces INTEGER,
+            max_concurrent_jobs INTEGER,
             soft_limit_percent INTEGER NOT NULL DEFAULT 100,
             hard_limit_percent INTEGER NOT NULL DEFAULT 120,
             feature_flags TEXT NOT NULL DEFAULT '{}',
@@ -98,6 +100,13 @@ def _make_conn() -> sqlite3.Connection:
             user_id TEXT NOT NULL,
             day TEXT NOT NULL,
             tokens_used INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            call_count INTEGER NOT NULL DEFAULT 0,
+            error_count INTEGER NOT NULL DEFAULT 0,
+            total_response_ms INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, day)
         )
         """
@@ -110,6 +119,13 @@ def _make_conn() -> sqlite3.Connection:
             day TEXT NOT NULL,
             model TEXT NOT NULL,
             tokens_used INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            call_count INTEGER NOT NULL DEFAULT 0,
+            error_count INTEGER NOT NULL DEFAULT 0,
+            total_response_ms INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, day, model)
         )
         """

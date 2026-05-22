@@ -5,14 +5,16 @@ import logging
 import os
 import socket
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cerno.config import Settings, get_settings
 from cerno.db import DbConnection, connect
-from cerno.llm import LLMClient
+from cerno.llm import LLMClient, LLMTokenBudget
 from cerno.log_config import configure_logging
 from cerno.models import ProcessingJob
 from cerno.repositories import (
+    AnalyticsRepository,
     AssetArtifactRepository,
     DataDocRepository,
     FileRepository,
@@ -23,6 +25,7 @@ from cerno.repositories import (
     SessionRepository,
     SourceAssetRepository,
     UploadIntentRepository,
+    UsageLimitRepository,
     WorkspaceAssetRepository,
     WorkspaceTableRepository,
 )
@@ -60,6 +63,36 @@ def _append_event(
         progress=progress,
         message=message,
         details=details,
+    )
+
+
+def _job_duration_ms(job: ProcessingJob) -> int:
+    started_at = job.started_at or job.created_at
+    return max(0, round((datetime.now(UTC) - started_at).total_seconds() * 1000))
+
+
+def _llm_budget(settings: Settings, conn: DbConnection, job: ProcessingJob) -> LLMTokenBudget:
+    if job.organization_id is None:
+        return LLMTokenBudget(user_daily_token_cap=settings.daily_token_cap)
+    limits = UsageLimitRepository(conn).effective_for(
+        organization_id=job.organization_id,
+        user_id=job.user_id,
+    )
+    daily_cap = (
+        UsageLimitRepository.hard_cap(limits.daily_token_limit, limits)
+        if limits.daily_token_limit is not None
+        else settings.daily_token_cap
+    )
+    return LLMTokenBudget(
+        user_daily_token_cap=daily_cap,
+        user_monthly_token_cap=UsageLimitRepository.hard_cap(
+            limits.user_monthly_token_limit,
+            limits,
+        ),
+        organization_monthly_token_cap=UsageLimitRepository.hard_cap(
+            limits.organization_monthly_token_limit,
+            limits,
+        ),
     )
 
 
@@ -156,6 +189,14 @@ async def _run_ingest_upload(settings: Settings, job: ProcessingJob, worker_id: 
             details={"file_count": len(ingested)},
         )
         jobs_repo.mark_succeeded(job.id)
+        AnalyticsRepository(conn).record_product_event(
+            event_name="processing_job_completed",
+            organization_id=job.organization_id,
+            user_id=job.user_id,
+            session_id=job.session_id,
+            metric_value=float(_job_duration_ms(job)),
+            metadata={"kind": "ingest_upload", "job_id": job.id, "file_count": len(ingested)},
+        )
         conn.commit()
         try:
             object_store.delete(intent.object_key)
@@ -193,6 +234,17 @@ async def _run_ingest_upload(settings: Settings, job: ProcessingJob, worker_id: 
             )
             conn.commit()
         finally:
+            try:
+                AnalyticsRepository(conn, auto_commit=True).record_product_event(
+                    event_name="processing_job_failed",
+                    organization_id=job.organization_id,
+                    user_id=job.user_id,
+                    session_id=job.session_id,
+                    metric_value=float(_job_duration_ms(job)),
+                    metadata={"kind": "ingest_upload", "job_id": job.id},
+                )
+            except Exception:
+                logger.warning("event=analytics.processing_job_failed_write_failed job_id=%s", job.id)
             logger.exception(
                 "event=processing.failed user_id=%s session_id=%s job_id=%s kind=ingest_upload",
                 job.user_id,
@@ -232,6 +284,8 @@ async def _run_discovery(settings: Settings, job: ProcessingJob) -> None:
                 LLMUsageRepository(conn, auto_commit=True),
                 job.user_id,
                 organization_id=job.organization_id,
+                token_budget=_llm_budget(settings, conn, job),
+                metadata={"session_id": job.session_id, "job_id": job.id},
             ),
             artifacts_repo=AssetArtifactRepository(conn),
             object_store=get_object_store(settings),
@@ -240,6 +294,14 @@ async def _run_discovery(settings: Settings, job: ProcessingJob) -> None:
             clear_events=False,
         )
         ProcessingJobRepository(conn).mark_succeeded(job.id)
+        AnalyticsRepository(conn).record_product_event(
+            event_name="processing_job_completed",
+            organization_id=job.organization_id,
+            user_id=job.user_id,
+            session_id=job.session_id,
+            metric_value=float(_job_duration_ms(job)),
+            metadata={"kind": "discovery", "job_id": job.id},
+        )
         conn.commit()
     except DiscoveryError as exc:
         conn.rollback()
@@ -268,6 +330,14 @@ def _mark_discovery_failed(conn: DbConnection, job: ProcessingJob, message: str)
         message=message[:1000],
     )
     jobs_repo.mark_failed(job.id, message)
+    AnalyticsRepository(conn).record_product_event(
+        event_name="processing_job_failed",
+        organization_id=job.organization_id,
+        user_id=job.user_id,
+        session_id=job.session_id,
+        metric_value=float(_job_duration_ms(job)),
+        metadata={"kind": "discovery", "job_id": job.id, "error": message[:300]},
+    )
     conn.commit()
     logger.exception(
         "event=processing.failed user_id=%s session_id=%s job_id=%s kind=discovery error=%s",

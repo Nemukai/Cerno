@@ -107,6 +107,11 @@ async def run_chat_turn(
         schemas_repo=schemas_repo,
     )
     final_message_id: str | None = None
+    scoped_llm_client = _with_llm_context(
+        llm_client,
+        session_id=session_id,
+        turn_id=runtime.turn.id,
+    )
 
     def on_message(message: dict[str, Any]) -> None:
         nonlocal final_message_id
@@ -122,7 +127,7 @@ async def run_chat_turn(
     try:
         context_options = conversation_context_options(session_id, runtime.turn.id)
         result = await run_tool_loop(
-            client=llm_client,
+            client=scoped_llm_client,
             registry=runtime.registry,
             input=[{"role": "user", "content": user_message}],
             instructions=SYSTEM_PROMPT,
@@ -237,6 +242,11 @@ async def stream_chat_turn(
     call_count = 0
     pending_input: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
     context_options = conversation_context_options(session_id, runtime.turn.id)
+    scoped_llm_client = _with_llm_context(
+        llm_client,
+        session_id=session_id,
+        turn_id=runtime.turn.id,
+    )
 
     try:
         while True:
@@ -257,7 +267,7 @@ async def stream_chat_turn(
                 len(pending_input),
             )
 
-            async for event in llm_client.stream_response(
+            async for event in scoped_llm_client.stream_response(
                 input=pending_input,
                 tools=runtime.registry.schemas(),
                 instructions=SYSTEM_PROMPT,
@@ -537,7 +547,11 @@ async def _prepare_chat_runtime(
 
     conversation_id = str(turn.metadata.get("openai_conversation_id") or "")
     if not conversation_id:
-        conversation_id = await llm_client.create_conversation(
+        conversation_id = await _with_llm_context(
+            llm_client,
+            session_id=session_id,
+            turn_id=turn.id,
+        ).create_conversation(
             metadata={"session_id": session_id, "turn_id": turn.id}
         )
         _update_turn_metadata(
@@ -575,6 +589,12 @@ async def _prepare_chat_runtime(
         registry=build_tool_registry(ctx),
         ctx=ctx,
     )
+
+
+def _with_llm_context(llm_client: LLMClient, **metadata: str) -> LLMClient:
+    if hasattr(llm_client, "with_context"):
+        return llm_client.with_context(**metadata)
+    return llm_client
 
 
 def _load_chat_tables(
