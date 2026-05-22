@@ -29,6 +29,7 @@ from cerno.repositories import (
     BetaCodeRepository,
     OrganizationRepository,
     UserRepository,
+    new_id,
 )
 from cerno.services.storage_gc import cleanup_unused_storage_for_user
 
@@ -359,6 +360,158 @@ def cmd_add_org_member(args: argparse.Namespace) -> None:
     print(f"added {args.email} to {args.organization_id} as {args.role}")
 
 
+def _org_slug(name: str) -> str:
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")
+    return re.sub(r"-+", "-", slug) or f"org-{new_id()[:8]}"
+
+
+def _get_org_by_slug(conn: DbConnection, slug: str):
+    row = conn.execute("SELECT * FROM organizations WHERE slug = ?", (slug,)).fetchone()
+    return row
+
+
+def _move_org_rollups(conn: DbConnection, *, source_org_id: str, target_org_id: str) -> None:
+    rows = conn.execute(
+        """SELECT day, metric, amount
+           FROM organization_usage_daily
+           WHERE organization_id = ?""",
+        (source_org_id,),
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            """INSERT INTO organization_usage_daily (organization_id, day, metric, amount)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(organization_id, day, metric) DO UPDATE
+               SET amount = organization_usage_daily.amount + excluded.amount""",
+            (target_org_id, row["day"], row["metric"], row["amount"]),
+        )
+    rows = conn.execute(
+        """SELECT day, metric, model, amount
+           FROM organization_usage_daily_by_model
+           WHERE organization_id = ?""",
+        (source_org_id,),
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            """INSERT INTO organization_usage_daily_by_model
+               (organization_id, day, metric, model, amount)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(organization_id, day, metric, model) DO UPDATE
+               SET amount = organization_usage_daily_by_model.amount + excluded.amount""",
+            (target_org_id, row["day"], row["metric"], row["model"], row["amount"]),
+        )
+
+
+def _reassign_user_data_to_org(conn: DbConnection, *, user_id: str, target_org_id: str) -> None:
+    statements = [
+        ("UPDATE sessions SET organization_id = ? WHERE COALESCE(created_by_user_id, user_id) = ?", (target_org_id, user_id)),
+        ("UPDATE source_assets SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+        ("UPDATE upload_intents SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+        ("UPDATE asset_artifacts SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+        ("UPDATE processing_jobs SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+        ("UPDATE llm_usage SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+        ("UPDATE llm_usage_by_model SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+        ("UPDATE usage_events SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+        ("UPDATE product_events SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+        ("UPDATE llm_call_events SET organization_id = ? WHERE user_id = ?", (target_org_id, user_id)),
+    ]
+    for sql, params in statements:
+        conn.execute(sql, params)
+
+
+def cmd_move_users_to_org(args: argparse.Namespace) -> None:
+    emails = [ApprovedEmailRepository.normalize(email) for email in args.email]
+    if not emails:
+        sys.exit("provide at least one email")
+    slug = args.slug or _org_slug(args.org_name)
+    conn = _open_conn()
+    try:
+        org_repo = OrganizationRepository(conn)
+        row = _get_org_by_slug(conn, slug)
+        if row is None:
+            target = org_repo.create(name=args.org_name, slug=slug)
+            org_repo.ensure_entitlements(target.id)
+            print(f"created organization {target.name} ({target.id})")
+        else:
+            target = org_repo.get(row["id"])
+            if target is None:
+                sys.exit(f"organization disappeared: {row['id']}")
+            print(f"using organization {target.name} ({target.id})")
+
+        users = []
+        for email in emails:
+            user = UserRepository(conn).get_by_email(email)
+            if user is None:
+                sys.exit(f"no user with email: {email}")
+            if user.access_status != "granted" and not args.include_pending:
+                sys.exit(f"{email} is {user.access_status}; pass --include-pending to move it")
+            users.append(user)
+
+        entitlements = org_repo.ensure_entitlements(target.id)
+        org_repo.update_entitlements(
+            target.id,
+            contract_status=args.contract_status,
+            seat_limit=max(entitlements.seat_limit, len(users)),
+        )
+
+        moved: list[str] = []
+        deleted_orgs: list[str] = []
+        for user in users:
+            old_memberships = conn.execute(
+                """SELECT organization_id
+                   FROM organization_members
+                   WHERE user_id = ? AND organization_id <> ?""",
+                (user.id, target.id),
+            ).fetchall()
+
+            org_repo.add_member(
+                organization_id=target.id,
+                user_id=user.id,
+                role=args.role,
+                status="active",
+            )
+            _reassign_user_data_to_org(conn, user_id=user.id, target_org_id=target.id)
+
+            for membership in old_memberships:
+                old_org_id = membership["organization_id"]
+                member_count = conn.execute(
+                    """SELECT COUNT(*) AS count
+                       FROM organization_members
+                       WHERE organization_id = ?
+                         AND user_id <> ?
+                         AND status = 'active'""",
+                    (old_org_id, user.id),
+                ).fetchone()["count"]
+                if member_count:
+                    conn.execute(
+                        """UPDATE organization_members
+                           SET status = 'revoked', updated_at = ?
+                           WHERE organization_id = ? AND user_id = ?""",
+                        (datetime.now(UTC).isoformat(), old_org_id, user.id),
+                    )
+                    continue
+                _move_org_rollups(conn, source_org_id=old_org_id, target_org_id=target.id)
+                conn.execute(
+                    "DELETE FROM organization_members WHERE organization_id = ? AND user_id = ?",
+                    (old_org_id, user.id),
+                )
+                if args.cleanup_empty_orgs:
+                    conn.execute("DELETE FROM organizations WHERE id = ?", (old_org_id,))
+                    deleted_orgs.append(old_org_id)
+
+            moved.append(user.email)
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    print(f"moved {len(moved)} user(s) to {args.org_name}: {', '.join(moved)}")
+    if deleted_orgs:
+        print(f"deleted empty old organization(s): {', '.join(deleted_orgs)}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cerno-admin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -410,6 +563,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("email")
     p.add_argument("--role", choices=["owner", "admin", "member", "viewer"], default="member")
     p.set_defaults(func=cmd_add_org_member)
+
+    p = sub.add_parser("move-users-to-org", help="move existing users and their data to one organization")
+    p.add_argument("org_name")
+    p.add_argument("email", nargs="+")
+    p.add_argument("--slug", help="organization slug; defaults to slugified name")
+    p.add_argument("--role", choices=["owner", "admin", "member", "viewer"], default="member")
+    p.add_argument(
+        "--contract-status",
+        choices=["trial", "active", "paused", "suspended", "archived"],
+        default="active",
+    )
+    p.add_argument("--include-pending", action="store_true", help="allow moving pending users")
+    p.add_argument(
+        "--cleanup-empty-orgs",
+        action="store_true",
+        help="delete old organizations that have no other active members after the move",
+    )
+    p.set_defaults(func=cmd_move_users_to_org)
 
     p = sub.add_parser("grant", help="grant a user access without a code")
     p.add_argument("email")
