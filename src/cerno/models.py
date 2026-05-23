@@ -61,7 +61,7 @@ MessageRole = Literal["user", "assistant", "tool", "system"]
 
 AccessStatus = Literal["pending", "granted", "revoked"]
 OrganizationStatus = Literal["active", "suspended", "archived"]
-OrganizationRole = Literal["owner", "admin", "member", "viewer"]
+OrganizationRole = Literal["admin", "member", "viewer"]
 MembershipStatus = Literal["active", "revoked"]
 InviteStatus = Literal["pending", "accepted", "revoked", "expired"]
 ContractStatus = Literal["trial", "active", "paused", "suspended", "archived"]

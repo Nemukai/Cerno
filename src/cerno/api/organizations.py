@@ -208,10 +208,7 @@ def add_organization_member(
     user: GrantedUserDep,
 ) -> OrganizationMemberMutationResult:
     _require_org_admin(conn, settings, organization_id, user.id, user.email)
-    role = _safe_managed_role(
-        body.role,
-        allow_owner=user.email.strip().lower() in settings.site_owner_email_set(),
-    )
+    role = body.role
     normalized_email = body.email.strip().lower()
     org_repo = OrganizationRepository(conn)
     target_user = UserRepository(conn).get_by_email(normalized_email)
@@ -236,9 +233,12 @@ def add_organization_member(
         )
 
     current = org_repo.get_member(organization_id=organization_id, user_id=target_user.id)
+    active_member_count = org_repo.active_member_count(organization_id)
+    if active_member_count == 0:
+        role = "admin"
     if current is None or current.status != "active":
         entitlements = org_repo.ensure_entitlements(organization_id)
-        if org_repo.active_member_count(organization_id) >= entitlements.seat_limit:
+        if active_member_count >= entitlements.seat_limit:
             raise HTTPException(status_code=409, detail="organization seat limit reached")
     member = org_repo.add_member(
         organization_id=organization_id,
@@ -272,17 +272,16 @@ def update_organization_member(
     user: GrantedUserDep,
 ) -> OrganizationMemberMutationResult:
     _require_org_admin(conn, settings, organization_id, user.id, user.email)
-    role = _safe_managed_role(
-        body.role,
-        allow_owner=user.email.strip().lower() in settings.site_owner_email_set(),
-    )
+    role = body.role
     org_repo = OrganizationRepository(conn)
     member = org_repo.get_member(organization_id=organization_id, user_id=user_id)
     if member is None or member.status != "active":
         raise HTTPException(status_code=404, detail="organization member not found")
-    if member.role in ("owner", "admin") and role not in ("owner", "admin"):
+    if org_repo.active_member_count(organization_id) == 1 and role != "admin":
+        raise HTTPException(status_code=409, detail="single-member organizations must keep an admin")
+    if member.role == "admin" and role != "admin":
         if org_repo.active_admin_count(organization_id) <= 1:
-            raise HTTPException(status_code=409, detail="organization must keep an owner or admin")
+            raise HTTPException(status_code=409, detail="organization must keep an admin")
     updated = org_repo.add_member(
         organization_id=organization_id,
         user_id=user_id,
@@ -320,8 +319,10 @@ def remove_organization_member(
     member = org_repo.get_member(organization_id=organization_id, user_id=user_id)
     if member is None or member.status != "active":
         raise HTTPException(status_code=404, detail="organization member not found")
-    if member.role in ("owner", "admin") and org_repo.active_admin_count(organization_id) <= 1:
-        raise HTTPException(status_code=409, detail="organization must keep an owner or admin")
+    if org_repo.active_member_count(organization_id) <= 1:
+        raise HTTPException(status_code=409, detail="organization must keep at least one admin")
+    if member.role == "admin" and org_repo.active_admin_count(organization_id) <= 1:
+        raise HTTPException(status_code=409, detail="organization must keep an admin")
     revoked = org_repo.revoke_member(organization_id=organization_id, user_id=user_id)
     AnalyticsRepository(conn).record_product_event(
         event_name="organization_member_removed",
@@ -412,19 +413,13 @@ def _require_org_admin(
     if org is None or org.status != "active":
         raise HTTPException(status_code=404, detail="organization not found")
     if email.strip().lower() in settings.site_owner_email_set():
-        return "owner"
+        return "admin"
     membership = org_repo.get_member(organization_id=organization_id, user_id=user_id)
     if membership is None or membership.status != "active":
         raise HTTPException(status_code=404, detail="organization not found")
-    if membership.role not in ("owner", "admin"):
+    if membership.role != "admin":
         raise HTTPException(status_code=403, detail="organization admin access required")
     return membership.role
-
-
-def _safe_managed_role(role: OrganizationRole, *, allow_owner: bool) -> OrganizationRole:
-    if role == "owner" and not allow_owner:
-        raise HTTPException(status_code=403, detail="owner role can only be assigned by the site owner")
-    return role
 
 
 def _organization_admin_dashboard(

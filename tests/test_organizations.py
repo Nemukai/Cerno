@@ -193,6 +193,10 @@ class OrganizationRepositoryTests(unittest.TestCase):
             )
             orgs = OrganizationRepository(conn)
             org = orgs.ensure_personal_for_user(owner)
+            self.assertEqual(
+                orgs.get_member(organization_id=org.id, user_id=owner.id).role,
+                "admin",
+            )
             orgs.add_member(organization_id=org.id, user_id=member.id, role="member")
 
             sessions = SessionRepository(conn)

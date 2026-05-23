@@ -23,6 +23,7 @@ from cerno.repositories import (
     DataDocRepository,
     FileRepository,
     LLMUsageRepository,
+    OrganizationRepository,
     SchemaRepository,
     SessionRepository,
     UsageLimitRepository,
@@ -40,6 +41,8 @@ def _require_session_owned(
     user_id: str,
     organization_id: str | None = None,
 ) -> None:
+    if organization_id is not None:
+        _require_private_workspace_role(conn, organization_id=organization_id, user_id=user_id)
     if SessionRepository(conn).get(
         session_id,
         user_id=user_id,
@@ -54,6 +57,8 @@ def _require_turn_owned(
     user_id: str,
     organization_id: str | None = None,
 ) -> ChatTurn:
+    if organization_id is not None:
+        _require_private_workspace_role(conn, organization_id=organization_id, user_id=user_id)
     turn = ChatRepository(conn).get_turn(turn_id)
     if turn is None:
         raise HTTPException(status_code=404, detail="turn not found")
@@ -64,6 +69,22 @@ def _require_turn_owned(
     ) is None:
         raise HTTPException(status_code=404, detail="turn not found")
     return turn
+
+
+def _require_private_workspace_role(
+    conn: DbConnection,
+    *,
+    organization_id: str,
+    user_id: str,
+) -> None:
+    membership = OrganizationRepository(conn).get_member(
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    if membership is None or membership.status != "active":
+        raise HTTPException(status_code=403, detail="organization access denied")
+    if membership.role not in ("admin", "member"):
+        raise HTTPException(status_code=403, detail="organization member access required")
 
 
 def _llm_budget(

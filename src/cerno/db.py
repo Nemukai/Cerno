@@ -9,7 +9,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-POSTGRES_SCHEMA_VERSION = 9
+POSTGRES_SCHEMA_VERSION = 10
 
 
 class DbRow:
@@ -535,6 +535,22 @@ _POSTGRES_MIGRATIONS = {
         "CREATE INDEX IF NOT EXISTS idx_product_events_user_time ON product_events(user_id, occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_product_events_name_time ON product_events(event_name, occurred_at)",
         "CREATE INDEX IF NOT EXISTS idx_usage_events_type_time ON usage_events(event_type, occurred_at)",
+    ],
+    10: [
+        "UPDATE organization_members SET role = 'admin' WHERE role = 'owner'",
+        "UPDATE organization_invites SET role = 'admin' WHERE role = 'owner'",
+        """
+        UPDATE organization_members m
+        SET role = 'admin',
+            updated_at = CURRENT_TIMESTAMP::text
+        WHERE m.status = 'active'
+          AND (
+            SELECT COUNT(*)
+            FROM organization_members active_members
+            WHERE active_members.organization_id = m.organization_id
+              AND active_members.status = 'active'
+          ) = 1
+        """,
     ],
 }
 

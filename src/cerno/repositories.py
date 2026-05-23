@@ -196,7 +196,7 @@ class OrganizationRepository:
                FROM organization_members
                WHERE organization_id = ?
                  AND status = 'active'
-                 AND role IN ('owner', 'admin')""",
+                 AND role = 'admin'""",
             (organization_id,),
         ).fetchone()
         return int(row["value"] or 0) if row else 0
@@ -208,7 +208,7 @@ class OrganizationRepository:
         name = f"{user.name or user.email}'s Organization"
         slug = _organization_slug_from_email(user.email, user.id)
         org = self.create(name=name, slug=slug)
-        self.add_member(organization_id=org.id, user_id=user.id, role="owner")
+        self.add_member(organization_id=org.id, user_id=user.id, role="admin")
         self.ensure_entitlements(org.id)
         return org
 

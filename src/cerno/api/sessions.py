@@ -33,6 +33,7 @@ from cerno.repositories import (
     DataDocRepository,
     FileRepository,
     LinkRepository,
+    OrganizationRepository,
     ProcessingEventRepository,
     ProcessingJobRepository,
     SchemaRepository,
@@ -67,6 +68,8 @@ def _require_session(
     user_id: str,
     organization_id: str | None = None,
 ) -> Session:
+    if organization_id is not None:
+        _require_private_workspace_role(conn, organization_id=organization_id, user_id=user_id)
     session = SessionRepository(conn).get(
         session_id,
         user_id=user_id,
@@ -83,6 +86,8 @@ def _require_file_for_user(
     user_id: str,
     organization_id: str | None = None,
 ) -> tuple[FileModel, Session]:
+    if organization_id is not None:
+        _require_private_workspace_role(conn, organization_id=organization_id, user_id=user_id)
     file = FileRepository(conn).get(file_id)
     if file is None:
         raise HTTPException(status_code=404, detail="file not found")
@@ -99,6 +104,22 @@ def _require_file_for_user(
 def _min_cap(*values: int | None) -> int | None:
     caps = [value for value in values if value is not None]
     return min(caps) if caps else None
+
+
+def _require_private_workspace_role(
+    conn: DbConnection,
+    *,
+    organization_id: str,
+    user_id: str,
+) -> None:
+    membership = OrganizationRepository(conn).get_member(
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    if membership is None or membership.status != "active":
+        raise HTTPException(status_code=403, detail="organization access denied")
+    if membership.role not in ("admin", "member"):
+        raise HTTPException(status_code=403, detail="organization member access required")
 
 
 def _ensure_session_limit(conn: DbConnection, *, organization_id: str, user_id: str) -> None:
@@ -250,6 +271,7 @@ def create_session(
     user: GrantedUserDep,
     organization: OrgDep,
 ) -> Session:
+    _require_private_workspace_role(conn, organization_id=organization.id, user_id=user.id)
     _ensure_session_limit(conn, organization_id=organization.id, user_id=user.id)
     session = SessionRepository(conn).create(
         body.name,
@@ -267,6 +289,14 @@ def create_session(
 
 @router.get("/sessions", response_model=list[Session])
 def list_sessions(conn: ConnDep, user: GrantedUserDep, organization: OrgDep) -> list[Session]:
+    membership = OrganizationRepository(conn).get_member(
+        organization_id=organization.id,
+        user_id=user.id,
+    )
+    if membership is None or membership.status != "active":
+        raise HTTPException(status_code=403, detail="organization access denied")
+    if membership.role not in ("admin", "member"):
+        return []
     return SessionRepository(conn).list(user_id=user.id, organization_id=organization.id)
 
 
@@ -777,6 +807,8 @@ def _build_discovery_response(
     user_id: str,
     organization_id: str | None = None,
 ) -> DiscoveryResponse:
+    if organization_id is not None:
+        _require_private_workspace_role(conn, organization_id=organization_id, user_id=user_id)
     sessions_repo = SessionRepository(conn)
     files_repo = FileRepository(conn)
     schemas_repo = SchemaRepository(conn)

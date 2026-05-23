@@ -87,7 +87,7 @@ export type OrganizationEntitlements = {
 export type OrganizationMember = {
   organization_id: string;
   user_id: string;
-  role: "owner" | "admin" | "member" | "viewer";
+  role: "admin" | "member" | "viewer";
   status: "active" | "revoked";
   created_at: string;
   updated_at: string;
@@ -97,7 +97,7 @@ export type OrganizationMemberBody = {
   user_id: string;
   email: string;
   name: string | null;
-  role: "owner" | "admin" | "member" | "viewer";
+  role: "admin" | "member" | "viewer";
   status: "active" | "revoked";
   joined_at: string;
 };
@@ -110,10 +110,10 @@ export type OrganizationAdminDashboard = {
     name: string;
     slug: string;
     status: string;
-    role: "owner" | "admin" | "member" | "viewer";
+    role: "admin" | "member" | "viewer";
   };
   entitlements: OrganizationEntitlements;
-  current_role: "owner" | "admin" | "member" | "viewer";
+  current_role: "admin" | "member" | "viewer";
   totals: {
     users: number;
     sessions: number;

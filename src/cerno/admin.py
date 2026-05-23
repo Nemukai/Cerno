@@ -561,14 +561,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("add-org-member", help="add an existing user to an organization")
     p.add_argument("organization_id")
     p.add_argument("email")
-    p.add_argument("--role", choices=["owner", "admin", "member", "viewer"], default="member")
+    p.add_argument("--role", choices=["admin", "member", "viewer"], default="member")
     p.set_defaults(func=cmd_add_org_member)
 
     p = sub.add_parser("move-users-to-org", help="move existing users and their data to one organization")
     p.add_argument("org_name")
     p.add_argument("email", nargs="+")
     p.add_argument("--slug", help="organization slug; defaults to slugified name")
-    p.add_argument("--role", choices=["owner", "admin", "member", "viewer"], default="member")
+    p.add_argument("--role", choices=["admin", "member", "viewer"], default="member")
     p.add_argument(
         "--contract-status",
         choices=["trial", "active", "paused", "suspended", "archived"],

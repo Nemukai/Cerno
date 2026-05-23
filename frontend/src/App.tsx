@@ -10,6 +10,7 @@ import {
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Building2,
   Clock3,
@@ -1673,6 +1674,9 @@ function WorkspacesPage({
 }) {
   const [name, setName] = useState("");
   const stats = buildWorkspaceStats(sessions, metrics);
+  const canCreateWorkspaces = user.organizations.some((org) =>
+    org.role === "admin" || org.role === "member",
+  );
   const pointerX = useMotionValue(0);
   const pointerY = useMotionValue(0);
   const topoX = useSpring(useTransform(pointerX, [-0.5, 0.5], [-18, 18]), {
@@ -1691,13 +1695,14 @@ function WorkspacesPage({
   }, [onPrefetch, sessions]);
 
   const handleStart = () => {
+    if (!canCreateWorkspaces) return;
     const trimmed = name.trim();
     const fallback = `workspace ${new Date().toLocaleDateString()}`;
     onStart(trimmed.length > 0 ? trimmed : fallback);
   };
 
   const handleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !starting) handleStart();
+    if (e.key === "Enter" && !starting && canCreateWorkspaces) handleStart();
   };
 
   const handleDelete = (s: Session) => {
@@ -1779,17 +1784,18 @@ function WorkspacesPage({
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       onKeyDown={handleKey}
+                      disabled={!canCreateWorkspaces}
                       placeholder="Monthly sales, audit data..."
-                      className="min-w-0 bg-transparent font-mono text-base text-[#141210] placeholder:text-[#141210]/36 focus:outline-none"
+                      className="min-w-0 bg-transparent font-mono text-base text-[#141210] placeholder:text-[#141210]/36 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                     />
                   </label>
                   <button
                     type="button"
                     onClick={handleStart}
-                    disabled={starting}
+                    disabled={starting || !canCreateWorkspaces}
                     className="small-caps bg-[#D17B2E] px-7 py-4 text-sm text-[#141210] transition hover:bg-[#E89A48] disabled:opacity-40"
                   >
-                    {starting ? "starting..." : "start workspace"}
+                    {starting ? "starting..." : canCreateWorkspaces ? "start workspace" : "view only"}
                   </button>
                 </div>
               </div>
@@ -1871,9 +1877,7 @@ function UserProfilePanel({
   onSignOut: () => Promise<void>;
 }) {
   const displayName = userDisplayName(user);
-  const adminOrganizations = user.organizations.filter((org) =>
-    org.role === "owner" || org.role === "admin",
-  );
+  const adminOrganizations = user.organizations.filter((org) => org.role === "admin");
 
   return (
     <motion.aside
@@ -1972,7 +1976,6 @@ function OrganizationAdminDashboardPage({
   const userOrg = user.organizations.find((org) => org.id === organizationId);
   const hasAccess =
     user.site_role === "site_owner" ||
-    userOrg?.role === "owner" ||
     userOrg?.role === "admin";
   const dashboardQuery = useQuery({
     queryKey: ["organization", organizationId, "admin"],
@@ -2071,7 +2074,7 @@ function OrganizationAdminDashboardPage({
         <div className="max-w-md border border-red-900/20 bg-red-50 p-6">
           <div className="small-caps text-sm text-red-600">organization admin required</div>
           <p className="mt-3 text-sm leading-6 text-red-700">
-            This dashboard is available to organization owners and admins only.
+            This dashboard is available to organization admins only.
           </p>
           <button
             type="button"
@@ -2090,14 +2093,7 @@ function OrganizationAdminDashboardPage({
       <main className="mx-auto flex max-w-[92rem] flex-col gap-6">
         <header className="flex flex-col gap-4 border-b border-[#141210]/12 pb-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
-            <button
-              type="button"
-              onClick={onBack}
-              className="text-[#141210]/64 transition hover:text-[#176B7D]"
-              title="Back to workspaces"
-            >
-              <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base" />
-            </button>
+            <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base" />
             <div>
               <div className="small-caps text-sm text-[#176B7D]">organization admin</div>
               <h1 className="mt-1 font-serif text-4xl leading-none text-[#141210]">
@@ -2106,6 +2102,14 @@ function OrganizationAdminDashboardPage({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onBack}
+              className="inline-flex items-center gap-2 border border-[#141210]/12 bg-[#F7F1E7]/74 px-3 py-2 small-caps text-sm text-[#141210]/68 transition hover:border-[#176B7D] hover:text-[#176B7D]"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              back
+            </button>
             <span className="border border-[#141210]/12 bg-[#F7F1E7]/74 px-3 py-2 font-mono text-xs text-[#141210]/58">
               {dashboard ? `month ${dashboard.month}` : "loading"}
             </span>
@@ -2141,11 +2145,10 @@ function OrganizationAdminDashboardPage({
               ))}
             </section>
 
-            <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+            <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
               <OrganizationMembersTable
                 dashboard={dashboard}
                 currentUserId={user.id}
-                canAssignOwner={user.site_role === "site_owner"}
                 onRoleChange={handleRoleChange}
                 onRemove={handleRemoveMember}
               />
@@ -2155,14 +2158,11 @@ function OrganizationAdminDashboardPage({
                 role={role}
                 actionError={actionError}
                 actionMessage={actionMessage}
-                canAssignOwner={user.site_role === "site_owner"}
                 onEmailChange={setEmail}
                 onRoleChange={setRole}
                 onAddMember={handleAddMember}
               />
             </section>
-
-            <OrganizationEventsPanel dashboard={dashboard} />
           </>
         ) : (
           <div className="border border-[#141210]/12 bg-[#F7F1E7]/74 px-4 py-12 text-center font-mono text-sm text-[#141210]/56">
@@ -2325,7 +2325,6 @@ function OrganizationAdminPanel({
   role,
   actionError,
   actionMessage,
-  canAssignOwner,
   onEmailChange,
   onRoleChange,
   onAddMember,
@@ -2335,7 +2334,6 @@ function OrganizationAdminPanel({
   role: OrganizationMemberBody["role"];
   actionError: string | null;
   actionMessage: string | null;
-  canAssignOwner: boolean;
   onEmailChange: (value: string) => void;
   onRoleChange: (value: OrganizationMemberBody["role"]) => void;
   onAddMember: () => void;
@@ -2364,10 +2362,9 @@ function OrganizationAdminPanel({
             onChange={(event) => onRoleChange(event.target.value as OrganizationMemberBody["role"])}
             className="border border-[#141210]/12 bg-[#F2EBDD] px-3 py-2 font-mono text-sm text-[#141210] focus:outline-none focus:ring-1 focus:ring-[#176B7D]"
           >
+            <option value="admin">admin</option>
             <option value="member">member</option>
             <option value="viewer">viewer</option>
-            <option value="admin">admin</option>
-            {canAssignOwner ? <option value="owner">owner</option> : null}
           </select>
         </label>
         <button
@@ -2398,16 +2395,16 @@ function OrganizationAdminPanel({
 function OrganizationMembersTable({
   dashboard,
   currentUserId,
-  canAssignOwner,
   onRoleChange,
   onRemove,
 }: {
   dashboard: OrganizationAdminDashboard;
   currentUserId: string;
-  canAssignOwner: boolean;
   onRoleChange: (userId: string, role: OrganizationMemberBody["role"]) => void;
   onRemove: (user: OrganizationAdminDashboard["users"][number]) => void;
 }) {
+  const isSingleUserOrg = dashboard.users.length === 1;
+
   return (
     <section className="min-w-0 border border-[#141210]/12 bg-[#F7F1E7]/74">
       <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 px-4 py-3">
@@ -2418,17 +2415,15 @@ function OrganizationMembersTable({
         <Users className="h-5 w-5 text-[#176B7D]" />
       </div>
       <div className="overflow-x-auto">
-        <table className="min-w-[72rem] w-full border-collapse text-left text-sm">
+        <table className="min-w-[56rem] w-full border-collapse text-left text-sm">
           <thead className="small-caps border-b border-[#141210]/10 text-xs text-[#141210]/50">
             <tr>
               <th className="px-4 py-3 font-medium">user</th>
               <th className="px-4 py-3 font-medium">role</th>
-              <th className="px-4 py-3 font-medium">sessions</th>
+              <th className="px-4 py-3 font-medium">LLM</th>
               <th className="px-4 py-3 font-medium">storage</th>
-              <th className="px-4 py-3 font-medium">tokens</th>
-              <th className="px-4 py-3 font-medium">uploads</th>
-              <th className="px-4 py-3 font-medium">chat</th>
-              <th className="px-4 py-3 font-medium">limits</th>
+              <th className="px-4 py-3 font-medium">sessions</th>
+              <th className="px-4 py-3 font-medium">last active</th>
               <th className="px-4 py-3 font-medium">actions</th>
             </tr>
           </thead>
@@ -2438,60 +2433,47 @@ function OrganizationMembersTable({
                 <td className="px-4 py-3">
                   <div className="font-mono text-sm text-[#141210]">{row.email}</div>
                   <div className="mt-1 text-xs text-[#141210]/48">
-                    {row.name || "unnamed"} · {row.access_status} · seen {formatActivity(row.last_seen_at)}
+                    {row.name || "unnamed"} · {row.access_status}
                   </div>
                 </td>
                 <td className="px-4 py-3">
                   <select
                     value={row.membership.role}
+                    disabled={isSingleUserOrg}
                     onChange={(event) =>
                       onRoleChange(row.user_id, event.target.value as OrganizationMemberBody["role"])
                     }
-                    className="border border-[#141210]/12 bg-[#F2EBDD] px-2 py-1 font-mono text-xs text-[#141210]"
+                    className="border border-[#141210]/12 bg-[#F2EBDD] px-2 py-1 font-mono text-xs text-[#141210] disabled:cursor-not-allowed disabled:opacity-60"
                   >
+                    <option value="admin">admin</option>
                     <option value="member">member</option>
                     <option value="viewer">viewer</option>
-                    <option value="admin">admin</option>
-                    {canAssignOwner || row.membership.role === "owner" ? (
-                      <option value="owner">owner</option>
-                    ) : null}
                   </select>
                 </td>
-                <td className="px-4 py-3 font-mono">{row.session_count}</td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatPercent(row.llm_tokens_month, dashboard.entitlements.monthly_token_limit)}</div>
+                  <div className="text-xs text-[#141210]/48">of org limit</div>
+                </td>
                 <td className="px-4 py-3">
                   <div className="font-mono">{formatBytes(row.storage_bytes)}</div>
                   <div className="text-xs text-[#141210]/48">
-                    org cap {formatLimitBytes(row.effective_limits.organization_storage_quota_bytes)}
+                    {formatPercent(row.storage_bytes, dashboard.entitlements.storage_quota_bytes)} of org storage
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <div className="font-mono">{formatCompactNumber(row.llm_tokens_month)}</div>
+                  <div className="font-mono">{row.session_count}</div>
                   <div className="text-xs text-[#141210]/48">
-                    user cap {formatLimitNumber(row.effective_limits.user_monthly_token_limit)}
+                    {formatPercent(row.session_count, dashboard.totals.sessions)} of org sessions
                   </div>
                 </td>
-                <td className="px-4 py-3">
-                  <div className="font-mono">{formatBytes(row.upload_bytes_month)}</div>
-                  <div className="text-xs text-[#141210]/48">this month</div>
-                </td>
-                <td className="px-4 py-3">
-                  <div className="font-mono">{row.chat_turns_month} turns</div>
-                  <div className="text-xs text-[#141210]/48">
-                    avg {formatMs(row.avg_chat_response_ms)}
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-xs leading-5 text-[#141210]/62">
-                  sessions {formatLimitNumber(row.effective_limits.user_max_sessions)}
-                  <br />
-                  file {formatLimitBytes(row.effective_limits.user_max_file_size_bytes)}
-                  <br />
-                  jobs {formatLimitNumber(row.effective_limits.user_max_concurrent_jobs)}
+                <td className="px-4 py-3 font-mono text-xs text-[#141210]/62">
+                  {formatActivity(row.last_seen_at)}
                 </td>
                 <td className="px-4 py-3">
                   <button
                     type="button"
                     onClick={() => onRemove(row)}
-                    disabled={row.user_id === currentUserId}
+                    disabled={row.user_id === currentUserId || isSingleUserOrg}
                     className="small-caps border border-red-900/20 bg-red-50 px-3 py-2 text-xs text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     remove
@@ -2501,44 +2483,6 @@ function OrganizationMembersTable({
             ))}
           </tbody>
         </table>
-      </div>
-    </section>
-  );
-}
-
-function OrganizationEventsPanel({ dashboard }: { dashboard: OrganizationAdminDashboard }) {
-  return (
-    <section className="border border-[#141210]/12 bg-[#F7F1E7]/74">
-      <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 px-4 py-3">
-        <div>
-          <div className="small-caps text-sm text-[#176B7D]">events</div>
-          <h2 className="mt-1 font-serif text-2xl text-[#141210]">Recent org activity</h2>
-        </div>
-        <Activity className="h-5 w-5 text-[#176B7D]" />
-      </div>
-      <div className="grid divide-y divide-[#141210]/8">
-        {dashboard.recent_events.length > 0 ? (
-          dashboard.recent_events.slice(0, 18).map((event) => (
-            <div
-              key={`${event.occurred_at}:${event.event_name}:${event.user_id ?? ""}`}
-              className="grid gap-1 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_10rem]"
-            >
-              <div className="min-w-0">
-                <div className="font-mono text-sm text-[#141210]">{event.event_name}</div>
-                <div className="truncate text-xs text-[#141210]/48">
-                  {event.user_id ?? "system"} · {event.session_id ?? "no session"}
-                </div>
-              </div>
-              <div className="text-xs text-[#141210]/48 sm:text-right">
-                {formatActivity(event.occurred_at)}
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="px-4 py-8 font-mono text-sm text-[#141210]/52">
-            No product events recorded for this organization yet.
-          </div>
-        )}
       </div>
     </section>
   );
@@ -2764,50 +2708,26 @@ function organizationMetricItems(dashboard: OrganizationAdminDashboard) {
     {
       label: "users",
       value: `${dashboard.totals.users}/${dashboard.entitlements.seat_limit}`,
-      detail: `${dashboard.current_role} access`,
+      detail: `${dashboard.current_role} dashboard access`,
       icon: Users,
     },
     {
-      label: "llm tokens",
-      value: formatCompactNumber(dashboard.totals.llm_tokens_month),
-      detail: `of ${formatLimitNumber(dashboard.entitlements.monthly_token_limit)} this month`,
+      label: "LLM monthly usage",
+      value: formatPercent(dashboard.totals.llm_tokens_month, dashboard.entitlements.monthly_token_limit),
+      detail: "monthly limit used",
       icon: Activity,
     },
     {
       label: "storage",
-      value: formatBytes(dashboard.totals.storage_bytes),
+      value: `${formatBytes(dashboard.totals.storage_bytes)}`,
       detail: `of ${formatLimitBytes(dashboard.entitlements.storage_quota_bytes)}`,
       icon: HardDrive,
-    },
-    {
-      label: "uploads",
-      value: formatBytes(dashboard.totals.upload_bytes_month),
-      detail: `${dashboard.totals.upload_count_month} files this month`,
-      icon: FileSpreadsheet,
     },
     {
       label: "sessions",
       value: formatCompactNumber(dashboard.totals.sessions),
       detail: `cap ${formatLimitNumber(dashboard.entitlements.max_workspaces)}`,
       icon: Table2,
-    },
-    {
-      label: "jobs",
-      value: formatCompactNumber(dashboard.totals.active_jobs),
-      detail: `${formatCompactNumber(dashboard.totals.failed_jobs_month)} failed this month`,
-      icon: Database,
-    },
-    {
-      label: "response time",
-      value: formatMs(dashboard.totals.avg_chat_response_ms),
-      detail: `${formatCompactNumber(dashboard.totals.chat_turns_month)} chat turns`,
-      icon: Clock3,
-    },
-    {
-      label: "processing",
-      value: formatMs(dashboard.totals.avg_processing_ms),
-      detail: "average job duration",
-      icon: RefreshCw,
     },
   ] satisfies Array<{ label: string; value: string; detail: string; icon: LucideIcon }>;
 }
@@ -3157,6 +3077,13 @@ function formatLimitNumber(value: number | null): string {
 
 function formatLimitBytes(value: number | null): string {
   return value === null ? "org default" : formatBytes(value);
+}
+
+function formatPercent(value: number, total: number | null): string {
+  if (!total || total <= 0) return "n/a";
+  const percent = (value / total) * 100;
+  if (percent > 0 && percent < 1) return "<1%";
+  return `${Math.min(999, Math.round(percent)).toLocaleString()}%`;
 }
 
 function formatMs(value: number | null): string {
