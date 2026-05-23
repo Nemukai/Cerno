@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from cerno.api.deps import ConnDep, SettingsDep, UserDep, cookie_serializer
 from cerno.auth import build_oauth
 from cerno.config import Settings
-from cerno.models import AccessStatus, SiteRole
+from cerno.models import AccessStatus, OrganizationRole, SiteRole
 from cerno.repositories import (
     AnalyticsRepository,
     ApprovedEmailRepository,
@@ -20,6 +20,13 @@ from cerno.repositories import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+class CurrentOrganization(BaseModel):
+    id: str
+    name: str
+    slug: str
+    role: OrganizationRole
+
+
 class CurrentUser(BaseModel):
     id: str
     email: str
@@ -28,12 +35,6 @@ class CurrentUser(BaseModel):
     access_status: AccessStatus = "pending"
     site_role: SiteRole = "user"
     organizations: list[CurrentOrganization] = Field(default_factory=list)
-
-
-class CurrentOrganization(BaseModel):
-    id: str
-    name: str
-    slug: str
 
 
 def _set_session_cookie(response: Response, *, settings: Settings, user_id: str) -> None:
@@ -104,7 +105,16 @@ def me(conn: ConnDep, settings: SettingsDep, user: UserDep) -> CurrentUser:
     org_repo = OrganizationRepository(conn)
     if synced.access_status == "granted":
         org_repo.ensure_personal_for_user(synced)
-    organizations = org_repo.list_for_user(synced.id)
+    organizations = conn.execute(
+        """SELECT o.id, o.name, o.slug, m.role
+           FROM organizations o
+           JOIN organization_members m ON m.organization_id = o.id
+           WHERE m.user_id = ?
+             AND m.status = 'active'
+             AND o.status = 'active'
+           ORDER BY o.created_at""",
+        (synced.id,),
+    ).fetchall()
     conn.commit()
     return CurrentUser(
         id=synced.id,
@@ -114,7 +124,12 @@ def me(conn: ConnDep, settings: SettingsDep, user: UserDep) -> CurrentUser:
         access_status=synced.access_status,
         site_role="site_owner" if is_site_owner else "user",
         organizations=[
-            CurrentOrganization(id=org.id, name=org.name, slug=org.slug)
+            CurrentOrganization(
+                id=org["id"],
+                name=org["name"],
+                slug=org["slug"],
+                role=org["role"],
+            )
             for org in organizations
         ],
     )

@@ -163,6 +163,44 @@ class OrganizationRepository:
         ).fetchone()
         return _row_to_organization_member(row) if row else None
 
+    def revoke_member(
+        self,
+        *,
+        organization_id: str,
+        user_id: str,
+    ) -> OrganizationMember:
+        now = _now()
+        self.conn.execute(
+            """UPDATE organization_members
+               SET status = 'revoked', updated_at = ?
+               WHERE organization_id = ? AND user_id = ?""",
+            (now.isoformat(), organization_id, user_id),
+        )
+        member = self.get_member(organization_id=organization_id, user_id=user_id)
+        if member is None:
+            raise LookupError(f"organization member not found: {organization_id}:{user_id}")
+        return member
+
+    def active_member_count(self, organization_id: str) -> int:
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS value
+               FROM organization_members
+               WHERE organization_id = ? AND status = 'active'""",
+            (organization_id,),
+        ).fetchone()
+        return int(row["value"] or 0) if row else 0
+
+    def active_admin_count(self, organization_id: str) -> int:
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS value
+               FROM organization_members
+               WHERE organization_id = ?
+                 AND status = 'active'
+                 AND role IN ('owner', 'admin')""",
+            (organization_id,),
+        ).fetchone()
+        return int(row["value"] or 0) if row else 0
+
     def ensure_personal_for_user(self, user: User) -> Organization:
         existing = self.primary_for_user(user.id)
         if existing is not None:
