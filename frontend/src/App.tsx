@@ -25,12 +25,14 @@ import {
 } from "lucide-react";
 import {
   approveSchema,
+  addOrganizationMember,
   createSession,
   deleteFile,
   deleteSession,
   deleteTurn,
   getChatFeed,
   getDiscovery,
+  getOrganizationAdminDashboard,
   getOwnerDashboard,
   getProcessingEvents,
   getSchemaGuide,
@@ -39,7 +41,9 @@ import {
   listLinks,
   listSessions,
   processSession,
+  removeOrganizationMember,
   streamChat,
+  updateOrganizationMemberRole,
   updateTurn,
   uploadFiles,
 } from "./lib/api";
@@ -55,6 +59,8 @@ import type {
   FileRecord,
   Link,
   OwnerDashboard,
+  OrganizationAdminDashboard,
+  OrganizationMemberBody,
   ProcessingEvent,
   Session,
   WorkspaceResponse,
@@ -71,6 +77,7 @@ import { Shell, type TabKey } from "./components/Shell";
 import { AuthGate } from "./components/AuthGate";
 import { BetaGate } from "./components/BetaGate";
 import { useUser, googleLoginUrl, type CurrentUser } from "./lib/auth";
+import { trackEvent } from "./lib/analytics";
 
 type WorkspaceMetric = {
   fileCount: number;
@@ -99,6 +106,7 @@ type HomeView = "landing" | "sessions";
 type AppRoute =
   | { kind: "landing" }
   | { kind: "owner" }
+  | { kind: "org-admin"; organizationId: string }
   | { kind: "sessions" }
   | { kind: "session"; sessionId: string; tab: TabKey; legacyFiles?: boolean };
 
@@ -113,6 +121,9 @@ function readRoute(): AppRoute {
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts.length === 0) return { kind: "landing" };
   if (parts[0] === "owner") return { kind: "owner" };
+  if (parts[0] === "organizations" && parts[2] === "admin" && parts[1]) {
+    return { kind: "org-admin", organizationId: decodeURIComponent(parts[1]) };
+  }
   if (parts[0] === "sessions") {
     if (parts.length === 1) return { kind: "sessions" };
     const sessionId = parts[1];
@@ -137,6 +148,9 @@ function readRoute(): AppRoute {
 function routePath(route: AppRoute): string {
   if (route.kind === "landing") return "/";
   if (route.kind === "owner") return "/owner";
+  if (route.kind === "org-admin") {
+    return `/organizations/${encodeURIComponent(route.organizationId)}/admin`;
+  }
   if (route.kind === "sessions") return "/sessions";
   return `/sessions/${encodeURIComponent(route.sessionId)}/${route.tab}`;
 }
@@ -457,7 +471,7 @@ export function App() {
       return;
     }
 
-    if (route.kind === "owner") {
+    if (route.kind === "owner" || route.kind === "org-admin") {
       if (session) {
         setSession(null);
         clearSessionState();
@@ -512,6 +526,10 @@ export function App() {
       setStarting(true);
       try {
         const s = await createSession(name);
+        trackEvent("cerno_workspace_created", {
+          session_id: s.id,
+          organization_id: s.organization_id ?? null,
+        });
         markWorkspaceOpened(s.id);
         clearSessionState();
         setHomeView("sessions");
@@ -530,6 +548,10 @@ export function App() {
 
   const handleResumeSession = useCallback(
     (s: Session) => {
+      trackEvent("cerno_workspace_opened", {
+        session_id: s.id,
+        organization_id: s.organization_id ?? null,
+      });
       markWorkspaceOpened(s.id);
       prefetchWorkspace(s.id);
       clearSessionState();
@@ -554,6 +576,7 @@ export function App() {
       setError(null);
       try {
         await deleteSession(id);
+        trackEvent("cerno_workspace_deleted", { session_id: id });
         setWorkspaceMetrics((current) => {
           const next = { ...current };
           delete next[id];
@@ -585,10 +608,20 @@ export function App() {
       if (deduped.length === 0) return;
       setError(null);
       setUploading(true);
+      trackEvent("cerno_upload_selected", {
+        session_id: session.id,
+        file_count: deduped.length,
+        total_bytes: deduped.reduce((sum, file) => sum + file.size, 0),
+      });
       setActiveTab("insights");
       navigateSessionTab(session.id, "insights");
       try {
         await uploadFiles(session.id, deduped);
+        trackEvent("cerno_upload_completed", {
+          session_id: session.id,
+          file_count: deduped.length,
+          total_bytes: deduped.reduce((sum, file) => sum + file.size, 0),
+        });
         setEvents([]);
         setProcessing(false);
         setDiscovery(null);
@@ -600,6 +633,10 @@ export function App() {
         ]);
         await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
       } catch (err) {
+        trackEvent("cerno_upload_failed", {
+          session_id: session.id,
+          file_count: deduped.length,
+        });
         setError((err as Error).message);
         await refreshDiscovery(session.id).catch(() => undefined);
       } finally {
@@ -653,10 +690,15 @@ export function App() {
     setError(null);
     setProcessing(true);
     setEvents([]);
+    trackEvent("cerno_schema_process_started", { session_id: session.id });
     setActiveTab("insights");
     navigateSessionTab(session.id, "insights");
     try {
       const result = await processSession(session.id);
+      trackEvent("cerno_schema_process_queued", {
+        session_id: session.id,
+        job_id: result.job_id,
+      });
       setEvents(result.events);
       await Promise.all([
         refreshFiles(session.id),
@@ -666,6 +708,7 @@ export function App() {
       ]);
       await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
     } catch (err) {
+      trackEvent("cerno_schema_process_failed", { session_id: session.id });
       setError((err as Error).message);
       await refreshDiscovery(session.id).catch(() => undefined);
       await refreshEvents(session.id).catch(() => undefined);
@@ -690,6 +733,7 @@ export function App() {
       if (!session) return;
       setError(null);
       setApproving(true);
+      trackEvent("cerno_schema_approval_started", { session_id: session.id });
       try {
         const result = await approveSchema(session.id, {
           files: filesPayload,
@@ -706,7 +750,9 @@ export function App() {
         await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
         setActiveTab("ask");
         navigateSessionTab(session.id, "ask");
+        trackEvent("cerno_schema_approved", { session_id: session.id });
       } catch (err) {
+        trackEvent("cerno_schema_approval_failed", { session_id: session.id });
         setError((err as Error).message);
       } finally {
         setApproving(false);
@@ -728,6 +774,10 @@ export function App() {
       if (!session) return;
       setError(null);
       setSending(true);
+      trackEvent("cerno_chat_sent", {
+        session_id: session.id,
+        existing_turn: Boolean(activeTurnId),
+      });
       setLiveChat({
         turnId: activeTurnId,
         userMessage: message,
@@ -848,6 +898,7 @@ export function App() {
         await refreshChatFeed(session.id);
         await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
         setLiveChat(null);
+        trackEvent("cerno_chat_completed", { session_id: session.id });
       } catch (err) {
         const message =
           err instanceof Error && err.message === "unauthorized"
@@ -855,6 +906,7 @@ export function App() {
             : USER_SAFE_CHAT_ERROR;
         setError(message);
         setLiveChat((current) => (current ? { ...current, error: message } : current));
+        trackEvent("cerno_chat_failed", { session_id: session.id });
       } finally {
         setSending(false);
       }
@@ -940,7 +992,31 @@ export function App() {
               <OwnerDashboardPage
                 user={user}
                 onBack={() => navigateHome("sessions")}
+                onOpenOrganizationAdmin={(organizationId) =>
+                  navigate({ kind: "org-admin", organizationId })
+                }
                 onSignOut={async () => {
+                  trackEvent("cerno_user_signed_out", { surface: "owner_dashboard" });
+                  await signOut();
+                  navigateHome("landing");
+                }}
+              />
+            </BetaGate>
+          )}
+        </AuthGate>
+      );
+    }
+    if (route.kind === "org-admin") {
+      return (
+        <AuthGate>
+          {(user, signOut, onUserUpdate) => (
+            <BetaGate user={user} onUserUpdate={onUserUpdate}>
+              <OrganizationAdminDashboardPage
+                organizationId={route.organizationId}
+                user={user}
+                onBack={() => navigateHome("sessions")}
+                onSignOut={async () => {
+                  trackEvent("cerno_user_signed_out", { surface: "org_admin_dashboard" });
                   await signOut();
                   navigateHome("landing");
                 }}
@@ -967,7 +1043,11 @@ export function App() {
               onDismissError={() => setError(null)}
               onBackToLanding={() => navigateHome("landing")}
               onOpenOwnerDashboard={() => navigate({ kind: "owner" })}
+              onOpenOrganizationAdmin={(organizationId) =>
+                navigate({ kind: "org-admin", organizationId })
+              }
               onSignOut={async () => {
+                trackEvent("cerno_user_signed_out", { surface: "workspaces" });
                 await signOut();
                 navigateHome("landing");
               }}
@@ -1573,6 +1653,7 @@ function WorkspacesPage({
   onDismissError,
   onBackToLanding,
   onOpenOwnerDashboard,
+  onOpenOrganizationAdmin,
   onSignOut,
 }: {
   user: CurrentUser;
@@ -1587,6 +1668,7 @@ function WorkspacesPage({
   onDismissError: () => void;
   onBackToLanding: () => void;
   onOpenOwnerDashboard: () => void;
+  onOpenOrganizationAdmin: (organizationId: string) => void;
   onSignOut: () => Promise<void>;
 }) {
   const [name, setName] = useState("");
@@ -1768,6 +1850,7 @@ function WorkspacesPage({
           <UserProfilePanel
             user={user}
             onOpenOwnerDashboard={onOpenOwnerDashboard}
+            onOpenOrganizationAdmin={onOpenOrganizationAdmin}
             onSignOut={onSignOut}
           />
         </div>
@@ -1779,13 +1862,18 @@ function WorkspacesPage({
 function UserProfilePanel({
   user,
   onOpenOwnerDashboard,
+  onOpenOrganizationAdmin,
   onSignOut,
 }: {
   user: CurrentUser;
   onOpenOwnerDashboard: () => void;
+  onOpenOrganizationAdmin: (organizationId: string) => void;
   onSignOut: () => Promise<void>;
 }) {
   const displayName = userDisplayName(user);
+  const adminOrganizations = user.organizations.filter((org) =>
+    org.role === "owner" || org.role === "admin",
+  );
 
   return (
     <motion.aside
@@ -1843,6 +1931,16 @@ function UserProfilePanel({
             owner dashboard
           </button>
         ) : null}
+        {adminOrganizations.map((org) => (
+          <button
+            key={org.id}
+            type="button"
+            onClick={() => onOpenOrganizationAdmin(org.id)}
+            className="small-caps border border-[#176B7D]/25 bg-[#F2EBDD] px-4 py-3 text-sm text-[#176B7D] transition hover:border-[#176B7D] hover:bg-[#C9E3E2]/20"
+          >
+            {org.name} admin
+          </button>
+        ))}
         <button
           type="button"
           onClick={onSignOut}
@@ -1855,13 +1953,236 @@ function UserProfilePanel({
   );
 }
 
-function OwnerDashboardPage({
+function OrganizationAdminDashboardPage({
+  organizationId,
   user,
   onBack,
   onSignOut,
 }: {
+  organizationId: string;
   user: CurrentUser;
   onBack: () => void;
+  onSignOut: () => Promise<void>;
+}) {
+  const queryClient = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<OrganizationMemberBody["role"]>("member");
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const userOrg = user.organizations.find((org) => org.id === organizationId);
+  const hasAccess =
+    user.site_role === "site_owner" ||
+    userOrg?.role === "owner" ||
+    userOrg?.role === "admin";
+  const dashboardQuery = useQuery({
+    queryKey: ["organization", organizationId, "admin"],
+    queryFn: () => getOrganizationAdminDashboard(organizationId),
+    enabled: hasAccess,
+    refetchInterval: 30_000,
+  });
+  const dashboard = dashboardQuery.data;
+
+  useEffect(() => {
+    if (hasAccess) trackEvent("cerno_org_admin_dashboard_opened", { organization_id: organizationId });
+  }, [hasAccess, organizationId]);
+
+  const refreshDashboard = async () => {
+    trackEvent("cerno_org_admin_dashboard_refreshed", { organization_id: organizationId });
+    await dashboardQuery.refetch();
+  };
+
+  const invalidateDashboard = async () => {
+    await Promise.all([
+      dashboardQuery.refetch(),
+      queryClient.invalidateQueries({ queryKey: ["auth", "me"] }),
+    ]);
+  };
+
+  const handleAddMember = async () => {
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed) return;
+    setActionError(null);
+    setActionMessage(null);
+    trackEvent("cerno_org_member_add_submitted", {
+      organization_id: organizationId,
+      role,
+    });
+    try {
+      const result = await addOrganizationMember(organizationId, {
+        email: trimmed,
+        role,
+      });
+      setEmail("");
+      setRole("member");
+      setActionMessage(result.message ?? `Member ${result.status}.`);
+      trackEvent("cerno_org_member_add_succeeded", {
+        organization_id: organizationId,
+        status: result.status,
+        role,
+      });
+      await invalidateDashboard();
+    } catch (err) {
+      const message = (err as Error).message;
+      setActionError(message);
+      trackEvent("cerno_org_member_add_failed", {
+        organization_id: organizationId,
+        role,
+      });
+    }
+  };
+
+  const handleRoleChange = async (
+    targetUserId: string,
+    nextRole: OrganizationMemberBody["role"],
+  ) => {
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      await updateOrganizationMemberRole(organizationId, targetUserId, nextRole);
+      setActionMessage("Member role updated.");
+      trackEvent("cerno_org_member_role_updated", {
+        organization_id: organizationId,
+        role: nextRole,
+      });
+      await invalidateDashboard();
+    } catch (err) {
+      setActionError((err as Error).message);
+    }
+  };
+
+  const handleRemoveMember = async (target: OrganizationAdminDashboard["users"][number]) => {
+    const ok = window.confirm(`Remove ${target.email} from this organization?`);
+    if (!ok) return;
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      await removeOrganizationMember(organizationId, target.user_id);
+      setActionMessage("Member removed from organization.");
+      trackEvent("cerno_org_member_removed", { organization_id: organizationId });
+      await invalidateDashboard();
+    } catch (err) {
+      setActionError((err as Error).message);
+    }
+  };
+
+  if (!hasAccess) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-[#F2EBDD] px-6 text-[#141210]">
+        <div className="max-w-md border border-red-900/20 bg-red-50 p-6">
+          <div className="small-caps text-sm text-red-600">organization admin required</div>
+          <p className="mt-3 text-sm leading-6 text-red-700">
+            This dashboard is available to organization owners and admins only.
+          </p>
+          <button
+            type="button"
+            onClick={onBack}
+            className="small-caps mt-5 border border-red-900/20 bg-white px-4 py-2 text-sm text-red-700"
+          >
+            back to workspaces
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cerno-paper-grain min-h-full bg-[#F2EBDD] px-5 py-6 text-[#141210] sm:px-8 lg:px-10">
+      <main className="mx-auto flex max-w-[92rem] flex-col gap-6">
+        <header className="flex flex-col gap-4 border-b border-[#141210]/12 pb-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={onBack}
+              className="text-[#141210]/64 transition hover:text-[#176B7D]"
+              title="Back to workspaces"
+            >
+              <CernoLockup markClassName="h-6 w-6" wordmarkClassName="text-base" />
+            </button>
+            <div>
+              <div className="small-caps text-sm text-[#176B7D]">organization admin</div>
+              <h1 className="mt-1 font-serif text-4xl leading-none text-[#141210]">
+                {dashboard?.organization.name ?? userOrg?.name ?? "Organization"}
+              </h1>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="border border-[#141210]/12 bg-[#F7F1E7]/74 px-3 py-2 font-mono text-xs text-[#141210]/58">
+              {dashboard ? `month ${dashboard.month}` : "loading"}
+            </span>
+            <button
+              type="button"
+              onClick={refreshDashboard}
+              className="inline-flex items-center gap-2 border border-[#176B7D]/25 bg-[#F2EBDD] px-3 py-2 small-caps text-sm text-[#176B7D] transition hover:border-[#176B7D]"
+            >
+              <RefreshCw className="h-4 w-4" />
+              refresh
+            </button>
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="border border-red-900/20 bg-red-50 px-3 py-2 small-caps text-sm text-red-600 transition hover:bg-red-100"
+            >
+              sign out
+            </button>
+          </div>
+        </header>
+
+        {dashboardQuery.error ? (
+          <div className="border border-red-300 bg-red-50 px-4 py-3 font-mono text-sm text-red-700">
+            {(dashboardQuery.error as Error).message}
+          </div>
+        ) : null}
+
+        {dashboard ? (
+          <>
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {organizationMetricItems(dashboard).map((item) => (
+                <OwnerMetric key={item.label} {...item} />
+              ))}
+            </section>
+
+            <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+              <OrganizationMembersTable
+                dashboard={dashboard}
+                currentUserId={user.id}
+                canAssignOwner={user.site_role === "site_owner"}
+                onRoleChange={handleRoleChange}
+                onRemove={handleRemoveMember}
+              />
+              <OrganizationAdminPanel
+                dashboard={dashboard}
+                email={email}
+                role={role}
+                actionError={actionError}
+                actionMessage={actionMessage}
+                canAssignOwner={user.site_role === "site_owner"}
+                onEmailChange={setEmail}
+                onRoleChange={setRole}
+                onAddMember={handleAddMember}
+              />
+            </section>
+
+            <OrganizationEventsPanel dashboard={dashboard} />
+          </>
+        ) : (
+          <div className="border border-[#141210]/12 bg-[#F7F1E7]/74 px-4 py-12 text-center font-mono text-sm text-[#141210]/56">
+            Loading organization dashboard...
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function OwnerDashboardPage({
+  user,
+  onBack,
+  onOpenOrganizationAdmin,
+  onSignOut,
+}: {
+  user: CurrentUser;
+  onBack: () => void;
+  onOpenOrganizationAdmin: (organizationId: string) => void;
   onSignOut: () => Promise<void>;
 }) {
   const dashboardQuery = useQuery({
@@ -1871,6 +2192,10 @@ function OwnerDashboardPage({
     refetchInterval: 30_000,
   });
   const dashboard = dashboardQuery.data;
+
+  useEffect(() => {
+    if (user.site_role === "site_owner") trackEvent("cerno_owner_dashboard_opened");
+  }, [user.site_role]);
 
   if (user.site_role !== "site_owner") {
     return (
@@ -1918,7 +2243,10 @@ function OwnerDashboardPage({
             </span>
             <button
               type="button"
-              onClick={() => dashboardQuery.refetch()}
+              onClick={() => {
+                trackEvent("cerno_owner_dashboard_refreshed");
+                dashboardQuery.refetch();
+              }}
               className="inline-flex items-center gap-2 border border-[#176B7D]/25 bg-[#F2EBDD] px-3 py-2 small-caps text-sm text-[#176B7D] transition hover:border-[#176B7D]"
             >
               <RefreshCw className="h-4 w-4" />
@@ -1949,7 +2277,10 @@ function OwnerDashboardPage({
             </section>
 
             <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(24rem,0.9fr)]">
-              <OwnerOrganizationsTable dashboard={dashboard} />
+              <OwnerOrganizationsTable
+                dashboard={dashboard}
+                onOpenOrganizationAdmin={onOpenOrganizationAdmin}
+              />
               <OwnerEventsPanel dashboard={dashboard} />
             </section>
 
@@ -1988,7 +2319,238 @@ function OwnerMetric({
   );
 }
 
-function OwnerOrganizationsTable({ dashboard }: { dashboard: OwnerDashboard }) {
+function OrganizationAdminPanel({
+  dashboard,
+  email,
+  role,
+  actionError,
+  actionMessage,
+  canAssignOwner,
+  onEmailChange,
+  onRoleChange,
+  onAddMember,
+}: {
+  dashboard: OrganizationAdminDashboard;
+  email: string;
+  role: OrganizationMemberBody["role"];
+  actionError: string | null;
+  actionMessage: string | null;
+  canAssignOwner: boolean;
+  onEmailChange: (value: string) => void;
+  onRoleChange: (value: OrganizationMemberBody["role"]) => void;
+  onAddMember: () => void;
+}) {
+  return (
+    <aside className="h-fit border border-[#141210]/12 bg-[#F7F1E7]/74">
+      <div className="border-b border-[#141210]/12 px-4 py-3">
+        <div className="small-caps text-sm text-[#176B7D]">members</div>
+        <h2 className="mt-1 font-serif text-2xl text-[#141210]">Add user</h2>
+      </div>
+      <div className="grid gap-3 p-4">
+        <label className="grid gap-2">
+          <span className="small-caps text-xs text-[#141210]/52">email</span>
+          <input
+            type="email"
+            value={email}
+            onChange={(event) => onEmailChange(event.target.value)}
+            className="border border-[#141210]/12 bg-[#F2EBDD] px-3 py-2 font-mono text-sm text-[#141210] focus:outline-none focus:ring-1 focus:ring-[#176B7D]"
+            placeholder="person@company.com"
+          />
+        </label>
+        <label className="grid gap-2">
+          <span className="small-caps text-xs text-[#141210]/52">role</span>
+          <select
+            value={role}
+            onChange={(event) => onRoleChange(event.target.value as OrganizationMemberBody["role"])}
+            className="border border-[#141210]/12 bg-[#F2EBDD] px-3 py-2 font-mono text-sm text-[#141210] focus:outline-none focus:ring-1 focus:ring-[#176B7D]"
+          >
+            <option value="member">member</option>
+            <option value="viewer">viewer</option>
+            <option value="admin">admin</option>
+            {canAssignOwner ? <option value="owner">owner</option> : null}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={onAddMember}
+          className="small-caps bg-[#D17B2E] px-4 py-3 text-sm text-[#141210] transition hover:bg-[#E89A48]"
+        >
+          add user
+        </button>
+        {actionMessage ? (
+          <div className="border border-[#176B7D]/20 bg-[#C9E3E2]/20 px-3 py-2 font-mono text-xs text-[#176B7D]">
+            {actionMessage}
+          </div>
+        ) : null}
+        {actionError ? (
+          <div className="border border-red-300 bg-red-50 px-3 py-2 font-mono text-xs text-red-700">
+            {actionError}
+          </div>
+        ) : null}
+      </div>
+      <div className="border-t border-[#141210]/12 p-4 text-xs leading-5 text-[#141210]/58">
+        Seats {dashboard.totals.users} of {dashboard.entitlements.seat_limit}. New emails are recorded as invites until the user signs in and has site access approval.
+      </div>
+    </aside>
+  );
+}
+
+function OrganizationMembersTable({
+  dashboard,
+  currentUserId,
+  canAssignOwner,
+  onRoleChange,
+  onRemove,
+}: {
+  dashboard: OrganizationAdminDashboard;
+  currentUserId: string;
+  canAssignOwner: boolean;
+  onRoleChange: (userId: string, role: OrganizationMemberBody["role"]) => void;
+  onRemove: (user: OrganizationAdminDashboard["users"][number]) => void;
+}) {
+  return (
+    <section className="min-w-0 border border-[#141210]/12 bg-[#F7F1E7]/74">
+      <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 px-4 py-3">
+        <div>
+          <div className="small-caps text-sm text-[#176B7D]">users</div>
+          <h2 className="mt-1 font-serif text-2xl text-[#141210]">Usage and access</h2>
+        </div>
+        <Users className="h-5 w-5 text-[#176B7D]" />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-[72rem] w-full border-collapse text-left text-sm">
+          <thead className="small-caps border-b border-[#141210]/10 text-xs text-[#141210]/50">
+            <tr>
+              <th className="px-4 py-3 font-medium">user</th>
+              <th className="px-4 py-3 font-medium">role</th>
+              <th className="px-4 py-3 font-medium">sessions</th>
+              <th className="px-4 py-3 font-medium">storage</th>
+              <th className="px-4 py-3 font-medium">tokens</th>
+              <th className="px-4 py-3 font-medium">uploads</th>
+              <th className="px-4 py-3 font-medium">chat</th>
+              <th className="px-4 py-3 font-medium">limits</th>
+              <th className="px-4 py-3 font-medium">actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dashboard.users.map((row) => (
+              <tr key={row.user_id} className="border-b border-[#141210]/8 last:border-0">
+                <td className="px-4 py-3">
+                  <div className="font-mono text-sm text-[#141210]">{row.email}</div>
+                  <div className="mt-1 text-xs text-[#141210]/48">
+                    {row.name || "unnamed"} · {row.access_status} · seen {formatActivity(row.last_seen_at)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <select
+                    value={row.membership.role}
+                    onChange={(event) =>
+                      onRoleChange(row.user_id, event.target.value as OrganizationMemberBody["role"])
+                    }
+                    className="border border-[#141210]/12 bg-[#F2EBDD] px-2 py-1 font-mono text-xs text-[#141210]"
+                  >
+                    <option value="member">member</option>
+                    <option value="viewer">viewer</option>
+                    <option value="admin">admin</option>
+                    {canAssignOwner || row.membership.role === "owner" ? (
+                      <option value="owner">owner</option>
+                    ) : null}
+                  </select>
+                </td>
+                <td className="px-4 py-3 font-mono">{row.session_count}</td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatBytes(row.storage_bytes)}</div>
+                  <div className="text-xs text-[#141210]/48">
+                    org cap {formatLimitBytes(row.effective_limits.organization_storage_quota_bytes)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatCompactNumber(row.llm_tokens_month)}</div>
+                  <div className="text-xs text-[#141210]/48">
+                    user cap {formatLimitNumber(row.effective_limits.user_monthly_token_limit)}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{formatBytes(row.upload_bytes_month)}</div>
+                  <div className="text-xs text-[#141210]/48">this month</div>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="font-mono">{row.chat_turns_month} turns</div>
+                  <div className="text-xs text-[#141210]/48">
+                    avg {formatMs(row.avg_chat_response_ms)}
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-xs leading-5 text-[#141210]/62">
+                  sessions {formatLimitNumber(row.effective_limits.user_max_sessions)}
+                  <br />
+                  file {formatLimitBytes(row.effective_limits.user_max_file_size_bytes)}
+                  <br />
+                  jobs {formatLimitNumber(row.effective_limits.user_max_concurrent_jobs)}
+                </td>
+                <td className="px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => onRemove(row)}
+                    disabled={row.user_id === currentUserId}
+                    className="small-caps border border-red-900/20 bg-red-50 px-3 py-2 text-xs text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function OrganizationEventsPanel({ dashboard }: { dashboard: OrganizationAdminDashboard }) {
+  return (
+    <section className="border border-[#141210]/12 bg-[#F7F1E7]/74">
+      <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 px-4 py-3">
+        <div>
+          <div className="small-caps text-sm text-[#176B7D]">events</div>
+          <h2 className="mt-1 font-serif text-2xl text-[#141210]">Recent org activity</h2>
+        </div>
+        <Activity className="h-5 w-5 text-[#176B7D]" />
+      </div>
+      <div className="grid divide-y divide-[#141210]/8">
+        {dashboard.recent_events.length > 0 ? (
+          dashboard.recent_events.slice(0, 18).map((event) => (
+            <div
+              key={`${event.occurred_at}:${event.event_name}:${event.user_id ?? ""}`}
+              className="grid gap-1 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_10rem]"
+            >
+              <div className="min-w-0">
+                <div className="font-mono text-sm text-[#141210]">{event.event_name}</div>
+                <div className="truncate text-xs text-[#141210]/48">
+                  {event.user_id ?? "system"} · {event.session_id ?? "no session"}
+                </div>
+              </div>
+              <div className="text-xs text-[#141210]/48 sm:text-right">
+                {formatActivity(event.occurred_at)}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="px-4 py-8 font-mono text-sm text-[#141210]/52">
+            No product events recorded for this organization yet.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function OwnerOrganizationsTable({
+  dashboard,
+  onOpenOrganizationAdmin,
+}: {
+  dashboard: OwnerDashboard;
+  onOpenOrganizationAdmin: (organizationId: string) => void;
+}) {
   return (
     <section className="min-w-0 border border-[#141210]/12 bg-[#F7F1E7]/74">
       <div className="flex items-end justify-between gap-4 border-b border-[#141210]/12 px-4 py-3">
@@ -2010,6 +2572,7 @@ function OwnerOrganizationsTable({ dashboard }: { dashboard: OwnerDashboard }) {
               <th className="px-4 py-3 font-medium">uploads</th>
               <th className="px-4 py-3 font-medium">jobs</th>
               <th className="px-4 py-3 font-medium">limits</th>
+              <th className="px-4 py-3 font-medium">admin</th>
             </tr>
           </thead>
           <tbody>
@@ -2049,6 +2612,15 @@ function OwnerOrganizationsTable({ dashboard }: { dashboard: OwnerDashboard }) {
                   sessions {formatLimitNumber(row.entitlements.max_workspaces)}
                   <br />
                   jobs {formatLimitNumber(row.entitlements.max_concurrent_jobs)}
+                </td>
+                <td className="px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => onOpenOrganizationAdmin(row.organization.id)}
+                    className="small-caps border border-[#176B7D]/25 bg-[#F2EBDD] px-3 py-2 text-xs text-[#176B7D] transition hover:border-[#176B7D]"
+                  >
+                    manage
+                  </button>
                 </td>
               </tr>
             ))}
@@ -2185,6 +2757,59 @@ function OwnerEventsPanel({ dashboard }: { dashboard: OwnerDashboard }) {
       </div>
     </section>
   );
+}
+
+function organizationMetricItems(dashboard: OrganizationAdminDashboard) {
+  return [
+    {
+      label: "users",
+      value: `${dashboard.totals.users}/${dashboard.entitlements.seat_limit}`,
+      detail: `${dashboard.current_role} access`,
+      icon: Users,
+    },
+    {
+      label: "llm tokens",
+      value: formatCompactNumber(dashboard.totals.llm_tokens_month),
+      detail: `of ${formatLimitNumber(dashboard.entitlements.monthly_token_limit)} this month`,
+      icon: Activity,
+    },
+    {
+      label: "storage",
+      value: formatBytes(dashboard.totals.storage_bytes),
+      detail: `of ${formatLimitBytes(dashboard.entitlements.storage_quota_bytes)}`,
+      icon: HardDrive,
+    },
+    {
+      label: "uploads",
+      value: formatBytes(dashboard.totals.upload_bytes_month),
+      detail: `${dashboard.totals.upload_count_month} files this month`,
+      icon: FileSpreadsheet,
+    },
+    {
+      label: "sessions",
+      value: formatCompactNumber(dashboard.totals.sessions),
+      detail: `cap ${formatLimitNumber(dashboard.entitlements.max_workspaces)}`,
+      icon: Table2,
+    },
+    {
+      label: "jobs",
+      value: formatCompactNumber(dashboard.totals.active_jobs),
+      detail: `${formatCompactNumber(dashboard.totals.failed_jobs_month)} failed this month`,
+      icon: Database,
+    },
+    {
+      label: "response time",
+      value: formatMs(dashboard.totals.avg_chat_response_ms),
+      detail: `${formatCompactNumber(dashboard.totals.chat_turns_month)} chat turns`,
+      icon: Clock3,
+    },
+    {
+      label: "processing",
+      value: formatMs(dashboard.totals.avg_processing_ms),
+      detail: "average job duration",
+      icon: RefreshCw,
+    },
+  ] satisfies Array<{ label: string; value: string; detail: string; icon: LucideIcon }>;
 }
 
 function ownerMetricItems(dashboard: OwnerDashboard) {

@@ -13,6 +13,8 @@ import type {
   FileRecord,
   Link,
   OwnerDashboard,
+  OrganizationAdminDashboard,
+  OrganizationMemberBody,
   ProcessingEvent,
   ProcessingJobResponse,
   Session,
@@ -67,6 +69,49 @@ export function getHealth(): Promise<Health> {
 
 export function getOwnerDashboard(): Promise<OwnerDashboard> {
   return request<OwnerDashboard>("/owner/dashboard");
+}
+
+export function getOrganizationAdminDashboard(
+  organizationId: string,
+): Promise<OrganizationAdminDashboard> {
+  return request<OrganizationAdminDashboard>(
+    `/organizations/${organizationId}/admin/dashboard`,
+  );
+}
+
+export function addOrganizationMember(
+  organizationId: string,
+  body: { email: string; role: OrganizationMemberBody["role"] },
+): Promise<{ status: string; member: OrganizationMemberBody | null; invite_id: string | null; message: string | null }> {
+  return postJson(
+    `/organizations/${organizationId}/admin/members`,
+    body,
+  );
+}
+
+export function updateOrganizationMemberRole(
+  organizationId: string,
+  userId: string,
+  role: OrganizationMemberBody["role"],
+): Promise<{ status: string; member: OrganizationMemberBody | null; invite_id: string | null; message: string | null }> {
+  return request(
+    `/organizations/${organizationId}/admin/members/${userId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role }),
+    },
+  );
+}
+
+export function removeOrganizationMember(
+  organizationId: string,
+  userId: string,
+): Promise<{ status: string; member: OrganizationMemberBody | null; invite_id: string | null; message: string | null }> {
+  return request(
+    `/organizations/${organizationId}/admin/members/${userId}`,
+    { method: "DELETE" },
+  );
 }
 
 export function createSession(name: string): Promise<Session> {

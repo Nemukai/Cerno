@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 export type AccessStatus = "pending" | "granted" | "revoked";
+export type OrganizationRole = "owner" | "admin" | "member" | "viewer";
 
 export type CurrentUser = {
   id: string;
@@ -13,6 +14,7 @@ export type CurrentUser = {
     id: string;
     name: string;
     slug: string;
+    role: OrganizationRole;
   }>;
 };
 

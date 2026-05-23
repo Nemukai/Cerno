@@ -93,6 +93,66 @@ export type OrganizationMember = {
   updated_at: string;
 };
 
+export type OrganizationMemberBody = {
+  user_id: string;
+  email: string;
+  name: string | null;
+  role: "owner" | "admin" | "member" | "viewer";
+  status: "active" | "revoked";
+  joined_at: string;
+};
+
+export type OrganizationAdminDashboard = {
+  generated_at: string;
+  month: string;
+  organization: {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    role: "owner" | "admin" | "member" | "viewer";
+  };
+  entitlements: OrganizationEntitlements;
+  current_role: "owner" | "admin" | "member" | "viewer";
+  totals: {
+    users: number;
+    sessions: number;
+    storage_bytes: number;
+    upload_bytes_month: number;
+    upload_count_month: number;
+    llm_tokens_month: number;
+    chat_turns_month: number;
+    active_jobs: number;
+    failed_jobs_month: number;
+    avg_chat_response_ms: number | null;
+    avg_processing_ms: number | null;
+  };
+  users: Array<{
+    user_id: string;
+    email: string;
+    name: string | null;
+    access_status: string;
+    membership: OrganizationMemberBody;
+    effective_limits: EffectiveUsageLimits;
+    user_limits: UserOrganizationLimits | null;
+    session_count: number;
+    storage_bytes: number;
+    upload_bytes_month: number;
+    llm_tokens_month: number;
+    chat_turns_month: number;
+    avg_chat_response_ms: number | null;
+    last_seen_at: string;
+  }>;
+  recent_events: Array<{
+    occurred_at: string;
+    user_id: string | null;
+    session_id: string | null;
+    event_name: string;
+    metric_value: number | null;
+    metadata: Record<string, unknown>;
+  }>;
+};
+
 export type UserOrganizationLimits = {
   organization_id: string;
   user_id: string;

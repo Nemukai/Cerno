@@ -1,0 +1,20 @@
+declare global {
+  interface Window {
+    umami?: {
+      track: (eventName: string, eventData?: Record<string, unknown>) => void;
+    };
+  }
+}
+
+export function trackEvent(
+  eventName: string,
+  eventData?: Record<string, unknown>,
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.umami?.track(eventName, eventData);
+  } catch {
+    // Analytics should never block user workflows.
+  }
+}
+
