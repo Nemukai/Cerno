@@ -93,3 +93,159 @@ body {
 .text-\[11px\] {
   font-size: 0.75rem;
 }
+
+/* ============================================================
+   CERNO INTELLIGENCE — landing theme (scoped, additive)
+   Light tokens live at :root, dark tokens under .dark. The app
+   defaults to .dark (set on <html>); only the landing/contact
+   surfaces consume these tokens, so the light app is untouched.
+   ============================================================ */
+@layer base {
+  :root {
+    --background: 250 30% 97%;
+    --foreground: 250 30% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 250 30% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 250 30% 9%;
+    --primary: 250 56% 54%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 250 22% 92%;
+    --secondary-foreground: 250 30% 12%;
+    --muted: 250 24% 93%;
+    --muted-foreground: 250 8% 40%;
+    --accent: 250 30% 90%;
+    --accent-foreground: 250 30% 12%;
+    --destructive: 5 78% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 250 18% 86%;
+    --input: 250 18% 82%;
+    --ring: 250 56% 54%;
+    --radius: 0px;
+  }
+
+  .dark {
+    --background: 0 0% 0%;
+    --foreground: 0 0% 96%;
+    --card: 0 0% 3.5%;
+    --card-foreground: 0 0% 96%;
+    --popover: 0 0% 2%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 248 100% 85%;
+    --primary-foreground: 248 40% 8%;
+    --secondary: 0 0% 9%;
+    --secondary-foreground: 0 0% 92%;
+    --muted: 0 0% 8%;
+    --muted-foreground: 0 0% 56%;
+    --accent: 0 0% 11%;
+    --accent-foreground: 0 0% 96%;
+    --destructive: 5 100% 62%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 14%;
+    --input: 0 0% 16%;
+    --ring: 248 100% 85%;
+  }
+}
+
+/* Landing root: theme-driven canvas */
+.cerno-void {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: "Space Grotesk", "Satoshi", system-ui, sans-serif;
+  isolation: isolate;
+  -webkit-font-smoothing: antialiased;
+}
+
+.cerno-void ::selection {
+  background: hsl(var(--primary) / 0.32);
+}
+
+.font-hud {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* Engineering grid — theme-aware line colour */
+.cerno-grid,
+.cerno-grid-fine {
+  --grid-line: rgba(99, 91, 168, 0.10);
+}
+.dark .cerno-grid,
+.dark .cerno-grid-fine {
+  --grid-line: rgba(183, 177, 255, 0.05);
+}
+.cerno-grid {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+.cerno-grid-fine {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 14px 14px;
+}
+
+/* Fine scanline veil — dark only */
+.cerno-scanlines {
+  background-image: none;
+}
+.dark .cerno-scanlines {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.022) 0px,
+    rgba(255, 255, 255, 0.022) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* Film grain — dark only */
+.dark .cerno-noise::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='4' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/></svg>");
+  background-size: 220px 220px;
+  mix-blend-mode: screen;
+  opacity: 0.045;
+  z-index: 1;
+}
+
+/* Glow — dark only (a violet glow on white looks muddy) */
+.glow-iris {
+  text-shadow: none;
+}
+.dark .glow-iris {
+  text-shadow:
+    0 0 18px rgba(183, 177, 255, 0.45),
+    0 0 60px rgba(183, 177, 255, 0.18);
+}
+.box-glow-iris {
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.3);
+}
+.dark .box-glow-iris {
+  box-shadow:
+    0 0 0 1px rgba(183, 177, 255, 0.4),
+    0 0 32px rgba(183, 177, 255, 0.22),
+    inset 0 0 24px rgba(183, 177, 255, 0.06);
+}
+
+.cerno-void a:focus-visible,
+.cerno-void button:focus-visible {
+  outline: 1px solid hsl(var(--primary) / 0.7);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cerno-void *,
+  .cerno-void *::before,
+  .cerno-void *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

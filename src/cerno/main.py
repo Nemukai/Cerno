@@ -11,6 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from cerno import __version__
 from cerno.api.auth import router as auth_router
 from cerno.api.chat import router as chat_router
+from cerno.api.contact import router as contact_router
 from cerno.api.dashboards import router as dashboards_router
 from cerno.api.organizations import router as organizations_router
 from cerno.api.owner import router as owner_router
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     app.include_router(auth_router)
+    app.include_router(contact_router)
     app.include_router(organizations_router)
     app.include_router(owner_router)
     app.include_router(sessions_router)

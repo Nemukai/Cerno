@@ -21,12 +21,22 @@ export type CurrentUser = {
 const AUTH_BASE = "/api/auth";
 
 export async function fetchCurrentUser(): Promise<CurrentUser | null> {
-  const res = await fetch(`${AUTH_BASE}/me`, { credentials: "same-origin" });
-  if (res.status === 401) return null;
-  if (!res.ok) {
-    throw new Error(`auth/me failed: ${res.status} ${res.statusText}`);
+  // Bound the probe so a slow/unreachable backend can never hang the UI.
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(`${AUTH_BASE}/me`, {
+      credentials: "same-origin",
+      signal: controller.signal,
+    });
+    if (res.status === 401) return null;
+    if (!res.ok) {
+      throw new Error(`auth/me failed: ${res.status} ${res.statusText}`);
+    }
+    return (await res.json()) as CurrentUser;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  return (await res.json()) as CurrentUser;
 }
 
 export function googleLoginUrl(): string {
@@ -53,6 +63,7 @@ export function useUser(): UseUser {
     queryKey: ["auth", "me"],
     queryFn: fetchCurrentUser,
     staleTime: 60_000,
+    retry: 1,
   });
 
   const refresh = async () => {
