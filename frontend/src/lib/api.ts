@@ -59,6 +59,32 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   });
 }
 
+export type AccessRequestInput = {
+  name: string;
+  email: string;
+  organization: string;
+  role?: string;
+  message?: string;
+  company?: string; // honeypot — must stay empty
+};
+
+export type AccessRequestResult = { ok: true; id: string };
+
+export async function submitAccessRequest(
+  input: AccessRequestInput,
+): Promise<AccessRequestResult> {
+  const res = await fetch(`${API_BASE}/contact`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText} ${body}`.trim());
+  }
+  return (await res.json()) as AccessRequestResult;
+}
+
 async function postMultipart<T>(path: string, form: FormData): Promise<T> {
   return request<T>(path, { method: "POST", body: form });
 }

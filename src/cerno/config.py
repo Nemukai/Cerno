@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     r2_bucket_name: str = ""
     r2_endpoint_url: str = ""
 
+    # Access-request / contact routing. Requests are always persisted; email
+    # delivery is best-effort and only fires when a Resend key is configured.
+    contact_email: str = "nik@nemukai.com"
+    resend_api_key: str = ""
+    resend_from_email: str = "Cerno <cerno@nemukai.com>"
+
     def validate_runtime_safety(self) -> None:
         production_like = self.app_env.lower() in {"prod", "production"}
         public_auth = bool(self.google_client_id or self.google_client_secret)

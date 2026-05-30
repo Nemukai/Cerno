@@ -39,6 +39,10 @@ frontend/dist/
 .env.local
 .env.*.local
 
+# Local Claude knowledge / tooling (not committed)
+CLAUDE.local.md
+.claude/
+
 # IDE
 .idea/
 .vscode/
