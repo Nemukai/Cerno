@@ -14,79 +14,10 @@ body {
   background: #F5F1E8;
 }
 
-.cerno-paper-grain {
-  isolation: isolate;
-}
-
-.cerno-insights-surface {
-  background:
-    radial-gradient(circle at 92% 7%, rgba(31, 134, 154, 0.08), transparent 27rem),
-    radial-gradient(circle at 78% 18%, rgba(209, 123, 46, 0.08), transparent 22rem),
-    linear-gradient(180deg, #f4ede1 0%, #fffdf8 58%, #fffdf8 100%);
-}
-
-.cerno-insights-surface::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.68' numOctaves='4' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.62'/></svg>");
-  background-size: 256px 256px;
-  mix-blend-mode: multiply;
-  opacity: 0.08;
-  z-index: 0;
-}
-
-.cerno-paper-grain::before,
-.cerno-paper-grain::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 60;
-}
-
-.cerno-paper-grain::before {
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='5' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.72'/></svg>");
-  background-size: 256px 256px;
-  mix-blend-mode: multiply;
-  opacity: 0.13;
-}
-
-.cerno-paper-grain::after {
-  background-image:
-    radial-gradient(circle at 18% 24%, rgba(80, 57, 24, 0.13) 0 0.7px, transparent 0.8px),
-    radial-gradient(circle at 74% 36%, rgba(20, 18, 16, 0.10) 0 0.65px, transparent 0.75px),
-    radial-gradient(circle at 41% 78%, rgba(209, 123, 46, 0.10) 0 0.8px, transparent 0.9px);
-  background-size: 96px 96px, 132px 132px, 156px 156px;
-  opacity: 0.32;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cerno-paper-grain *,
-  .cerno-paper-grain *::before,
-  .cerno-paper-grain *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
-.cerno-wordmark {
-  font-family: "Newsreader", "Georgia", serif;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-}
-
 .small-caps {
   font-variant-caps: all-small-caps;
   letter-spacing: 0.08em;
   font-weight: 500;
-}
-
-.hairline {
-  border-color: #E2DDD1;
 }
 
 .text-\[10px\],

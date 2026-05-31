@@ -109,11 +109,11 @@ export function ChatSidebar({
   };
 
   return (
-    <section className="flex h-full w-full flex-col bg-[#fffdf9]">
+    <section className="flex h-full w-full flex-col bg-background">
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-6">
         {visibleTurns.length === 0 && !pendingMessage && !showLiveChat ? (
           <div className="mt-4 flex flex-col items-center justify-center text-center">
-            <div className="mb-6 font-mono text-xl text-neutral-400">
+            <div className="mb-6 font-mono text-xl text-muted-foreground/70">
               How can I help you analyze this workspace?
             </div>
             {dataDoc?.starter_questions && dataDoc.starter_questions.length > 0 && (
@@ -127,7 +127,7 @@ export function ChatSidebar({
                       setPendingMessage(question);
                       onSend(question);
                     }}
-                    className="border border-neutral-200 bg-white px-4 py-3 text-left text-sm text-neutral-700 hover:border-ember hover:text-ember transition"
+                    className="border border-border bg-card px-4 py-3 text-left text-sm text-foreground/80 hover:border-primary hover:text-primary transition"
                   >
                     {question}
                   </button>
@@ -158,7 +158,7 @@ export function ChatSidebar({
             );
 
             return (
-              <div key={turn.id} className="hairline border-b py-4">
+              <div key={turn.id} className="border-border border-b py-4">
                 {messages.length === 0 && turn.state !== "complete" ? <ThinkingIndicator /> : null}
                 {visibleMessages.map((message, index) => {
                   if (message.role === "user") {
@@ -214,8 +214,8 @@ export function ChatSidebar({
           />
         ) : null}
       </div>
-      <div className="hairline border-t bg-white/90 px-8 py-4">
-        <div className="flex flex-col border bg-white focus-within:ring-1 focus-within:ring-ember transition-shadow">
+      <div className="border-border border-t bg-card/90 px-8 py-4">
+        <div className="flex flex-col border border-border bg-card focus-within:border-primary focus-within:ring-1 focus-within:ring-ring transition-shadow">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -228,15 +228,15 @@ export function ChatSidebar({
             placeholder={disabled ? "upload a file to start" : "ask\u2026"}
             disabled={disabled}
             rows={2}
-            className="w-full resize-none bg-transparent p-4 font-sans text-base text-ink focus:outline-none disabled:opacity-40"
+            className="w-full resize-none bg-transparent p-4 font-sans text-base text-foreground focus:outline-none disabled:opacity-40"
           />
-          <div className="flex items-center justify-between bg-neutral-50 px-4 py-2 border-t border-neutral-100">
-            <div className="text-[10px] text-neutral-400">{"enter to send, shift+enter for new line"}</div>
+          <div className="flex items-center justify-between bg-muted px-4 py-2 border-t border-border/60">
+            <div className="text-[10px] text-muted-foreground/70">{"enter to send, shift+enter for new line"}</div>
             <button
               type="button"
               onClick={submit}
               disabled={disabled || sending || !input.trim()}
-              className="small-caps bg-ember px-4 py-1.5 text-xs text-white hover:bg-ember-hover disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
+              className="small-caps bg-primary px-4 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
             >
               {sending ? "sending\u2026" : "send"}
             </button>
@@ -276,13 +276,13 @@ function ThinkingIndicator() {
   return (
     <div className="flex items-center gap-3 py-2">
       <ThinkingDots animated />
-      <span className="text-sm text-neutral-400 animate-pulse">analyzing your data…</span>
+      <span className="text-sm text-muted-foreground/70 animate-pulse">analyzing your data…</span>
     </div>
   );
 }
 
 function ThinkingDots({ animated = false }: { animated?: boolean }) {
-  const dotClass = `inline-block h-1.5 w-1.5 bg-ember ${animated ? "animate-bounce" : ""}`;
+  const dotClass = `inline-block h-1.5 w-1.5 bg-primary ${animated ? "animate-bounce" : ""}`;
   return (
     <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
       <span
@@ -322,23 +322,23 @@ function TraceDisclosure({
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-2.5 py-1.5 text-left hover:border-orange-200 hover:bg-orange-50"
+        className="flex w-full items-center justify-between border border-border bg-card px-2.5 py-1.5 text-left hover:border-primary/30 hover:bg-primary/10"
       >
         <span className="flex min-w-0 items-center gap-2">
           <ThinkingDots animated={!done} />
-          <span className="small-caps text-[10px] text-neutral-500">
+          <span className="small-caps text-[10px] text-muted-foreground">
             {open ? "hide thinking" : done ? "done thinking" : "show thinking"}
           </span>
         </span>
         <span className="flex items-center gap-2">
-          <span className="font-mono text-[10px] text-neutral-400">
+          <span className="font-mono text-[10px] text-muted-foreground/70">
             {items.length} {items.length === 1 ? "step" : "steps"}
           </span>
-          <span className="text-[10px] text-ember">{open ? "hide" : "show"}</span>
+          <span className="text-[10px] text-primary">{open ? "hide" : "show"}</span>
         </span>
       </button>
       {open ? (
-        <div className="mt-1 divide-y divide-orange-100 border border-orange-100 bg-white">
+        <div className="mt-1 divide-y divide-primary/20 border border-primary/20 bg-card">
           {items.map(({ message, result }) => (
             <ToolCallCard key={message.id} message={message} result={result} />
           ))}
@@ -359,15 +359,15 @@ function ToolCallCard({
   return (
     <div className="grid grid-cols-[minmax(110px,180px)_1fr_auto] items-center gap-3 px-2.5 py-1.5 text-xs">
       <div className="flex min-w-0 items-center gap-2">
-        <span className={`h-1.5 w-1.5 shrink-0 ${result ? "bg-ember" : "bg-neutral-300"}`} />
-        <span className="truncate font-mono text-[11px] text-ink">
+        <span className={`h-1.5 w-1.5 shrink-0 ${result ? "bg-primary" : "bg-border"}`} />
+        <span className="truncate font-mono text-[11px] text-foreground">
           {formatToolName(message.tool_name)}
         </span>
       </div>
-      <div className="min-w-0 truncate text-[11px] text-neutral-500">
+      <div className="min-w-0 truncate text-[11px] text-muted-foreground">
         {summary || "tool call"}
       </div>
-      <div className="small-caps text-[9px] text-neutral-400">
+      <div className="small-caps text-[9px] text-muted-foreground/70">
         {result ? "done" : "running"}
       </div>
     </div>
@@ -386,7 +386,7 @@ function WidgetGrid({
       {widgets.map((widget, index) => (
         <div
           key={`${idPrefix}:widget:${index}`}
-          className="border border-neutral-200 bg-white px-4 py-3 shadow-[0_10px_30px_rgba(14,14,14,0.04)]"
+          className="border border-border bg-card px-4 py-3 shadow-[0_10px_30px_rgba(14,14,14,0.04)]"
         >
           <WidgetRenderer widget={widget} height={260} />
         </div>
@@ -428,7 +428,7 @@ function fallbackMessages(turn: ChatTurn): ChatMessage[] {
 function UserBubble({ text }: { text: string }) {
   return (
     <div className="mb-4 flex justify-end">
-      <div className="max-w-[78%] border border-orange-200 bg-orange-50 px-4 py-3 text-base text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
+      <div className="max-w-[78%] border border-primary/30 bg-primary/10 px-4 py-3 text-base text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
         <MarkdownText text={text} compact />
       </div>
     </div>
@@ -438,8 +438,8 @@ function UserBubble({ text }: { text: string }) {
 function AssistantBubble({ text }: { text: string }) {
   return (
     <div className="mb-4">
-      <div className="small-caps mb-2 text-sm text-ember">cerno</div>
-      <div className="max-w-3xl text-base text-ink">
+      <div className="small-caps mb-2 text-sm text-primary">cerno</div>
+      <div className="max-w-3xl text-base text-foreground">
         <MarkdownText text={text || "\u2026"} />
       </div>
     </div>
@@ -451,9 +451,9 @@ function LiveChatBlock({ liveChat }: { liveChat: LiveChatState }) {
   const hasTrace = Boolean(liveChat.reasoningText.trim()) || liveChat.tools.length > 0;
 
   return (
-    <div className="hairline border-b py-4">
+    <div className="border-border border-b py-4">
       <UserBubble text={liveChat.userMessage} />
-      <div className="small-caps mb-2 text-sm text-ember">cerno</div>
+      <div className="small-caps mb-2 text-sm text-primary">cerno</div>
       {hasTrace ? (
         <LiveTraceDisclosure
           open={traceOpen}
@@ -462,11 +462,11 @@ function LiveChatBlock({ liveChat }: { liveChat: LiveChatState }) {
         />
       ) : null}
       {liveChat.assistantText ? (
-        <div className="max-w-3xl text-base text-ink">
+        <div className="max-w-3xl text-base text-foreground">
           <MarkdownText text={liveChat.assistantText} />
         </div>
       ) : liveChat.error ? (
-        <div className="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {liveChat.error}
         </div>
       ) : hasTrace ? null : (
@@ -495,35 +495,35 @@ function LiveTraceDisclosure({
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className="flex w-full items-center justify-between border border-neutral-200 bg-white px-2.5 py-1.5 text-left hover:border-orange-200 hover:bg-orange-50"
+        className="flex w-full items-center justify-between border border-border bg-card px-2.5 py-1.5 text-left hover:border-primary/30 hover:bg-primary/10"
       >
         <span className="flex min-w-0 items-center gap-2">
           <ThinkingDots animated={!done} />
-          <span className="small-caps text-[10px] text-neutral-500">
+          <span className="small-caps text-[10px] text-muted-foreground">
             {open ? "hide thinking" : done ? "done thinking" : "show thinking"}
           </span>
         </span>
         <span className="flex items-center gap-2">
-          <span className="font-mono text-[10px] text-neutral-400">
+          <span className="font-mono text-[10px] text-muted-foreground/70">
             {stepCount} {stepCount === 1 ? "step" : "steps"}
           </span>
-          <span className="text-[10px] text-ember">{open ? "hide" : "show"}</span>
+          <span className="text-[10px] text-primary">{open ? "hide" : "show"}</span>
         </span>
       </button>
       {open ? (
-        <div className="mt-1 divide-y divide-orange-100 border border-orange-100 bg-white">
+        <div className="mt-1 divide-y divide-primary/20 border border-primary/20 bg-card">
           {liveChat.reasoningText.trim() ? (
             <div className="grid grid-cols-[minmax(110px,180px)_1fr_auto] items-center gap-3 px-2.5 py-1.5 text-xs">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="h-1.5 w-1.5 shrink-0 bg-neutral-300" />
-                <span className="truncate font-mono text-[11px] text-ink">
+                <span className="h-1.5 w-1.5 shrink-0 bg-border" />
+                <span className="truncate font-mono text-[11px] text-foreground">
                   reasoning
                 </span>
               </div>
-              <div className="min-w-0 truncate text-[11px] text-neutral-500">
+              <div className="min-w-0 truncate text-[11px] text-muted-foreground">
                 {compactTraceText(liveChat.reasoningText)}
               </div>
-              <div className="small-caps text-[9px] text-neutral-400">live</div>
+              <div className="small-caps text-[9px] text-muted-foreground/70">live</div>
             </div>
           ) : null}
           {liveChat.tools.map((tool) => (
@@ -532,15 +532,15 @@ function LiveTraceDisclosure({
               className="grid grid-cols-[minmax(110px,180px)_1fr_auto] items-center gap-3 px-2.5 py-1.5 text-xs"
             >
               <div className="flex min-w-0 items-center gap-2">
-                <span className={`h-1.5 w-1.5 shrink-0 ${tool.result ? "bg-ember" : "bg-neutral-300"}`} />
-                <span className="truncate font-mono text-[11px] text-ink">
+                <span className={`h-1.5 w-1.5 shrink-0 ${tool.result ? "bg-primary" : "bg-border"}`} />
+                <span className="truncate font-mono text-[11px] text-foreground">
                   {formatToolName(tool.name || null)}
                 </span>
               </div>
-              <div className="min-w-0 truncate text-[11px] text-neutral-500">
+              <div className="min-w-0 truncate text-[11px] text-muted-foreground">
                 {compactTraceText(tool.argsText) || "tool call"}
               </div>
-              <div className="small-caps text-[9px] text-neutral-400">
+              <div className="small-caps text-[9px] text-muted-foreground/70">
                 {tool.result ? "done" : "running"}
               </div>
             </div>
@@ -643,7 +643,7 @@ function compactTraceText(value: string | null | undefined): string {
   return `${singleLine.slice(0, 117)}...`;
 }
 
-export function MarkdownText({
+function MarkdownText({
   text,
   compact = false,
 }: {
@@ -658,7 +658,7 @@ export function MarkdownText({
           return (
             <pre
               key={index}
-              className="overflow-x-auto border border-neutral-300 bg-white p-2 font-mono text-xs leading-5 text-ink"
+              className="overflow-x-auto border border-border bg-card p-2 font-mono text-xs leading-5 text-foreground"
             >
               {block.lines.join("\n")}
             </pre>
@@ -669,15 +669,15 @@ export function MarkdownText({
           return (
             <div
               key={index}
-              className="overflow-x-auto border border-neutral-200 bg-white"
+              className="overflow-x-auto border border-border bg-card"
             >
               <table className="w-full border-collapse text-left text-xs">
-                <thead className="bg-neutral-100 text-neutral-600">
+                <thead className="bg-muted text-muted-foreground">
                   <tr>
                     {table.header.map((cell, cellIndex) => (
                       <th
                         key={cellIndex}
-                        className="border-b border-neutral-200 px-2 py-1 font-mono"
+                        className="border-b border-border px-2 py-1 font-mono"
                       >
                         {renderInlineMarkdown(cell)}
                       </th>
@@ -686,7 +686,7 @@ export function MarkdownText({
                 </thead>
                 <tbody>
                   {table.rows.map((row, rowIndex) => (
-                    <tr key={rowIndex} className="border-t border-neutral-100">
+                    <tr key={rowIndex} className="border-t border-border/60">
                       {row.map((cell, cellIndex) => (
                         <td key={cellIndex} className="px-2 py-1 align-top">
                           {renderInlineMarkdown(cell)}
@@ -721,7 +721,7 @@ export function MarkdownText({
           return (
             <blockquote
               key={index}
-              className="border-l-2 border-orange-200 pl-3 text-neutral-600"
+              className="border-l-2 border-primary/30 pl-3 text-muted-foreground"
             >
               {block.lines.map((line, lineIndex) => (
                 <p key={lineIndex}>{renderInlineMarkdown(line)}</p>
@@ -731,7 +731,7 @@ export function MarkdownText({
         }
         if (block.kind === "heading") {
           return (
-            <div key={index} className="font-mono text-sm text-ink">
+            <div key={index} className="font-mono text-sm text-foreground">
               {renderInlineMarkdown(block.lines[0] ?? "")}
             </div>
           );
@@ -889,7 +889,7 @@ function renderInlineMarkdown(text: string): ReactNode {
           href={href}
           target="_blank"
           rel="noreferrer"
-          className="text-ember underline decoration-orange-200 underline-offset-2"
+          className="text-primary underline decoration-primary/40 underline-offset-2"
         >
           {link[1]}
         </a>
@@ -897,7 +897,7 @@ function renderInlineMarkdown(text: string): ReactNode {
     }
     if (part.startsWith("`") && part.endsWith("`")) {
       return (
-        <code key={index} className="bg-white px-1 font-mono text-xs">
+        <code key={index} className="bg-card px-1 font-mono text-xs">
           {part.slice(1, -1)}
         </code>
       );

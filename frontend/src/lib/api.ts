@@ -1,9 +1,6 @@
 import type {
-  Anomaly,
-  ChatMessage,
   ChatStreamEvent,
   ChatFeedTurn,
-  ChatResponse,
   ChatTurn,
   DataDoc,
   DiscoveredFile,
@@ -21,15 +18,10 @@ import type {
   WorkspaceResponse,
 } from "./types";
 
-export type Health = {
-  status: string;
-  version: string;
-};
-
 const API_BASE = "/api";
 const USER_SAFE_ERROR = "Something went wrong. Please try again.";
 
-export class UnauthorizedError extends Error {
+class UnauthorizedError extends Error {
   constructor() {
     super("unauthorized");
     this.name = "UnauthorizedError";
@@ -89,9 +81,6 @@ async function postMultipart<T>(path: string, form: FormData): Promise<T> {
   return request<T>(path, { method: "POST", body: form });
 }
 
-export function getHealth(): Promise<Health> {
-  return request<Health>("/health");
-}
 
 export function getOwnerDashboard(): Promise<OwnerDashboard> {
   return request<OwnerDashboard>("/owner/dashboard");
@@ -146,10 +135,6 @@ export function createSession(name: string): Promise<Session> {
 
 export function listSessions(): Promise<Session[]> {
   return request<Session[]>("/sessions");
-}
-
-export function getSession(id: string): Promise<Session> {
-  return request<Session>(`/sessions/${id}`);
 }
 
 export function getWorkspace(id: string): Promise<WorkspaceResponse> {
@@ -294,24 +279,6 @@ export function getSchemaGuide(sessionId: string): Promise<DataDoc> {
   return request<DataDoc>(`/sessions/${sessionId}/docs`);
 }
 
-export function getAnomalies(
-  sessionId: string,
-  limit = 20,
-): Promise<Anomaly[]> {
-  return request<Anomaly[]>(`/sessions/${sessionId}/anomalies?limit=${limit}`);
-}
-
-export function postChat(
-  sessionId: string,
-  message: string,
-  turnId?: string | null,
-): Promise<ChatResponse> {
-  return postJson<ChatResponse>(`/sessions/${sessionId}/chat`, {
-    message,
-    turn_id: turnId ?? null,
-  });
-}
-
 export async function streamChat(
   sessionId: string,
   body: { message: string; turnId?: string | null },
@@ -355,16 +322,8 @@ export async function streamChat(
   }
 }
 
-export function listTurns(sessionId: string): Promise<ChatTurn[]> {
-  return request<ChatTurn[]>(`/sessions/${sessionId}/turns`);
-}
-
 export function getChatFeed(sessionId: string): Promise<ChatFeedTurn[]> {
   return request<ChatFeedTurn[]>(`/sessions/${sessionId}/chat-feed`);
-}
-
-export function listTurnMessages(turnId: string): Promise<ChatMessage[]> {
-  return request<ChatMessage[]>(`/turns/${turnId}/messages`);
 }
 
 export function updateTurn(

@@ -1140,12 +1140,12 @@ export function App() {
       </Shell>
       {error ? (
         <div className="pointer-events-none fixed inset-x-0 bottom-4 flex justify-center">
-          <div className="pointer-events-auto border border-night-watch bg-tidepaper px-3 py-2 font-mono text-xs text-red-600">
+          <div className="pointer-events-auto border border-border bg-card px-3 py-2 font-mono text-xs text-destructive">
             {error}
             <button
               type="button"
               onClick={() => setError(null)}
-              className="ml-3 text-neutral-500 hover:text-night-watch"
+              className="ml-3 text-muted-foreground hover:text-foreground"
             >
               {"\u00d7"}
             </button>

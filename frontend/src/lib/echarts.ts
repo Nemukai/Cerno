@@ -36,6 +36,3 @@ echarts.use([
 export { echarts };
 
 export const EMBER = "#E85D23";
-export const INK = "#0E0E0E";
-export const GREY = "#737373";
-export const HAIRLINE = "#E5E5E5";

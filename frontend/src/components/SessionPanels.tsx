@@ -2,23 +2,10 @@ import { useMemo, useRef, useState } from "react";
 import type {
   ChatMessage,
   ChatTurn,
-  DataDoc,
-  DiscoveryResponse,
   DiscoveryStatus,
   FileRecord,
-  Link,
-  ProcessingEvent,
   Session,
 } from "../lib/types";
-import { MarkdownText } from "./ChatSidebar";
-
-const INSIGHTS_STEPS: { key: string; label: string }[] = [
-  { key: "reading_files", label: "Reading files" },
-  { key: "profiling_columns", label: "Profiling columns" },
-  { key: "understanding_structure", label: "Understanding structure" },
-  { key: "building_data_map", label: "Building data map" },
-  { key: "mapping_connections", label: "Mapping connections" },
-];
 
 type WorkspaceSidebarProps = {
   session: Session;
@@ -79,10 +66,10 @@ export function WorkspaceSidebar({
 
   return (
     <aside className="relative flex h-full flex-col" onClick={() => setMenu(null)}>
-      <div className="hairline border-b px-5 py-4">
+      <div className="border-border border-b px-5 py-4">
         <div className="min-w-0">
-          <div className="small-caps text-sm text-neutral-400">workspace</div>
-          <div className="mt-1 truncate font-mono text-lg text-ink">{session.name}</div>
+          <div className="small-caps text-sm text-muted-foreground/70">workspace</div>
+          <div className="mt-1 truncate font-mono text-lg text-foreground">{session.name}</div>
         </div>
       </div>
 
@@ -90,21 +77,21 @@ export function WorkspaceSidebar({
         <button
           type="button"
           onClick={() => onSelectTab("insights")}
-          className="flex w-full items-center justify-between bg-neutral-50 px-3 py-2 text-left transition hover:bg-neutral-100"
+          className="flex w-full items-center justify-between bg-muted px-3 py-2 text-left transition hover:bg-muted"
           title="Open file summaries in Insights"
         >
-          <span className="text-sm font-medium text-ink">Files</span>
-          <span className="font-mono text-sm text-neutral-500">
+          <span className="text-sm font-medium text-foreground">Files</span>
+          <span className="font-mono text-sm text-muted-foreground">
             {files.length}
           </span>
         </button>
 
         <div className="mt-6 flex items-center justify-between gap-3 px-1">
-          <div className="small-caps text-xs text-neutral-500">chats</div>
+          <div className="small-caps text-xs text-muted-foreground">chats</div>
           <button
             type="button"
             onClick={onNewChat}
-            className="text-xs text-neutral-500 hover:text-ember transition"
+            className="text-xs text-muted-foreground hover:text-primary transition"
           >
             + new
           </button>
@@ -122,46 +109,46 @@ export function WorkspaceSidebar({
                 }}
                 className={`min-w-0 px-3 py-2 text-left transition ${
                   activeTurnId === turn.id
-                    ? "bg-orange-50 text-ember"
-                    : "hover:bg-orange-50"
+                    ? "bg-primary/10 text-primary"
+                    : "hover:bg-primary/10"
                 }`}
               >
-                <div className="truncate text-sm font-medium text-ink">
+                <div className="truncate text-sm font-medium text-foreground">
                   {defaultTurnTitle(turn)}
                 </div>
                 <div className="mt-0.5 flex items-center justify-between gap-2">
-                  <span className="text-[10px] uppercase tracking-wider text-neutral-400">
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
                     {turn.state}
                   </span>
-                  <span className="text-[10px] text-neutral-400">
+                  <span className="text-[10px] text-muted-foreground/70">
                     {formatRelativeActivity(latestTurnActivity(turn, messagesByTurn))}
                   </span>
                 </div>
               </button>
             ))
           ) : (
-            <div className="px-3 py-3 text-sm text-neutral-500">
+            <div className="px-3 py-3 text-sm text-muted-foreground">
               No chats yet.
             </div>
           )}
         </div>
         {menu ? (
           <div
-            className="fixed z-50 w-36 border border-neutral-200 bg-white p-1 shadow-lg"
+            className="fixed z-50 w-36 border border-border bg-card p-1 shadow-lg"
             style={{ left: menu.x, top: menu.y }}
             onClick={(event) => event.stopPropagation()}
           >
             <button
               type="button"
               onClick={() => renameTurn(menu.turn)}
-              className="block w-full px-2 py-1.5 text-left text-sm text-ink hover:bg-neutral-50"
+              className="block w-full px-2 py-1.5 text-left text-sm text-foreground hover:bg-muted"
             >
               Edit name
             </button>
             <button
               type="button"
               onClick={() => deleteTurn(menu.turn)}
-              className="block w-full px-2 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
+              className="block w-full px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
             >
               Delete
             </button>
@@ -169,285 +156,6 @@ export function WorkspaceSidebar({
         ) : null}
       </div>
     </aside>
-  );
-}
-
-type InsightsPanelProps = {
-  files: FileRecord[];
-  links: Link[];
-  discovery: DiscoveryResponse | null;
-  dataDoc: DataDoc | null;
-  events: ProcessingEvent[];
-  processing: boolean;
-  approving: boolean;
-  onProcess: () => void;
-  onApprove: (
-    files: DiscoveryResponse["files"],
-    links: DiscoveryResponse["links"],
-    overview: string,
-  ) => void;
-  onOpenFiles: () => void;
-};
-
-export function InsightsPanel({
-  files,
-  links,
-  discovery,
-  dataDoc,
-  events,
-  processing,
-  approving,
-  onProcess,
-  onApprove,
-  onOpenFiles,
-}: InsightsPanelProps) {
-  const status = discovery?.status ?? "empty";
-  const isProcessingState = processing || status === "discovering";
-  const insightsReady = status === "pending_review" || status === "approved";
-  const visibleDataDoc = insightsReady ? dataDoc : null;
-  const canApprove = discovery?.status === "pending_review";
-  const overview = visibleDataDoc?.overview || (insightsReady ? discovery?.overview : "");
-  const relationshipCards = useMemo(() => {
-    if (!insightsReady) return [];
-    if (visibleDataDoc?.relationships.length) {
-      return visibleDataDoc.relationships.map((rel) => ({
-        leftFileId: rel.left_file_id,
-        leftColumn: rel.left_column,
-        rightFileId: rel.right_file_id,
-        rightColumn: rel.right_column,
-        explanation: rel.explanation,
-      }));
-    }
-    if (discovery?.links.length) {
-      return discovery.links.map((link) => ({
-        leftFileId: link.file_a_id,
-        leftColumn: link.col_a,
-        rightFileId: link.file_b_id,
-        rightColumn: link.col_b,
-        explanation: link.summary,
-      }));
-    }
-    return links.map((link) => ({
-      leftFileId: link.file_a,
-      leftColumn: link.col_a,
-      rightFileId: link.file_b,
-      rightColumn: link.col_b,
-      explanation: link.summary ?? "",
-    }));
-  }, [discovery, insightsReady, links, visibleDataDoc]);
-
-  return (
-    <section className="px-8 py-7">
-      <div className="flex flex-wrap items-center justify-between gap-5 border-b border-ink/10 pb-4">
-        <div>
-          <h2 className="font-mono text-2xl text-ink">
-            Workspace Insights
-          </h2>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {canApprove ? (
-            <button
-              type="button"
-              onClick={() => onApprove(discovery.files, discovery.links, discovery.overview)}
-              disabled={approving}
-              className="small-caps bg-ember px-4 py-2 text-sm text-white hover:bg-ember-hover disabled:opacity-40 transition"
-            >
-              {approving ? "approving..." : "approve workspace"}
-            </button>
-          ) : status !== "approved" ? (
-            <button
-              type="button"
-              onClick={onProcess}
-              disabled={isProcessingState || files.length === 0}
-              className="small-caps border border-neutral-300 px-4 py-2 text-sm hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 transition"
-            >
-              {isProcessingState ? "analyzing..." : "analyze files"}
-            </button>
-          ) : (
-            <span className="small-caps border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-              approved
-            </span>
-          )}
-        </div>
-      </div>
-
-      {isProcessingState ? (
-        <div className="py-12">
-          <div className="mx-auto max-w-md border border-neutral-200 bg-white p-5">
-            <div className="flex items-center justify-between gap-4 mb-4">
-              <h3 className="font-mono text-sm text-ink">Analyzing your data</h3>
-              <span className="small-caps text-xs text-neutral-400">
-                {events.at(-1)?.progress ?? 0}%
-              </span>
-            </div>
-            <div className="relative h-1.5 overflow-hidden bg-neutral-100 mb-5">
-              <div
-                className="h-full bg-ember transition-all duration-700 ease-out"
-                style={{ width: `${events.at(-1)?.progress ?? 0}%` }}
-              />
-              <div className="absolute inset-y-0 left-0 w-1/3 animate-pulse bg-ember/30" />
-            </div>
-            <div className="grid gap-1">
-              {INSIGHTS_STEPS.map((step, idx) => {
-                const seenKeys = new Set(events.map((e) => e.step_key).filter(Boolean));
-                let activeIdx = -1;
-                for (let si = INSIGHTS_STEPS.length - 1; si >= 0; si--) {
-                  if (seenKeys.has(INSIGHTS_STEPS[si]!.key)) { activeIdx = si; break; }
-                }
-                const isComplete = idx < activeIdx;
-                const isActive = idx === activeIdx;
-                return (
-                  <div
-                    key={step.key}
-                    className={`flex items-center gap-3 px-3 py-1.5 ${isActive ? "bg-orange-50" : ""}`}
-                  >
-                    <div className="flex-shrink-0 w-4 h-4 flex items-center justify-center">
-                      {isComplete ? (
-                        <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                          <path strokeLinecap="square" strokeLinejoin="miter" d="M5 13l4 4L19 7" />
-                        </svg>
-                      ) : isActive ? (
-                        <div className="w-3 h-3 border-2 border-ember border-t-transparent animate-spin" />
-                      ) : (
-                        <div className="w-1.5 h-1.5 bg-neutral-200" />
-                      )}
-                    </div>
-                    <span className={`text-sm ${isComplete ? "text-neutral-500" : isActive ? "text-ink font-medium" : "text-neutral-300"}`}>
-                      {step.label}
-                    </span>
-                    {isActive ? <span className="ml-auto text-[10px] font-mono text-ember animate-pulse">working</span> : null}
-                  </div>
-                );
-              })}
-            </div>
-            {events.length > 0 && (
-              <p className="mt-3 px-3 text-xs text-neutral-400 animate-pulse">
-                {events.at(-1)?.message}
-              </p>
-            )}
-          </div>
-        </div>
-      ) : (
-        <>
-
-
-      {files.length === 0 ? (
-        <EmptyBlock
-          title="Add files first"
-          body="Files are the source of the workspace. Upload spreadsheets, then Cerno can generate the first set of insights."
-          actionLabel="open files"
-          onAction={onOpenFiles}
-        />
-      ) : null}
-
-      {files.length > 0 && status === "empty" ? (
-        <EmptyBlock
-          title="Files are uploaded"
-          body="Run processing to detect headers, profile columns, generate descriptions, and find relationships."
-          actionLabel="process files"
-          onAction={onProcess}
-        />
-      ) : null}
-
-      {overview ? (
-        <section className="mt-7 border border-orange-200 bg-orange-50/70 px-5 py-5">
-          <div className="small-caps text-sm text-ember">summary</div>
-          <div className="mt-3 max-w-4xl text-base leading-7 text-neutral-700">
-            <MarkdownText text={overview} />
-          </div>
-        </section>
-      ) : null}
-
-      {insightsReady && (visibleDataDoc || relationshipCards.length > 0) ? (
-        <div className="mt-7 grid gap-5 xl:grid-cols-2">
-          {visibleDataDoc?.usage_notes && visibleDataDoc.usage_notes.length > 0 && (
-             <InsightGroup title="usage notes" items={visibleDataDoc.usage_notes} />
-          )}
-
-          <section className="border border-neutral-200 bg-white px-5 py-4">
-            <div className="small-caps text-sm text-neutral-500">relationships</div>
-            {relationshipCards.length > 0 ? (
-              <div className="mt-3 flex flex-col gap-3">
-                {relationshipCards.map((rel, idx) => (
-                  <div key={idx} className="border border-neutral-100 bg-neutral-50 p-3">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-mono text-ink bg-white px-1 border border-neutral-200">{nameForFile(rel.leftFileId, files)}</span>
-                      <span className="text-neutral-500">.{rel.leftColumn}</span>
-                      <span className="text-ember px-1">→</span>
-                      <span className="font-mono text-ink bg-white px-1 border border-neutral-200">{nameForFile(rel.rightFileId, files)}</span>
-                      <span className="text-neutral-500">.{rel.rightColumn}</span>
-                    </div>
-                    {rel.explanation && (
-                      <div className="mt-1.5 text-xs text-neutral-600 pl-1 border-l-2 border-orange-200">
-                        {rel.explanation}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-3 text-sm text-neutral-500">No relationships generated.</p>
-            )}
-          </section>
-
-          {visibleDataDoc ? (
-            <section className="border border-neutral-200 bg-white px-5 py-4">
-              <div className="small-caps text-sm text-neutral-500">glossary</div>
-              {visibleDataDoc.glossary.length > 0 ? (
-                <div className="mt-3 flex flex-col gap-2">
-                  {visibleDataDoc.glossary.map((item, idx) => (
-                    <div key={idx} className="flex flex-col gap-0.5 border-b border-neutral-100 pb-2 last:border-0">
-                      <div className="font-medium text-sm text-ink">{item.term}</div>
-                      <div className="text-xs text-neutral-600">{item.meaning}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-3 text-sm text-neutral-500">No glossary terms generated.</p>
-              )}
-            </section>
-          ) : null}
-        </div>
-      ) : null}
-
-      {insightsReady && discovery?.files.length ? (
-        <section className="mt-7">
-          <div className="small-caps text-sm text-neutral-500">file understanding</div>
-          <div className="mt-3 grid gap-3">
-            {discovery.files.map((file) => (
-              <div key={file.file_id} className="border border-neutral-200 bg-white px-4 py-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h3 className="font-mono text-lg text-ink">{file.friendly_name}</h3>
-                    <p className="mt-1 max-w-3xl text-sm leading-6 text-neutral-600">
-                      {file.description || "No description generated yet."}
-                    </p>
-                  </div>
-                  <div className="small-caps text-sm text-neutral-400">
-                    header row {file.header_row + 1}
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {file.columns.map((column) => (
-                    <div
-                      key={`${file.file_id}:${column.column_id}`}
-                      className="flex items-center gap-1.5 border border-neutral-200 bg-[#fff8f1] px-2 py-1"
-                      title={column.description}
-                    >
-                      <span className="text-sm font-medium text-neutral-700">{column.name}</span>
-                      <span className="text-[10px] text-neutral-400 font-mono">{column.dtype}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-        </>
-      )}
-    </section>
   );
 }
 
@@ -495,17 +203,17 @@ export function FilesPanel({
           type="button"
           onClick={pickFiles}
           disabled={uploading}
-          className="w-full max-w-xl border border-dashed border-neutral-300 bg-white px-8 py-16 text-center transition hover:border-ember disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full max-w-xl border border-dashed border-border bg-card px-8 py-16 text-center transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <span className="small-caps text-sm text-ember">new workspace</span>
-          <span className="mt-3 block font-mono text-3xl text-ink">
+          <span className="small-caps text-sm text-primary">new workspace</span>
+          <span className="mt-3 block font-mono text-3xl text-foreground">
             Upload files to start.
           </span>
-          <span className="mt-3 block text-base leading-7 text-neutral-600">
+          <span className="mt-3 block text-base leading-7 text-muted-foreground">
             Add Excel or CSV files. After upload, Cerno will show the process
             action before generating insights.
           </span>
-          <span className="small-caps mt-6 inline-block bg-ember px-4 py-3 text-sm text-white">
+          <span className="small-caps mt-6 inline-block bg-primary px-4 py-3 text-sm text-primary-foreground">
             {uploading ? "uploading..." : "choose files"}
           </span>
         </button>
@@ -523,9 +231,9 @@ export function FilesPanel({
         className="hidden"
         onChange={handleChange}
       />
-      <div className="flex flex-wrap items-center justify-between gap-5 border-b border-ink/10 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-4">
         <div>
-          <h2 className="font-mono text-2xl text-ink">
+          <h2 className="font-mono text-2xl text-foreground">
             Data Files
           </h2>
         </div>
@@ -534,7 +242,7 @@ export function FilesPanel({
             type="button"
             onClick={pickFiles}
             disabled={uploading || processing}
-            className="small-caps bg-ember px-4 py-3 text-sm text-white hover:bg-ember-hover disabled:opacity-40"
+            className="small-caps bg-primary px-4 py-3 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
           >
             {uploading ? "uploading..." : "add files"}
           </button>
@@ -542,7 +250,7 @@ export function FilesPanel({
             type="button"
             onClick={onProcess}
             disabled={processing || files.length === 0}
-            className="small-caps border border-ink px-4 py-3 text-sm hover:bg-neutral-100 disabled:opacity-40"
+            className="small-caps border border-foreground px-4 py-3 text-sm hover:bg-muted disabled:opacity-40"
           >
             {processing
               ? "processing..."
@@ -566,13 +274,13 @@ export function FilesPanel({
       {files.length > 0 ? (
         <div className="mt-7 grid gap-4">
           {files.map((file) => (
-            <article key={file.id} className="border border-neutral-200 bg-white px-5 py-4">
+            <article key={file.id} className="border border-border bg-card px-5 py-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <h3 className="truncate font-mono text-xl text-ink">
+                  <h3 className="truncate font-mono text-xl text-foreground">
                     {file.friendly_name || file.filename}
                   </h3>
-                  <p className="mt-1 max-w-3xl text-sm leading-6 text-neutral-600">
+                  <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
                     {file.description || file.filename}
                   </p>
                 </div>
@@ -584,12 +292,12 @@ export function FilesPanel({
                     }
                   }}
                   disabled={processing}
-                  className="small-caps border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-40"
+                  className="small-caps border border-destructive/40 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-40"
                 >
                   delete
                 </button>
               </div>
-              <div className="mt-4 grid gap-3 text-sm text-neutral-600 sm:grid-cols-4">
+              <div className="mt-4 grid gap-3 text-sm text-muted-foreground sm:grid-cols-4">
                 <FileFact label="rows" value={formatCompactNumber(file.row_count)} />
                 <FileFact label="schema" value={`v${file.schema_version}`} />
                 <FileFact label="header" value={file.header_row === null ? "pending" : `row ${file.header_row + 1}`} />
@@ -602,7 +310,7 @@ export function FilesPanel({
         <button
           type="button"
           onClick={pickFiles}
-          className="mt-7 block w-full border border-dashed border-neutral-300 bg-white/70 px-5 py-16 text-center text-base text-neutral-500 hover:border-ink"
+          className="mt-7 block w-full border border-dashed border-border bg-card/70 px-5 py-16 text-center text-base text-muted-foreground hover:border-foreground"
         >
           Drop files anywhere in the window or click to choose spreadsheets.
         </button>
@@ -611,56 +319,11 @@ export function FilesPanel({
   );
 }
 
-function InsightGroup({ title, items }: { title: string; items: string[] }) {
-  return (
-    <section className="border border-neutral-200 bg-white px-5 py-4">
-      <div className="small-caps text-sm text-neutral-500">{title}</div>
-      {items.length > 0 ? (
-        <ul className="mt-3 space-y-2 text-sm leading-6 text-neutral-700">
-          {items.slice(0, 6).map((item) => (
-            <li key={item} className="border-l-2 border-orange-200 pl-3">
-              {item}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="mt-3 text-sm text-neutral-500">Nothing generated yet.</p>
-      )}
-    </section>
-  );
-}
-
-function EmptyBlock({
-  title,
-  body,
-  actionLabel,
-  onAction,
-}: {
-  title: string;
-  body: string;
-  actionLabel: string;
-  onAction: () => void;
-}) {
-  return (
-    <div className="mt-7 border border-dashed border-neutral-300 bg-white/70 px-5 py-8">
-      <h3 className="font-mono text-xl text-ink">{title}</h3>
-      <p className="mt-2 max-w-2xl text-base leading-7 text-neutral-600">{body}</p>
-      <button
-        type="button"
-        onClick={onAction}
-        className="small-caps mt-4 border border-ink px-3 py-2 text-sm hover:border-ember hover:text-ember"
-      >
-        {actionLabel}
-      </button>
-    </div>
-  );
-}
-
 function FileStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="border border-neutral-200 bg-white px-4 py-3">
-      <div className="small-caps text-sm text-neutral-500">{label}</div>
-      <div className="mt-2 font-mono text-2xl text-ink">{value}</div>
+    <div className="border border-border bg-card px-4 py-3">
+      <div className="small-caps text-sm text-muted-foreground">{label}</div>
+      <div className="mt-2 font-mono text-2xl text-foreground">{value}</div>
     </div>
   );
 }
@@ -668,8 +331,8 @@ function FileStat({ label, value }: { label: string; value: string }) {
 function FileFact({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="small-caps text-sm text-neutral-400">{label}</div>
-      <div className="mt-1 text-base text-ink">{value}</div>
+      <div className="small-caps text-sm text-muted-foreground/70">{label}</div>
+      <div className="mt-1 text-base text-foreground">{value}</div>
     </div>
   );
 }
@@ -681,11 +344,6 @@ function statusLabel(status: DiscoveryStatus, processing: boolean) {
   if (status === "failed") return "failed";
   if (status === "empty") return "not processed";
   return status;
-}
-
-function nameForFile(fileId: string, files: FileRecord[]) {
-  const file = files.find((item) => item.id === fileId);
-  return file?.friendly_name || file?.filename || "file";
 }
 
 function defaultTurnTitle(turn: ChatTurn): string {
