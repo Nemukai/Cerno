@@ -1,8 +1,36 @@
 import { useMemo, useState } from "react";
 import type { KpiData, Widget } from "../lib/types";
-import { EMBER, GREY, HAIRLINE, INK } from "../lib/echarts";
+import { EMBER } from "../lib/echarts";
 import { EChart } from "./EChart";
 import { KpiCard } from "./KpiCard";
+import { useTheme } from "../lib/theme";
+
+// Chart colours resolve against the active theme. WidgetRenderer sets DARK from
+// the theme context on each render before any option is built, so charts stay
+// legible on the near-black dark surface.
+let DARK = false;
+const C = {
+  get ink() {
+    return DARK ? "#E9E8F2" : "#0E0E0E";
+  },
+  get grey() {
+    return DARK ? "rgba(233,232,242,0.6)" : "#737373";
+  },
+  get hairline() {
+    return DARK ? "rgba(255,255,255,0.12)" : "#E5E5E5";
+  },
+  get palette(): string[] {
+    return DARK
+      ? ["#B7B1FF", "#E9E8F2", "#9A93E0", "#C9F24E", "#8C86C9", "#E89A48", "#A3A3A3"]
+      : [EMBER, "#0E0E0E", "#4B5563", "#9A6A3A", "#737373", "#B45309", "#A3A3A3"];
+  },
+  get surface() {
+    return DARK ? "#0A0A0A" : "#FFFFFF";
+  },
+  get heatmapRamp(): string[] {
+    return DARK ? ["#26233A", EMBER, "#E9E8F2"] : ["#F7E7DE", EMBER, "#0E0E0E"];
+  },
+};
 
 type Props = {
   widget: Widget;
@@ -65,7 +93,6 @@ type WidgetOptions = {
   y?: string;
 };
 
-const PALETTE = [EMBER, "#0E0E0E", "#4B5563", "#9A6A3A", "#737373", "#B45309", "#A3A3A3"];
 const CHART_KIND_HINTS = [
   ["stacked area", "stacked_area"],
   ["area chart", "area"],
@@ -85,12 +112,14 @@ const CHART_KIND_HINTS = [
   ["stacked chart", "stacked_bar"],
 ] as const;
 
-const baseAxis = {
-  axisLine: { lineStyle: { color: HAIRLINE } },
-  axisTick: { lineStyle: { color: HAIRLINE } },
-  axisLabel: { color: GREY, fontFamily: "IBM Plex Mono", fontSize: 11 },
-  splitLine: { lineStyle: { color: HAIRLINE } },
-};
+function baseAxis() {
+  return {
+    axisLine: { lineStyle: { color: C.hairline } },
+    axisTick: { lineStyle: { color: C.hairline } },
+    axisLabel: { color: C.grey, fontFamily: "JetBrains Mono", fontSize: 11 },
+    splitLine: { lineStyle: { color: C.hairline } },
+  };
+}
 
 function formatAxisValue(value: number | string): string {
   const numeric = Number(value);
@@ -100,14 +129,17 @@ function formatAxisValue(value: number | string): string {
   }).format(numeric);
 }
 
-const valueAxis = {
-  type: "value",
-  ...baseAxis,
-  axisLabel: {
-    ...baseAxis.axisLabel,
-    formatter: formatAxisValue,
-  },
-};
+function valueAxis() {
+  const base = baseAxis();
+  return {
+    type: "value",
+    ...base,
+    axisLabel: {
+      ...base.axisLabel,
+      formatter: formatAxisValue,
+    },
+  };
+}
 
 function numericValue(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -350,12 +382,12 @@ function buildBarOption(
     optionText(options.orientation) === "horizontal" ||
     optionText(options.layout) === "horizontal";
   return {
-    color: PALETTE,
-    legend: series.length > 1 ? { top: 0, textStyle: { color: INK, fontSize: 11 } } : undefined,
+    color: C.palette,
+    legend: series.length > 1 ? { top: 0, textStyle: { color: C.ink, fontSize: 11 } } : undefined,
     grid: { left: 12, right: 18, top: series.length > 1 ? 34 : 16, bottom: 28, containLabel: true },
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-    xAxis: horizontal ? valueAxis : { type: "category", data: categories, ...baseAxis },
-    yAxis: horizontal ? { type: "category", data: categories, ...baseAxis } : valueAxis,
+    xAxis: horizontal ? valueAxis() : { type: "category", data: categories, ...baseAxis() },
+    yAxis: horizontal ? { type: "category", data: categories, ...baseAxis() } : valueAxis(),
     series: series.map((s) => ({
       name: s.name ?? "value",
       type: "bar",
@@ -378,12 +410,12 @@ function buildLineOption(
     normalized.series ??
     (normalized.values ? [{ name: "value", data: normalized.values }] : []);
   return {
-    color: PALETTE,
-    legend: series.length > 1 ? { top: 0, textStyle: { color: INK, fontSize: 11 } } : undefined,
+    color: C.palette,
+    legend: series.length > 1 ? { top: 0, textStyle: { color: C.ink, fontSize: 11 } } : undefined,
     grid: { left: 12, right: 16, top: series.length > 1 ? 34 : 16, bottom: 28, containLabel: true },
     tooltip: { trigger: "axis" },
-    xAxis: { type: "category", data: categories, ...baseAxis },
-    yAxis: valueAxis,
+    xAxis: { type: "category", data: categories, ...baseAxis() },
+    yAxis: valueAxis(),
     series: series.map((s) => ({
       name: s.name ?? "value",
       type: "line",
@@ -399,16 +431,16 @@ function buildLineOption(
 
 function buildPieOption(data: PieData): Record<string, unknown> {
   return {
-    color: PALETTE,
+    color: C.palette,
     tooltip: { trigger: "item" },
-    legend: { bottom: 0, textStyle: { color: INK, fontSize: 11 } },
+    legend: { bottom: 0, textStyle: { color: C.ink, fontSize: 11 } },
     series: [
       {
         type: "pie",
         radius: ["40%", "70%"],
         data: data.items ?? [],
-        itemStyle: { borderColor: "#FFFFFF", borderWidth: 1 },
-        label: { color: INK, fontSize: 11 },
+        itemStyle: { borderColor: C.surface, borderWidth: 1 },
+        label: { color: C.ink, fontSize: 11 },
       },
     ],
   };
@@ -459,7 +491,7 @@ function histogramData(data: CategoryData, options: WidgetOptions): CategoryData
 function buildScatterOption(data: CategoryData, options: WidgetOptions): Record<string, unknown> {
   const points = scatterPoints(data, options);
   return {
-    color: PALETTE,
+    color: C.palette,
     grid: { left: 12, right: 16, top: 16, bottom: 28, containLabel: true },
     tooltip: {
       trigger: "item",
@@ -468,8 +500,8 @@ function buildScatterOption(data: CategoryData, options: WidgetOptions): Record<
         return `${point[3] ?? ""}<br/>x: ${point[0]}<br/>y: ${point[1]}`;
       },
     },
-    xAxis: valueAxis,
-    yAxis: valueAxis,
+    xAxis: valueAxis(),
+    yAxis: valueAxis(),
     series: [
       {
         type: "scatter",
@@ -508,8 +540,8 @@ function buildHeatmapOption(data: CategoryData, options: WidgetOptions): Record<
   return {
     grid: { left: 12, right: 24, top: 16, bottom: 42, containLabel: true },
     tooltip: { position: "top" },
-    xAxis: { type: "category", data: heatmap.xLabels, ...baseAxis },
-    yAxis: { type: "category", data: heatmap.yLabels, ...baseAxis },
+    xAxis: { type: "category", data: heatmap.xLabels, ...baseAxis() },
+    yAxis: { type: "category", data: heatmap.yLabels, ...baseAxis() },
     visualMap: {
       min: 0,
       max: Math.max(1, ...heatmap.values.map((item) => item[2])),
@@ -517,7 +549,7 @@ function buildHeatmapOption(data: CategoryData, options: WidgetOptions): Record<
       orient: "horizontal",
       left: "center",
       bottom: 0,
-      inRange: { color: ["#F7E7DE", EMBER, "#0E0E0E"] },
+      inRange: { color: C.heatmapRamp },
     },
     series: [{ type: "heatmap", data: heatmap.values, label: { show: false } }],
   };
@@ -584,11 +616,11 @@ function heatmapData(data: CategoryData, options: WidgetOptions) {
 function buildBoxplotOption(data: CategoryData, options: WidgetOptions): Record<string, unknown> {
   const boxplot = boxplotData(data, options);
   return {
-    color: PALETTE,
+    color: C.palette,
     grid: { left: 12, right: 16, top: 16, bottom: 28, containLabel: true },
     tooltip: { trigger: "item" },
-    xAxis: { type: "category", data: boxplot.categories, ...baseAxis },
-    yAxis: valueAxis,
+    xAxis: { type: "category", data: boxplot.categories, ...baseAxis() },
+    yAxis: valueAxis(),
     series: [{ type: "boxplot", data: boxplot.values }],
   };
 }
@@ -655,8 +687,8 @@ function buildWaterfallOption(data: CategoryData, options: WidgetOptions): Recor
   return {
     grid: { left: 12, right: 16, top: 16, bottom: 28, containLabel: true },
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-    xAxis: { type: "category", data: categories, ...baseAxis },
-    yAxis: valueAxis,
+    xAxis: { type: "category", data: categories, ...baseAxis() },
+    yAxis: valueAxis(),
     series: [
       {
         type: "bar",
@@ -678,7 +710,7 @@ function buildWaterfallOption(data: CategoryData, options: WidgetOptions): Recor
 function buildSankeyOption(data: CategoryData, options: WidgetOptions): Record<string, unknown> {
   const sankey = sankeyData(data, options);
   return {
-    color: PALETTE,
+    color: C.palette,
     tooltip: { trigger: "item", triggerOn: "mousemove" },
     series: [
       {
@@ -692,7 +724,7 @@ function buildSankeyOption(data: CategoryData, options: WidgetOptions): Record<s
         data: sankey.nodes,
         links: sankey.links,
         lineStyle: { color: "gradient", curveness: 0.45 },
-        label: { color: INK, fontSize: 11, overflow: "truncate", width: 86 },
+        label: { color: C.ink, fontSize: 11, overflow: "truncate", width: 86 },
       },
     ],
   };
@@ -731,8 +763,8 @@ function buildTimelineOption(data: CategoryData, options: WidgetOptions): Record
         return `${point[2] ?? ""}<br/>${point[0]}`;
       },
     },
-    xAxis: { type: "time", ...baseAxis },
-    yAxis: { type: "category", data: timeline.groups, ...baseAxis },
+    xAxis: { type: "time", ...baseAxis() },
+    yAxis: { type: "category", data: timeline.groups, ...baseAxis() },
     series: [
       {
         type: "scatter",
@@ -795,8 +827,8 @@ function ChartFilter({
           onClick={() => onChange(item.value)}
           className={`small-caps border px-1.5 py-0.5 text-[10px] ${
             limit === item.value
-              ? "border-ink text-ink"
-              : "border-neutral-200 text-neutral-400 hover:text-ink"
+              ? "border-foreground text-foreground"
+              : "border-border text-muted-foreground/70 hover:text-foreground"
           }`}
         >
           {item.label}
@@ -886,7 +918,7 @@ function TableWidget({ data, searchable }: { data: TableData; searchable?: boole
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Filter rows"
-          className="mb-3 w-full border border-neutral-200 bg-white px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ink"
+          className="mb-3 w-full border border-border bg-card px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
         />
       ) : null}
       <table className="w-full border-collapse text-sm">
@@ -895,7 +927,7 @@ function TableWidget({ data, searchable }: { data: TableData; searchable?: boole
             {cols.map((c) => (
               <th
                 key={c}
-                className="small-caps hairline border-b px-2 py-2 text-left text-xs text-neutral-500"
+                className="small-caps border-border border-b px-2 py-2 text-left text-xs text-muted-foreground"
               >
                 {c}
               </th>
@@ -904,7 +936,7 @@ function TableWidget({ data, searchable }: { data: TableData; searchable?: boole
         </thead>
         <tbody>
           {visibleRows.map((row, ri) => (
-            <tr key={ri} className="hairline border-b">
+            <tr key={ri} className="border-border border-b">
               {row.map((cell, ci) => (
                 <td
                   key={ci}
@@ -932,7 +964,7 @@ function MarkdownWidget({ text }: { text: string }) {
   const paras = visibleText.split(/\n{2,}/).filter(Boolean);
 
   return (
-    <div className="space-y-2 text-sm leading-relaxed text-ink">
+    <div className="space-y-2 text-sm leading-relaxed text-foreground">
       {paras.map((p, i) => (
         <p key={i}>{p}</p>
       ))}
@@ -940,7 +972,7 @@ function MarkdownWidget({ text }: { text: string }) {
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
-          className="small-caps text-[10px] text-ember hover:text-ember-hover"
+          className="small-caps text-[10px] text-primary hover:text-primary"
         >
           {expanded ? "show less" : "show note"}
         </button>
@@ -963,13 +995,13 @@ function Caption({ caption }: { caption: string }) {
   const shouldCollapse = caption.trim().length > preview.length;
 
   return (
-    <div className="mt-2 text-xs leading-5 text-neutral-500">
+    <div className="mt-2 text-xs leading-5 text-muted-foreground">
       {expanded || !shouldCollapse ? caption : preview}
       {shouldCollapse ? (
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
-          className="small-caps ml-2 text-[10px] text-ember hover:text-ember-hover"
+          className="small-caps ml-2 text-[10px] text-primary hover:text-primary"
         >
           {expanded ? "less" : "more"}
         </button>
@@ -990,7 +1022,7 @@ function ChartShell({
   return (
     <div className="py-4">
       <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="small-caps text-xs text-neutral-500">{title}</h3>
+        <h3 className="small-caps text-xs text-muted-foreground">{title}</h3>
       </div>
       {children}
       {caption ? <Caption caption={caption} /> : null}
@@ -999,6 +1031,8 @@ function ChartShell({
 }
 
 export function WidgetRenderer({ widget, height }: Props) {
+  const { theme } = useTheme();
+  DARK = theme === "dark";
   const kind = resolveWidgetKind(widget);
   const { title, data, caption, options } = widget;
   const widgetOptions = options as WidgetOptions;
@@ -1124,7 +1158,7 @@ export function WidgetRenderer({ widget, height }: Props) {
 
   return (
     <ChartShell title={title}>
-      <div className="text-xs text-neutral-500">unknown widget kind: {kind}</div>
+      <div className="text-xs text-muted-foreground">unknown widget kind: {kind}</div>
     </ChartShell>
   );
 }

@@ -13,9 +13,9 @@ export function KpiCard({ title, data, caption }: Props) {
   return (
     <div className="py-4">
       {items.length === 1 ? (
-        <div className="small-caps text-xs text-neutral-500">{items[0]?.title ?? title}</div>
+        <div className="small-caps text-xs text-muted-foreground">{items[0]?.title ?? title}</div>
       ) : (
-        <div className="small-caps text-xs text-neutral-500">{title}</div>
+        <div className="small-caps text-xs text-muted-foreground">{title}</div>
       )}
       <div
         className={
@@ -27,10 +27,10 @@ export function KpiCard({ title, data, caption }: Props) {
         {items.map((item, index) => (
           <div
             key={`${item.title ?? title}-${index}`}
-            className={items.length === 1 ? "contents" : "border border-neutral-200 bg-white px-3 py-2"}
+            className={items.length === 1 ? "contents" : "border border-border bg-card px-3 py-2"}
           >
             {items.length > 1 ? (
-              <div className="small-caps mb-1 text-[10px] text-neutral-500">
+              <div className="small-caps mb-1 text-[10px] text-muted-foreground">
                 {item.title ?? `metric ${index + 1}`}
               </div>
             ) : null}
@@ -38,8 +38,8 @@ export function KpiCard({ title, data, caption }: Props) {
               <div
                 className={
                   items.length === 1
-                    ? "font-mono text-4xl font-medium tracking-tight text-ink"
-                    : "min-w-0 overflow-hidden text-ellipsis font-mono text-2xl font-medium text-ink"
+                    ? "font-mono text-4xl font-medium tracking-tight text-foreground"
+                    : "min-w-0 overflow-hidden text-ellipsis font-mono text-2xl font-medium text-foreground"
                 }
               >
                 {item.value}
@@ -49,13 +49,13 @@ export function KpiCard({ title, data, caption }: Props) {
               ) : null}
             </div>
             {item.label ? (
-              <div className="mt-0.5 text-xs text-neutral-500">{item.label}</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">{item.label}</div>
             ) : null}
           </div>
         ))}
       </div>
       {caption ? (
-        <div className="mt-2 text-xs text-neutral-500">{caption}</div>
+        <div className="mt-2 text-xs text-muted-foreground">{caption}</div>
       ) : null}
     </div>
   );

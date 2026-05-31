@@ -20,7 +20,7 @@ export type CurrentUser = {
 
 const AUTH_BASE = "/api/auth";
 
-export async function fetchCurrentUser(): Promise<CurrentUser | null> {
+async function fetchCurrentUser(): Promise<CurrentUser | null> {
   // Bound the probe so a slow/unreachable backend can never hang the UI.
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 8000);

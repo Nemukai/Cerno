@@ -8,7 +8,6 @@ const config: Config = {
     extend: {
       fontFamily: {
         sans: ["Satoshi", "system-ui", "sans-serif"],
-        serif: ["Newsreader", "Georgia", "serif"],
         mono: ["JetBrains Mono", "ui-monospace", "monospace"],
         display: ["Space Grotesk", "Satoshi", "system-ui", "sans-serif"],
       },

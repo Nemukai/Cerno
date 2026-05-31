@@ -4,7 +4,7 @@ export type Theme = "dark" | "light";
 
 const STORAGE_KEY = "cerno-theme";
 
-export function readStoredTheme(): Theme | null {
+function readStoredTheme(): Theme | null {
   try {
     const v = localStorage.getItem(STORAGE_KEY);
     return v === "dark" || v === "light" ? v : null;

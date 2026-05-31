@@ -257,25 +257,25 @@ export function SchemaTab({
   };
 
   return (
-    <div className="cerno-insights-surface relative min-h-full overflow-hidden px-8 py-7 text-[#141210]">
+    <div className="relative min-h-full overflow-hidden px-8 py-7 text-foreground">
       <div className="pointer-events-none absolute inset-0 opacity-80" aria-hidden="true">
-        <div className="absolute right-[-14rem] top-[-18rem] h-[36rem] w-[48rem] rounded-full border border-[#176B7D]/10" />
-        <div className="absolute right-[-9rem] top-[-13rem] h-[28rem] w-[39rem] rounded-full border border-[#D17B2E]/14" />
-        <div className="absolute right-[-4rem] top-[-8rem] h-[20rem] w-[29rem] rounded-full border border-[#176B7D]/12" />
+        <div className="absolute right-[-14rem] top-[-18rem] h-[36rem] w-[48rem] rounded-full border border-primary/10" />
+        <div className="absolute right-[-9rem] top-[-13rem] h-[28rem] w-[39rem] rounded-full border border-primary/14" />
+        <div className="absolute right-[-4rem] top-[-8rem] h-[20rem] w-[29rem] rounded-full border border-primary/12" />
       </div>
 
-      <header className="relative z-10 mb-7 grid gap-6 border-b border-[#141210]/12 pb-6 xl:grid-cols-[minmax(0,1fr)_auto]">
+      <header className="relative z-10 mb-7 grid gap-6 border-b border-foreground/12 pb-6 xl:grid-cols-[minmax(0,1fr)_auto]">
         <div className="max-w-4xl">
-          <div className="small-caps text-xs text-[#176B7D]">insights</div>
+          <div className="small-caps text-xs text-primary">insights</div>
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            <h2 className="font-serif text-4xl leading-none tracking-tight text-[#141210]">
+            <h2 className="font-display text-4xl leading-none tracking-tight text-foreground">
               {schemaTitle(status, processing)}
             </h2>
-            <span className="small-caps border border-[#141210]/12 bg-[#F7F1E7]/80 px-2 py-1 text-xs text-[#141210]/58">
+            <span className="small-caps border border-foreground/12 bg-card/80 px-2 py-1 text-xs text-foreground/58">
               {summary.state}
             </span>
           </div>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-[#141210]/62">
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-foreground/62">
             {headerDescription(status, processing, files.length)}
           </p>
         </div>
@@ -285,7 +285,7 @@ export function SchemaTab({
               type="button"
               onClick={onProcess}
               disabled={!canProcess || processing}
-              className="small-caps border border-[#141210] bg-[#D17B2E] px-4 py-2 text-xs text-[#141210] transition hover:bg-[#E89A48] disabled:cursor-not-allowed disabled:opacity-40"
+              className="small-caps border border-foreground bg-primary px-4 py-2 text-xs text-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {processing ? "processing" : "process files"}
             </button>
@@ -297,7 +297,7 @@ export function SchemaTab({
                   type="button"
                   onClick={handleCancelEdit}
                   disabled={approving}
-                  className="small-caps border border-[#141210]/28 bg-[#F2EBDD]/70 px-4 py-2 text-xs transition hover:bg-[#F7F1E7] disabled:opacity-40"
+                  className="small-caps border border-foreground/28 bg-muted/70 px-4 py-2 text-xs transition hover:bg-card disabled:opacity-40"
                 >
                   cancel
                 </button>
@@ -305,7 +305,7 @@ export function SchemaTab({
                   type="button"
                   onClick={handleApprove}
                   disabled={approving}
-                  className="small-caps border border-[#141210] bg-[#D17B2E] px-4 py-2 text-xs text-[#141210] transition hover:bg-[#E89A48] disabled:opacity-40"
+                  className="small-caps border border-foreground bg-primary px-4 py-2 text-xs text-foreground transition hover:bg-primary/90 disabled:opacity-40"
                 >
                   {approving ? "saving" : "save and apply"}
                 </button>
@@ -315,7 +315,7 @@ export function SchemaTab({
                 <button
                   type="button"
                   onClick={() => setEditing(true)}
-                  className="small-caps border border-[#141210]/28 bg-[#F2EBDD]/70 px-4 py-2 text-xs transition hover:bg-[#F7F1E7]"
+                  className="small-caps border border-foreground/28 bg-muted/70 px-4 py-2 text-xs transition hover:bg-card"
                 >
                   edit
                 </button>
@@ -324,7 +324,7 @@ export function SchemaTab({
                     type="button"
                     onClick={handleApprove}
                     disabled={approving}
-                    className="small-caps border border-[#141210] bg-[#D17B2E] px-4 py-2 text-xs text-[#141210] transition hover:bg-[#E89A48] disabled:opacity-40"
+                    className="small-caps border border-foreground bg-primary px-4 py-2 text-xs text-foreground transition hover:bg-primary/90 disabled:opacity-40"
                   >
                     {approving ? "approving" : "approve"}
                   </button>
@@ -333,7 +333,7 @@ export function SchemaTab({
                     type="button"
                     onClick={onProcess}
                     disabled={processing}
-                    className="small-caps border border-[#141210]/28 bg-[#F2EBDD]/70 px-4 py-2 text-xs transition hover:bg-[#F7F1E7] disabled:opacity-40"
+                    className="small-caps border border-foreground/28 bg-muted/70 px-4 py-2 text-xs transition hover:bg-card disabled:opacity-40"
                   >
                     re-process
                   </button>
@@ -354,18 +354,18 @@ export function SchemaTab({
 
       {discovery && (status === "pending_review" || status === "approved") ? (
         <div className="relative z-10 grid gap-7">
-          <section className="grid gap-6 border-b border-[#141210]/12 pb-7 xl:grid-cols-[minmax(0,1.08fr)_minmax(28rem,0.92fr)]">
+          <section className="grid gap-6 border-b border-foreground/12 pb-7 xl:grid-cols-[minmax(0,1.08fr)_minmax(28rem,0.92fr)]">
             <div className="min-w-0">
-              <div className="small-caps text-xs text-[#141210]/42">summary</div>
+              <div className="small-caps text-xs text-foreground/42">summary</div>
               {editing ? (
                 <textarea
                   value={draftOverview}
                   onChange={(e) => setDraftOverview(e.target.value)}
                   rows={5}
-                  className="mt-3 w-full border border-[#141210]/18 bg-[#F7F1E7]/84 p-3 text-sm leading-6 focus:outline-none focus:ring-1 focus:ring-[#141210]"
+                  className="mt-3 w-full border border-foreground/18 bg-card/84 p-3 text-sm leading-6 focus:outline-none focus:ring-1 focus:ring-foreground"
                 />
               ) : (
-                <p className="mt-3 max-w-3xl text-lg leading-8 text-[#141210]/72">
+                <p className="mt-3 max-w-3xl text-lg leading-8 text-foreground/72">
                   {shortText(draftOverview || "No overview was generated.", 310)}
                 </p>
               )}
@@ -378,18 +378,18 @@ export function SchemaTab({
                     );
                     if (first) setActiveFileId(first.file_id);
                   }}
-                  className="mt-5 border border-amber-300 bg-amber-50 px-3 py-2 text-left text-xs text-amber-800 transition hover:bg-amber-100"
+                  className="mt-5 border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-left text-xs text-amber-600 transition hover:bg-amber-500/20"
                 >
                   {warnings.total} item{warnings.total === 1 ? "" : "s"} need review.
                   Open the marked document for detail.
                 </button>
               ) : (
-                <div className="mt-5 inline-flex border border-[#176B7D]/18 bg-[#C9E3E2]/18 px-3 py-2 text-xs text-[#176B7D]">
+                <div className="mt-5 inline-flex border border-primary/18 bg-primary/18 px-3 py-2 text-xs text-primary">
                   No document warnings found.
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-5 border border-[#141210]/12 bg-[#F7F1E7]/70 p-5 shadow-[0_18px_60px_rgba(20,18,16,0.04)] sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-x-8 gap-y-5 border border-foreground/12 bg-card/70 p-5 shadow-[0_18px_60px_rgba(20,18,16,0.04)] sm:grid-cols-3">
               <Stat label="rows" value={summary.rows} />
               <Stat label="files" value={summary.files} />
               <Stat label="fields" value={summary.columns} />
@@ -492,11 +492,11 @@ function EmptyState({
   onProcess: () => void;
 }) {
   return (
-    <div className="mt-10 max-w-2xl border border-neutral-200 bg-white p-5">
+    <div className="mt-10 max-w-2xl border border-border bg-card p-5">
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div className="min-w-0 flex-1">
-          <h3 className="font-mono text-base text-ink">Start with uploaded documents</h3>
-          <p className="mt-2 text-sm leading-6 text-neutral-600">
+          <h3 className="font-mono text-base text-foreground">Start with uploaded documents</h3>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
             {canProcess
               ? "Cerno will identify headers, explain fields, and look for connections between files."
               : "Upload one or more files first, then Cerno can build the data map."}
@@ -506,7 +506,7 @@ function EmptyState({
           <button
             type="button"
             onClick={onProcess}
-            className="small-caps shrink-0 border border-ink bg-ember px-4 py-2 text-sm text-white hover:bg-ember-hover"
+            className="small-caps shrink-0 border border-foreground bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
           >
             process files
           </button>
@@ -563,24 +563,24 @@ function ProcessingCheckpoints({
   }
 
   return (
-    <section className="mb-6 border border-neutral-200 bg-white p-5">
+    <section className="mb-6 border border-border bg-card p-5">
       <div className="flex items-center justify-between gap-4 mb-4">
-        <h3 className="font-mono text-sm text-ink">
+        <h3 className="font-mono text-sm text-foreground">
           {latestError ? "Processing stopped" : isDone ? "Processing complete" : "Analyzing your data"}
         </h3>
-        <div className="small-caps text-xs text-neutral-400">
+        <div className="small-caps text-xs text-muted-foreground/70">
           {isDone ? "complete" : `${progress}%`}
         </div>
       </div>
 
       {/* Progress bar */}
-      <div className="relative h-1.5 overflow-hidden bg-neutral-100 mb-5">
+      <div className="relative h-1.5 overflow-hidden bg-muted mb-5">
         <div
-          className={`h-full transition-all duration-700 ease-out ${isDone ? "bg-emerald-500" : "bg-ember"}`}
+          className={`h-full transition-all duration-700 ease-out ${isDone ? "bg-emerald-500" : "bg-primary"}`}
           style={{ width: `${progress}%` }}
         />
         {processing && !isDone && !latestError ? (
-          <div className="absolute inset-y-0 left-0 w-1/3 animate-pulse bg-ember/30" />
+          <div className="absolute inset-y-0 left-0 w-1/3 animate-pulse bg-primary/30" />
         ) : null}
       </div>
 
@@ -597,7 +597,7 @@ function ProcessingCheckpoints({
             <div
               key={step.key}
               className={`flex items-center gap-3 px-3 py-2 transition-colors ${
-                isActive ? "bg-orange-50" : ""
+                isActive ? "bg-primary/10" : ""
               }`}
             >
               {/* Icon */}
@@ -607,9 +607,9 @@ function ProcessingCheckpoints({
                     <path strokeLinecap="square" strokeLinejoin="miter" d="M5 13l4 4L19 7" />
                   </svg>
                 ) : isActive ? (
-                  <div className="w-3.5 h-3.5 border-2 border-ember border-t-transparent animate-spin" />
+                  <div className="w-3.5 h-3.5 border-2 border-primary border-t-transparent animate-spin" />
                 ) : (
-                  <div className="w-2 h-2 bg-neutral-200" />
+                  <div className="w-2 h-2 bg-muted-foreground/30" />
                 )}
               </div>
 
@@ -617,10 +617,10 @@ function ProcessingCheckpoints({
               <span
                 className={`text-sm flex-1 ${
                   isComplete
-                    ? "text-neutral-500"
+                    ? "text-muted-foreground"
                     : isActive
-                      ? "text-ink font-medium"
-                      : "text-neutral-300"
+                      ? "text-foreground font-medium"
+                      : "text-muted-foreground/50"
                 }`}
               >
                 {step.label}
@@ -628,11 +628,11 @@ function ProcessingCheckpoints({
 
               {/* Elapsed time */}
               {elapsed ? (
-                <span className="text-[10px] font-mono text-neutral-400">
+                <span className="text-[10px] font-mono text-muted-foreground/70">
                   {elapsed}
                 </span>
               ) : isActive ? (
-                <span className="text-[10px] font-mono text-ember animate-pulse">
+                <span className="text-[10px] font-mono text-primary animate-pulse">
                   working
                 </span>
               ) : null}
@@ -643,13 +643,13 @@ function ProcessingCheckpoints({
 
       {/* Latest message */}
       {!latestError && events.length > 0 && !isDone ? (
-        <p className="mt-3 px-3 text-xs text-neutral-400 animate-pulse">
+        <p className="mt-3 px-3 text-xs text-muted-foreground/70 animate-pulse">
           {events.at(-1)?.message}
         </p>
       ) : null}
 
       {latestError ? (
-        <div className="mt-4 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+        <div className="mt-4 border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {friendlyEventMessage(latestError)}
         </div>
       ) : null}
@@ -684,8 +684,8 @@ type WarningState = {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="small-caps text-[11px] text-[#141210]/44">{label}</div>
-      <div className="mt-1 font-mono text-lg text-[#141210]">{value}</div>
+      <div className="small-caps text-[11px] text-foreground/44">{label}</div>
+      <div className="mt-1 font-mono text-lg text-foreground">{value}</div>
     </div>
   );
 }
@@ -704,15 +704,15 @@ function DocumentSummaryList({
   onSelectFile: (fileId: string) => void;
 }) {
   return (
-    <section className="border-b border-[#141210]/12 pb-7">
+    <section className="border-b border-foreground/12 pb-7">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div>
-          <div className="small-caps text-xs text-[#176B7D]">documents</div>
-          <h3 className="mt-1 font-mono text-xl text-[#141210]">Files Cerno can use</h3>
+          <div className="small-caps text-xs text-primary">documents</div>
+          <h3 className="mt-1 font-mono text-xl text-foreground">Files Cerno can use</h3>
         </div>
-        <div className="text-xs text-[#141210]/46">Click a file for fields and rows.</div>
+        <div className="text-xs text-foreground/46">Click a file for fields and rows.</div>
       </div>
-      <div className="divide-y divide-[#141210]/10 border-y border-[#141210]/12">
+      <div className="divide-y divide-foreground/10 border-y border-foreground/12">
         {files.map((file) => {
           const record = fileById.get(file.file_id);
           const fileWarnings = warnings.byFile.get(file.file_id) ?? [];
@@ -721,32 +721,32 @@ function DocumentSummaryList({
               key={file.file_id}
               type="button"
               onClick={() => onSelectFile(file.file_id)}
-              className="group grid w-full gap-3 px-3 py-4 text-left transition hover:bg-[#F7F1E7]/80 lg:grid-cols-[minmax(14rem,0.7fr)_minmax(0,1fr)_auto]"
+              className="group grid w-full gap-3 px-3 py-4 text-left transition hover:bg-card/80 lg:grid-cols-[minmax(14rem,0.7fr)_minmax(0,1fr)_auto]"
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span
-                    className={`h-2.5 w-2.5 ${fileWarnings.length > 0 ? "bg-[#D17B2E]" : "bg-[#176B7D]"}`}
+                    className={`h-2.5 w-2.5 ${fileWarnings.length > 0 ? "bg-primary" : "bg-primary"}`}
                   />
-                  <span className="truncate font-mono text-base text-[#141210]">
+                  <span className="truncate font-mono text-base text-foreground">
                     {fileNameMap.get(file.file_id) ?? file.friendly_name}
                   </span>
                 </div>
-                <div className="mt-1 truncate text-xs text-[#141210]/45">
+                <div className="mt-1 truncate text-xs text-foreground/45">
                   {record?.filename ?? "Original file unknown"}
                 </div>
               </div>
-              <div className="min-w-0 text-sm leading-6 text-[#141210]/62">
+              <div className="min-w-0 text-sm leading-6 text-foreground/62">
                 {shortText(file.description || "No description yet.", 150)}
               </div>
-              <div className="flex items-center gap-5 font-mono text-xs text-[#141210]/56 lg:justify-end">
+              <div className="flex items-center gap-5 font-mono text-xs text-foreground/56 lg:justify-end">
                 <span>{formatNumber(record?.row_count ?? 0)} rows</span>
                 <span>{file.columns.length} fields</span>
                 <span
                   className={`small-caps border px-2 py-1 font-sans text-[10px] ${
                     fileWarnings.length > 0
-                      ? "border-amber-300 bg-amber-50 text-amber-800"
-                      : "border-[#141210]/12 bg-[#F2EBDD]/70 text-[#141210]/48"
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
+                      : "border-foreground/12 bg-muted/70 text-foreground/48"
                   }`}
                 >
                   {fileWarnings.length > 0 ? "review" : "ready"}
@@ -783,25 +783,25 @@ function ConnectionSummaryList({
   const hiddenCount = Math.max(0, groups.length - visibleGroups.length);
 
   return (
-    <section className="border-b border-[#141210]/12 pb-7">
+    <section className="border-b border-foreground/12 pb-7">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <div className="small-caps text-xs text-[#176B7D]">connections</div>
-          <h3 className="mt-1 font-mono text-xl text-[#141210]">How files relate</h3>
+          <div className="small-caps text-xs text-primary">connections</div>
+          <h3 className="mt-1 font-mono text-xl text-foreground">How files relate</h3>
         </div>
         {editing ? (
           <button
             type="button"
             onClick={onAddLink}
             disabled={!canAddLink}
-            className="small-caps border border-[#141210]/28 bg-[#F2EBDD]/70 px-3 py-2 text-xs transition hover:bg-[#F7F1E7] disabled:opacity-40"
+            className="small-caps border border-foreground/28 bg-muted/70 px-3 py-2 text-xs transition hover:bg-card disabled:opacity-40"
           >
             add connection
           </button>
         ) : null}
       </div>
       {visibleGroups.length === 0 ? (
-        <div className="border border-[#141210]/12 bg-[#F7F1E7]/62 p-4 text-sm text-[#141210]/58">
+        <div className="border border-foreground/12 bg-card/62 p-4 text-sm text-foreground/58">
           No strong file connections found yet.
         </div>
       ) : (
@@ -817,34 +817,34 @@ function ConnectionSummaryList({
             return (
               <div
                 key={group.key}
-                className="grid items-center gap-3 border border-[#141210]/10 bg-[#F7F1E7]/58 px-3 py-3 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]"
+                className="grid items-center gap-3 border border-foreground/10 bg-card/58 px-3 py-3 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]"
               >
                 <button
                   type="button"
                   onClick={() => onSelectFile(group.leftId)}
-                  className="truncate border border-[#141210]/10 bg-[#F2EBDD]/62 px-3 py-2 text-left font-mono text-sm transition hover:border-[#176B7D]/40"
+                  className="truncate border border-foreground/10 bg-muted/62 px-3 py-2 text-left font-mono text-sm transition hover:border-primary/40"
                 >
                   {fileNameMap.get(group.leftId) ?? group.leftId}
                 </button>
-                <span className="small-caps whitespace-nowrap border border-[#D17B2E]/22 bg-[#D17B2E]/8 px-2 py-1 text-[10px] text-[#9A551F]">
+                <span className="small-caps whitespace-nowrap border border-primary/22 bg-primary/8 px-2 py-1 text-[10px] text-primary">
                   {group.links.length} link{group.links.length === 1 ? "" : "s"}
                 </span>
                 <button
                   type="button"
                   onClick={() => onSelectFile(group.rightId)}
-                  className="truncate border border-[#141210]/10 bg-[#F2EBDD]/62 px-3 py-2 text-left font-mono text-sm transition hover:border-[#176B7D]/40"
+                  className="truncate border border-foreground/10 bg-muted/62 px-3 py-2 text-left font-mono text-sm transition hover:border-primary/40"
                 >
                   {fileNameMap.get(group.rightId) ?? group.rightId}
                 </button>
                 <button
                   type="button"
                   onClick={() => onSelectFile(group.leftId)}
-                  className="small-caps text-[10px] text-[#141210]/44 transition hover:text-[#176B7D]"
+                  className="small-caps text-[10px] text-foreground/44 transition hover:text-primary"
                 >
                   inspect
                 </button>
                 {weakCount > 0 ? (
-                  <div className="text-xs text-amber-700 md:col-span-4">
+                  <div className="text-xs text-amber-600 md:col-span-4">
                     {weakCount} weak link{weakCount === 1 ? "" : "s"}.
                   </div>
                 ) : null}
@@ -852,7 +852,7 @@ function ConnectionSummaryList({
             );
           })}
           {hiddenCount > 0 ? (
-            <div className="small-caps px-3 py-2 text-xs text-[#141210]/42">
+            <div className="small-caps px-3 py-2 text-xs text-foreground/42">
               {hiddenCount} more connection group{hiddenCount === 1 ? "" : "s"} hidden from this view.
             </div>
           ) : null}
@@ -883,14 +883,14 @@ function AgentContextSummary({
     <section className="pb-3">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <div className="small-caps text-xs text-[#176B7D]">context</div>
-          <h3 className="mt-1 font-mono text-xl text-[#141210]">Saved for chat</h3>
+          <div className="small-caps text-xs text-primary">context</div>
+          <h3 className="mt-1 font-mono text-xl text-foreground">Saved for chat</h3>
         </div>
         {files[0] ? (
           <button
             type="button"
             onClick={() => onSelectFile(files[0]!.file_id)}
-            className="small-caps border border-[#141210]/16 bg-[#F2EBDD]/70 px-3 py-2 text-xs transition hover:bg-[#F7F1E7]"
+            className="small-caps border border-foreground/16 bg-muted/70 px-3 py-2 text-xs transition hover:bg-card"
           >
             inspect details
           </button>
@@ -909,9 +909,9 @@ function AgentContextSummary({
 
 function ContextCount({ label, value }: { label: string; value: number }) {
   return (
-    <div className="border border-[#141210]/10 bg-[#F7F1E7]/52 px-3 py-3">
-      <div className="font-mono text-xl text-[#141210]">{formatNumber(value)}</div>
-      <div className="small-caps mt-1 text-[10px] text-[#141210]/42">{label}</div>
+    <div className="border border-foreground/10 bg-card/52 px-3 py-3">
+      <div className="font-mono text-xl text-foreground">{formatNumber(value)}</div>
+      <div className="small-caps mt-1 text-[10px] text-foreground/42">{label}</div>
     </div>
   );
 }
@@ -988,25 +988,25 @@ function FileSchemaDrawer({
   return (
     <div className="fixed inset-0 z-50 bg-black/20" onClick={onClose}>
       <aside
-        className="absolute inset-y-0 right-0 flex w-full max-w-3xl flex-col border-l border-ink bg-paper shadow-2xl"
+        className="absolute inset-y-0 right-0 flex w-full max-w-3xl flex-col border-l border-foreground bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="hairline flex items-start justify-between gap-4 border-b p-5">
+        <div className="border-border flex items-start justify-between gap-4 border-b p-5">
           <div className="min-w-0">
-            <div className="small-caps text-xs text-neutral-500">document detail</div>
+            <div className="small-caps text-xs text-muted-foreground">document detail</div>
             {editing ? (
               <input
                 type="text"
                 value={file.friendly_name}
                 onChange={(e) => onUpdateFile(fileIdx, { friendly_name: e.target.value })}
-                className="mt-2 w-full border border-neutral-300 bg-white px-2 py-1 font-mono text-xl focus:outline-none focus:ring-1 focus:ring-ink"
+                className="mt-2 w-full border border-border bg-card px-2 py-1 font-mono text-xl focus:outline-none focus:ring-1 focus:ring-ring"
               />
             ) : (
-              <h3 className="mt-1 truncate font-mono text-xl text-ink">
+              <h3 className="mt-1 truncate font-mono text-xl text-foreground">
                 {file.friendly_name}
               </h3>
             )}
-            <div className="mt-2 flex flex-wrap gap-3 text-xs text-neutral-500">
+            <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
               <span>{record?.filename ?? "Original file unknown"}</span>
               <span>{formatSize(record?.original_size_bytes)}</span>
               <span>{formatNumber(record?.row_count ?? 0)} rows</span>
@@ -1026,7 +1026,7 @@ function FileSchemaDrawer({
                   onClose();
                   onDeleteFile(record.id);
                 }}
-                className="small-caps border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                className="small-caps border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
               >
                 delete file
               </button>
@@ -1034,7 +1034,7 @@ function FileSchemaDrawer({
             <button
               type="button"
               onClick={onClose}
-              className="small-caps border border-ink px-2 py-1 text-xs hover:bg-neutral-100"
+              className="small-caps border border-foreground px-2 py-1 text-xs hover:bg-muted"
             >
               close
             </button>
@@ -1043,7 +1043,7 @@ function FileSchemaDrawer({
 
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
           {warnings.length > 0 ? (
-            <div className="border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+            <div className="border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-600">
               {warnings.map((warning) => (
                 <div key={warning}>{warning}</div>
               ))}
@@ -1051,21 +1051,21 @@ function FileSchemaDrawer({
           ) : null}
 
           <section>
-            <div className="small-caps text-xs text-neutral-500">what this contains</div>
+            <div className="small-caps text-xs text-muted-foreground">what this contains</div>
             {editing ? (
               <textarea
                 value={file.description}
                 onChange={(e) => onUpdateFile(fileIdx, { description: e.target.value })}
                 rows={3}
-                className="mt-2 w-full border border-neutral-300 bg-white p-2 text-sm focus:outline-none focus:ring-1 focus:ring-ink"
+                className="mt-2 w-full border border-border bg-card p-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
               />
             ) : (
-              <p className="mt-2 text-sm leading-6 text-neutral-700">
+              <p className="mt-2 text-sm leading-6 text-foreground/80">
                 {file.description || "No description yet."}
               </p>
             )}
             {editing ? (
-              <label className="mt-3 flex items-center gap-2 text-xs text-neutral-600">
+              <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
                 Header starts on row
                 <input
                   type="number"
@@ -1076,7 +1076,7 @@ function FileSchemaDrawer({
                       header_row: Math.max(0, Number(e.target.value) || 0),
                     })
                   }
-                  className="w-20 border border-neutral-300 bg-white px-2 py-1"
+                  className="w-20 border border-border bg-card px-2 py-1"
                 />
               </label>
             ) : null}
@@ -1085,14 +1085,14 @@ function FileSchemaDrawer({
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <div className="small-caps text-xs text-neutral-500">columns</div>
-                <h4 className="mt-1 font-mono text-base text-ink">Important fields</h4>
+                <div className="small-caps text-xs text-muted-foreground">columns</div>
+                <h4 className="mt-1 font-mono text-base text-foreground">Important fields</h4>
               </div>
               {editing ? (
                 <button
                   type="button"
                   onClick={() => onAddColumn(fileIdx)}
-                  className="small-caps border border-ink px-2 py-1 text-xs hover:bg-neutral-100"
+                  className="small-caps border border-foreground px-2 py-1 text-xs hover:bg-muted"
                 >
                   add column
                 </button>
@@ -1110,15 +1110,15 @@ function FileSchemaDrawer({
           <section>
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <div className="small-caps text-xs text-neutral-500">connections</div>
-                <h4 className="mt-1 font-mono text-base text-ink">Related documents</h4>
+                <div className="small-caps text-xs text-muted-foreground">connections</div>
+                <h4 className="mt-1 font-mono text-base text-foreground">Related documents</h4>
               </div>
               {editing ? (
                 <button
                   type="button"
                   onClick={() => onAddLink(file.file_id)}
                   disabled={draftFiles.length < 2}
-                  className="small-caps border border-ink px-2 py-1 text-xs hover:bg-neutral-100 disabled:opacity-40"
+                  className="small-caps border border-foreground px-2 py-1 text-xs hover:bg-muted disabled:opacity-40"
                 >
               add connection
                 </button>
@@ -1136,21 +1136,21 @@ function FileSchemaDrawer({
           </section>
 
           <section>
-            <div className="hairline flex items-center justify-between border-b pb-3">
+            <div className="border-border flex items-center justify-between border-b pb-3">
               <div>
-                <div className="small-caps text-xs text-neutral-500">preview</div>
-                <h4 className="mt-1 font-mono text-base text-ink">Sample rows</h4>
+                <div className="small-caps text-xs text-muted-foreground">preview</div>
+                <h4 className="mt-1 font-mono text-base text-foreground">Sample rows</h4>
               </div>
               {preview ? (
-                <div className="small-caps text-xs text-neutral-500">
+                <div className="small-caps text-xs text-muted-foreground">
                   {formatNumber(preview.total_rows)} rows
                 </div>
               ) : null}
             </div>
             {previewLoading ? (
-              <div className="py-4 text-sm text-neutral-500">Loading preview...</div>
+              <div className="py-4 text-sm text-muted-foreground">Loading preview...</div>
             ) : previewError ? (
-              <div className="py-4 text-sm text-red-600">{previewError}</div>
+              <div className="py-4 text-sm text-destructive">{previewError}</div>
             ) : preview ? (
               <PreviewTable preview={preview} />
             ) : null}
@@ -1179,9 +1179,9 @@ function SchemaColumnTable({
   onRemoveColumn: (fileIdx: number, colIdx: number) => void;
 }) {
   return (
-    <div className="overflow-x-auto border border-neutral-200 bg-white">
+    <div className="overflow-x-auto border border-border bg-card">
       <table className="w-full min-w-[42rem] border-collapse text-sm">
-        <thead className="bg-neutral-50">
+        <thead className="bg-muted">
           <tr>
             <Th>field</Th>
             <Th>meaning</Th>
@@ -1191,7 +1191,7 @@ function SchemaColumnTable({
         </thead>
         <tbody>
           {file.columns.map((col, colIdx) => (
-            <tr key={`${col.column_id}-${colIdx}`} className="hairline border-b last:border-b-0">
+            <tr key={`${col.column_id}-${colIdx}`} className="border-border border-b last:border-b-0">
               <Td mono>
                 {editing ? (
                   <input
@@ -1200,7 +1200,7 @@ function SchemaColumnTable({
                     onChange={(e) =>
                       onUpdateColumn(fileIdx, colIdx, { name: e.target.value })
                     }
-                    className="w-full border border-neutral-300 px-2 py-1 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ink"
+                    className="w-full border border-border px-2 py-1 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                 ) : (
                   col.name
@@ -1216,10 +1216,10 @@ function SchemaColumnTable({
                         description: e.target.value,
                       })
                     }
-                    className="w-full border border-neutral-300 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ink"
+                    className="w-full border border-border px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                 ) : (
-                  col.description || <span className="text-amber-700">Needs description</span>
+                  col.description || <span className="text-amber-600">Needs description</span>
                 )}
               </Td>
               <Td>
@@ -1231,7 +1231,7 @@ function SchemaColumnTable({
                         dtype: e.target.value as SimpleDtype,
                       })
                     }
-                    className="border border-neutral-300 bg-white px-2 py-1 text-xs"
+                    className="border border-border bg-card px-2 py-1 text-xs"
                   >
                     {DTYPES.map((dtype) => (
                       <option key={dtype} value={dtype}>
@@ -1240,7 +1240,7 @@ function SchemaColumnTable({
                     ))}
                   </select>
                 ) : (
-                  <span className="small-caps text-xs text-neutral-500">{col.dtype}</span>
+                  <span className="small-caps text-xs text-muted-foreground">{col.dtype}</span>
                 )}
               </Td>
               {editing ? (
@@ -1248,7 +1248,7 @@ function SchemaColumnTable({
                   <button
                     type="button"
                     onClick={() => onRemoveColumn(fileIdx, colIdx)}
-                    className="small-caps text-xs text-red-600 hover:underline"
+                    className="small-caps text-xs text-destructive hover:underline"
                   >
                     remove
                   </button>
@@ -1281,14 +1281,14 @@ function RelationshipList({
 }) {
   if (links.length === 0) {
     return (
-      <div className="border border-neutral-200 bg-white p-4 text-sm text-neutral-500">
+      <div className="border border-border bg-card p-4 text-sm text-muted-foreground">
         No connections for this document.
       </div>
     );
   }
 
   return (
-    <div className="divide-y divide-neutral-100 border border-neutral-200 bg-white">
+    <div className="divide-y divide-border/60 border border-border bg-card">
       {links.map(({ link, idx }) => {
         const stat = linkStats.get(
           linkLookupKey(link.file_a_id, link.col_a, link.file_b_id, link.col_b),
@@ -1318,7 +1318,7 @@ function RelationshipList({
                 <button
                   type="button"
                   onClick={() => onRemoveLink(idx)}
-                  className="small-caps text-xs text-red-600 hover:underline"
+                  className="small-caps text-xs text-destructive hover:underline"
                 >
                   remove
                 </button>
@@ -1327,7 +1327,7 @@ function RelationshipList({
                   onChange={(e) =>
                     onUpdateLink(idx, { direction: e.target.value as LinkDirection })
                   }
-                  className="border border-neutral-300 bg-white px-2 py-1 text-xs"
+                  className="border border-border bg-card px-2 py-1 text-xs"
                 >
                   {DIRECTIONS.map((direction) => (
                     <option key={direction} value={direction}>
@@ -1339,22 +1339,22 @@ function RelationshipList({
                   type="text"
                   value={link.summary}
                   onChange={(e) => onUpdateLink(idx, { summary: e.target.value })}
-                  className="border border-neutral-300 px-2 py-1 text-xs md:col-span-2"
+                  className="border border-border px-2 py-1 text-xs md:col-span-2"
                 />
               </div>
             ) : (
               <>
-                <div className="text-sm text-ink">
+                <div className="text-sm text-foreground">
                   {relationshipSentence(link, fileNameMap)}
                 </div>
-                <div className="mt-2 flex flex-wrap gap-2 text-xs text-neutral-500">
-                  <span className="small-caps border border-neutral-200 px-1.5 py-0.5 text-[10px]">
+                <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <span className="small-caps border border-border px-1.5 py-0.5 text-[10px]">
                     {link.direction.replace(/_/g, " ")}
                   </span>
                   <EvidenceLabel stat={stat} />
                 </div>
                 {link.summary ? (
-                  <p className="mt-2 text-sm leading-5 text-neutral-600">{link.summary}</p>
+                  <p className="mt-2 text-sm leading-5 text-muted-foreground">{link.summary}</p>
                 ) : null}
               </>
             )}
@@ -1387,7 +1387,7 @@ function ColumnPicker({
           const next = draftFiles.find((f) => f.file_id === e.target.value);
           onChange(e.target.value, next?.columns[0]?.name ?? "");
         }}
-        className="min-w-0 border border-neutral-300 bg-white px-2 py-1 text-xs"
+        className="min-w-0 border border-border bg-card px-2 py-1 text-xs"
       >
         {draftFiles.map((f) => (
           <option key={f.file_id} value={f.file_id}>
@@ -1398,7 +1398,7 @@ function ColumnPicker({
       <select
         value={col}
         onChange={(e) => onChange(fileId, e.target.value)}
-        className="min-w-0 border border-neutral-300 bg-white px-2 py-1 text-xs"
+        className="min-w-0 border border-border bg-card px-2 py-1 text-xs"
       >
         {(file?.columns ?? []).map((c) => (
           <option key={c.column_id || c.name} value={c.name}>
@@ -1412,14 +1412,14 @@ function ColumnPicker({
 
 function PreviewTable({ preview }: { preview: FilePreviewResponse }) {
   return (
-    <div className="max-h-[22rem] overflow-auto border border-neutral-200 border-t-0 bg-white">
+    <div className="max-h-[22rem] overflow-auto border border-border border-t-0 bg-card">
       <table className="w-full min-w-max border-collapse text-xs">
-        <thead className="sticky top-0 z-10 bg-neutral-50">
+        <thead className="sticky top-0 z-10 bg-muted">
           <tr>
             {preview.columns.map((column) => (
               <th
                 key={column}
-                className="hairline border-b px-3 py-2 text-left font-mono text-xs text-ink"
+                className="border-border border-b px-3 py-2 text-left font-mono text-xs text-foreground"
               >
                 {column}
               </th>
@@ -1428,21 +1428,21 @@ function PreviewTable({ preview }: { preview: FilePreviewResponse }) {
         </thead>
         <tbody>
           {preview.rows.map((row, rowIdx) => (
-            <tr key={rowIdx} className="hairline border-b hover:bg-neutral-50">
+            <tr key={rowIdx} className="border-border border-b hover:bg-muted">
               {preview.columns.map((_, colIdx) => (
                 <td
                   key={`${rowIdx}-${colIdx}`}
-                  className="max-w-[18rem] truncate px-3 py-2 font-mono text-xs text-neutral-700"
+                  className="max-w-[18rem] truncate px-3 py-2 font-mono text-xs text-foreground/80"
                   title={formatCell(row[colIdx])}
                 >
-                  {formatCell(row[colIdx]) || <span className="text-neutral-300">empty</span>}
+                  {formatCell(row[colIdx]) || <span className="text-muted-foreground/50">empty</span>}
                 </td>
               ))}
             </tr>
           ))}
         </tbody>
       </table>
-      <div className="small-caps px-4 py-3 text-[10px] text-neutral-500">
+      <div className="small-caps px-4 py-3 text-[10px] text-muted-foreground">
         Showing {preview.rows.length} of {formatNumber(preview.total_rows)} rows
       </div>
     </div>
@@ -1457,7 +1457,7 @@ function EvidenceLabel({ stat }: { stat?: LinkStat }) {
   const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
   const source = stat?.source === "user_added" ? "manual" : "value scan";
   return (
-    <span className={pct < 70 ? "text-amber-700" : ""}>
+    <span className={pct < 70 ? "text-amber-600" : ""}>
       {pct}% match from {source}
     </span>
   );
@@ -1649,7 +1649,7 @@ function formatCell(value: unknown): string {
 
 function Th({ children }: { children: ReactNode }) {
   return (
-    <th className="small-caps hairline border-b px-3 py-2 text-left text-xs text-neutral-500">
+    <th className="small-caps border-border border-b px-3 py-2 text-left text-xs text-muted-foreground">
       {children}
     </th>
   );

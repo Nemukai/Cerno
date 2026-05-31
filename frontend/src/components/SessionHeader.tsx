@@ -1,6 +1,17 @@
 import { useRef } from "react";
-import { CernoLockup } from "./Brand";
+import { ThemeToggle } from "./Theme";
 import type { Session } from "../lib/types";
+
+function Sigil({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 32 32" className={className} fill="none" aria-hidden="true">
+      <rect x="1" y="1" width="30" height="30" stroke="currentColor" strokeOpacity="0.35" />
+      <circle cx="16" cy="16" r="9.5" stroke="currentColor" strokeOpacity="0.55" />
+      <circle cx="16" cy="16" r="3.4" fill="currentColor" />
+      <path d="M16 1.5v5M16 25.5v5M1.5 16h5M25.5 16h5" stroke="currentColor" strokeOpacity="0.5" />
+    </svg>
+  );
+}
 
 type Props = {
   session: Session | null;
@@ -49,7 +60,7 @@ export function SessionHeader({
         <button
           type="button"
           onClick={onHome}
-          className="flex h-8 w-8 shrink-0 items-center justify-center border border-neutral-200 bg-white font-mono text-lg leading-none text-neutral-500 transition hover:border-ember hover:text-ember"
+          className="flex h-8 w-8 shrink-0 items-center justify-center border border-border bg-card font-mono text-lg leading-none text-muted-foreground transition hover:border-primary hover:text-primary"
           title="Back to workspaces"
           aria-label="Back to workspaces"
         >
@@ -58,10 +69,13 @@ export function SessionHeader({
         <button
           type="button"
           onClick={onHome}
-          className="shrink-0 text-neutral-500 transition hover:text-ink"
+          className="flex shrink-0 items-center gap-2 text-primary transition-opacity hover:opacity-80"
           title="Back to workspaces"
         >
-          <CernoLockup markClassName="h-5 w-5" wordmarkClassName="text-sm" />
+          <Sigil className="h-5 w-5" />
+          <span className="font-display text-sm font-medium tracking-[0.2em] text-foreground">
+            CERNO
+          </span>
         </button>
         <StatusDot status={session?.status ?? "new"} />
         <div className="small-caps min-w-0 truncate text-sm">
@@ -80,7 +94,7 @@ export function SessionHeader({
               const next = sessions.find((item) => item.id === event.target.value);
               if (next && next.id !== session?.id) onResume(next);
             }}
-            className="small-caps max-w-44 border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-600 focus:outline-none focus:ring-1 focus:ring-ember"
+            className="small-caps max-w-44 border border-border bg-card px-2 py-1 text-xs text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             title="Switch session"
           >
             {sessions.map((item) => (
@@ -91,35 +105,38 @@ export function SessionHeader({
           </select>
         ) : null}
       </div>
-      {showFileActions ? (
       <div className="flex shrink-0 items-center gap-2">
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".csv,.xlsx,.xls"
-          multiple
-          className="hidden"
-          onChange={handleChange}
-        />
-        <button
-          type="button"
-          onClick={handlePick}
-          disabled={!session || uploading}
-          className="small-caps rounded border border-neutral-300 px-3 py-1.5 text-xs text-neutral-600 hover:border-ember hover:text-ember transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {uploading ? "uploading\u2026" : "+ upload files"}
-        </button>
-        <button
-          type="button"
-          onClick={handleDelete}
-          disabled={!session}
-          className="small-caps rounded border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-          title="Delete this session"
-        >
-          delete
-        </button>
+        {showFileActions ? (
+          <>
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              multiple
+              className="hidden"
+              onChange={handleChange}
+            />
+            <button
+              type="button"
+              onClick={handlePick}
+              disabled={!session || uploading}
+              className="small-caps rounded border border-border px-3 py-1.5 text-xs text-muted-foreground hover:border-primary hover:text-primary transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {uploading ? "uploading\u2026" : "+ upload files"}
+            </button>
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={!session}
+              className="small-caps rounded border border-destructive/40 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+              title="Delete this session"
+            >
+              delete
+            </button>
+          </>
+        ) : null}
+        <ThemeToggle />
       </div>
-      ) : null}
     </div>
   );
 }
@@ -127,9 +144,9 @@ export function SessionHeader({
 function StatusDot({ status }: { status: string }) {
   const color =
     status === "ready"
-      ? "bg-ember"
+      ? "bg-primary"
       : status === "analyzing" || status === "ingesting"
-        ? "bg-neutral-500"
-        : "bg-neutral-300";
+        ? "bg-muted-foreground"
+        : "bg-border";
   return <span className={`inline-block h-2.5 w-2.5 ${color}`} />;
 }
