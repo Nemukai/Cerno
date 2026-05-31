@@ -1,36 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowRight, ArrowUpRight, Moon, Sun } from "lucide-react";
+import { ArrowRight, ArrowUpRight } from "lucide-react";
 import { useUser, googleLoginUrl } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
+import { ThemeProvider, ThemeToggle } from "@/components/Theme";
 import { DitherOrb } from "./DitherOrb";
 import { RequestAccessDialog } from "./RequestAccessDialog";
 
 const BUILD = "BUILD 0xA17F · NODE EGH-9320";
 
-type Theme = "dark" | "light";
-
-function useTheme(): [Theme, () => void] {
-  const [theme, setTheme] = useState<Theme>(() =>
-    typeof document !== "undefined" && document.documentElement.classList.contains("dark")
-      ? "dark"
-      : "light",
+export function LandingPage({ onEnter }: { onEnter: () => void }) {
+  return (
+    <ThemeProvider defaultTheme="dark">
+      <LandingInner onEnter={onEnter} />
+    </ThemeProvider>
   );
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
-    try {
-      localStorage.setItem("cerno-theme", theme);
-    } catch {
-      /* ignore */
-    }
-  }, [theme]);
-  return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))];
 }
 
-export function LandingPage({ onEnter }: { onEnter: () => void }) {
+function LandingInner({ onEnter }: { onEnter: () => void }) {
   const { user, loading } = useUser();
   const [requestOpen, setRequestOpen] = useState(false);
-  const [theme, toggleTheme] = useTheme();
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -72,7 +61,7 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
       />
       <div className="pointer-events-none fixed inset-0 z-0 bg-[radial-gradient(120%_80%_at_50%_-10%,transparent_40%,hsl(var(--background)/0.9)_100%)]" />
 
-      <Nav onRequest={openRequest} theme={theme} onToggleTheme={toggleTheme} />
+      <Nav onRequest={openRequest} />
       <Hero onRequest={openRequest} />
       <Ticker />
       <Capabilities onRequest={openRequest} />
@@ -121,31 +110,10 @@ function Clock() {
   return <span className="font-hud text-[10px] text-foreground/45 tabular-nums">{now}</span>;
 }
 
-function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-label="Toggle theme"
-      className="flex h-8 w-8 items-center justify-center border border-border text-foreground/60 transition-colors hover:border-primary/60 hover:text-primary"
-    >
-      {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-    </button>
-  );
-}
-
 /* ------------------------------------------------------------------ */
 /* Nav                                                                */
 /* ------------------------------------------------------------------ */
-function Nav({
-  onRequest,
-  theme,
-  onToggleTheme,
-}: {
-  onRequest: () => void;
-  theme: Theme;
-  onToggleTheme: () => void;
-}) {
+function Nav({ onRequest }: { onRequest: () => void }) {
   return (
     <header className="fixed inset-x-0 top-0 z-40 border-b border-border bg-background/60 backdrop-blur-xl">
       <div className="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-5 sm:px-8">
@@ -163,7 +131,7 @@ function Nav({
             <Clock />
             <HudDot label="ONLINE" />
           </div>
-          <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+          <ThemeToggle />
           <a
             href={googleLoginUrl()}
             className="hidden font-hud text-[10px] text-foreground/55 transition-colors hover:text-primary sm:inline"
