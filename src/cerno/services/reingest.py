@@ -18,6 +18,12 @@ from cerno.repositories import (
     WorkspaceTableRepository,
 )
 from cerno.services.artifact_cache import ensure_file_artifact_cached
+from cerno.services.canonicalize import (
+    cast_column_for_dtype,
+    iso_to_datetime_series,
+    normalize_cell,
+    to_polars_series,
+)
 from cerno.storage import ObjectStore, processed_artifact_key
 
 logger = logging.getLogger(__name__)
@@ -81,6 +87,13 @@ class ApprovalPayload:
     overview: str
 
 
+@dataclass(frozen=True)
+class CastedColumn:
+    series: pl.Series
+    inferred_kind: InferredKind
+    confidence: float
+
+
 def _dedupe_headers(headers: list[str]) -> list[str]:
     seen: dict[str, int] = {}
     out: list[str] = []
@@ -95,36 +108,59 @@ def _dedupe_headers(headers: list[str]) -> list[str]:
     return out
 
 
-def _cast_column(series: pl.Series, dtype: str) -> pl.Series:
-    trimmed = series.cast(pl.String).str.strip_chars()
-    blank_mask = (trimmed == "") | trimmed.is_null()
-    base = trimmed.set(blank_mask, None)
+def _cast_column_with_metadata(series: pl.Series, dtype: str) -> CastedColumn:
+    values = series.to_list()
 
     target = DTYPE_TO_POLARS.get(dtype, pl.String)
     if target == pl.String:
-        return base
+        column = cast_column_for_dtype(values, "string")
+        return CastedColumn(to_polars_series(series.name, column), "string", column.confidence)
     if target == pl.Boolean:
+        normalized = [normalize_cell(value) for value in values]
+        base = pl.Series(series.name, normalized, dtype=pl.String)
         lowered = base.str.to_lowercase()
         truthy = lowered.is_in(["true", "yes", "y", "1", "t"])
         falsy = lowered.is_in(["false", "no", "n", "0", "f"])
         out = pl.Series([None] * base.len(), dtype=pl.Boolean)
         out = out.zip_with(truthy, pl.Series([True] * base.len()))
         out = out.zip_with(falsy, pl.Series([False] * base.len()))
-        return out
+        return CastedColumn(out.alias(series.name), "bool", 1.0)
     try:
-        if target == pl.Date:
-            return base.str.to_date(strict=False)
-        if target == pl.Datetime:
-            return base.str.to_datetime(strict=False)
-        return base.cast(target, strict=False)
+        if target == pl.Date or target == pl.Datetime:
+            column = cast_column_for_dtype(values, dtype)
+            if column.low_confidence or column.kind == "string":
+                return CastedColumn(
+                    to_polars_series(series.name, column),
+                    "string",
+                    column.confidence,
+                )
+            return CastedColumn(
+                iso_to_datetime_series(series.name, column, as_date=target == pl.Date),
+                "date" if target == pl.Date else "datetime",
+                column.confidence,
+            )
+        if target == pl.Int64 or target == pl.Float64:
+            column = cast_column_for_dtype(values, dtype)
+            return CastedColumn(
+                to_polars_series(series.name, column),
+                "int" if column.kind == "int" else "float",
+                column.confidence,
+            )
+        normalized = [normalize_cell(value) for value in values]
+        return CastedColumn(pl.Series(series.name, normalized).cast(target, strict=False), "string", 1.0)
     except Exception as exc:
         logger.warning(
             "cast to %s failed for column %r: %s — keeping original dtype",
             target,
-            base.name,
+            series.name,
             exc,
         )
-        return base
+        column = cast_column_for_dtype(values, "string")
+        return CastedColumn(to_polars_series(series.name, column), "string", 0.5)
+
+
+def _cast_column(series: pl.Series, dtype: str) -> pl.Series:
+    return _cast_column_with_metadata(series, dtype).series
 
 
 def _is_row_empty(row: dict[str, Any]) -> bool:
@@ -178,14 +214,13 @@ def reingest_file(
             cells = cells + [None] * (expected_width - len(cells))
         elif expected_width < len(cells):
             cells = cells[:expected_width]
-        normalized = [
-            None if c is None or (isinstance(c, str) and not c.strip()) else c for c in cells
-        ]
+        normalized = [normalize_cell(c) for c in cells]
         if all(c is None for c in normalized):
             continue
         filtered_rows.append(normalized)
 
     column_names = _dedupe_headers([c.name for c in spec.columns])
+    casted_columns: dict[str, CastedColumn] = {}
     if not filtered_rows:
         frame = pl.DataFrame({n: [] for n in column_names})
     else:
@@ -195,8 +230,9 @@ def reingest_file(
         frame = pl.DataFrame(frame_data)
         for i, col in enumerate(spec.columns):
             name = column_names[i]
-            casted = _cast_column(frame[name], col.dtype)
-            frame = frame.with_columns(casted.alias(name))
+            casted = _cast_column_with_metadata(frame[name], col.dtype)
+            casted_columns[name] = casted
+            frame = frame.with_columns(casted.series.alias(name))
 
     processed_path = settings.parquet_path(user_id, file.session_id, file.id)
     processed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -237,23 +273,34 @@ def reingest_file(
         row_count=frame.height,
     )
 
-    schema = FileSchema(
-        file_id=file.id,
-        schema_version=file.schema_version,
-        columns=[
+    schema_columns: list[SchemaColumn] = []
+    for i, col in enumerate(spec.columns):
+        name = column_names[i]
+        casted = casted_columns.get(
+            name,
+            CastedColumn(
+                series=pl.Series(name, []),
+                inferred_kind=DTYPE_TO_INFERRED_KIND.get(col.dtype, "string"),
+                confidence=1.0,
+            ),
+        )
+        schema_columns.append(
             SchemaColumn(
                 file_id=file.id,
                 schema_version=file.schema_version,
-                name=column_names[i],
-                dtype=str(frame.schema[column_names[i]]),
-                inferred_kind=DTYPE_TO_INFERRED_KIND.get(col.dtype, "string"),
-                confidence=1.0,
+                name=name,
+                dtype=str(frame.schema[name]),
+                inferred_kind=casted.inferred_kind,
+                confidence=casted.confidence,
                 position=i,
-                column_id=col.column_id or column_names[i],
+                column_id=col.column_id or name,
                 description=col.description,
             )
-            for i, col in enumerate(spec.columns)
-        ],
+        )
+    schema = FileSchema(
+        file_id=file.id,
+        schema_version=file.schema_version,
+        columns=schema_columns,
     )
     schemas_repo.replace(schema)
 

@@ -66,6 +66,7 @@ MembershipStatus = Literal["active", "revoked"]
 InviteStatus = Literal["pending", "accepted", "revoked", "expired"]
 ContractStatus = Literal["trial", "active", "paused", "suspended", "archived"]
 SiteRole = Literal["user", "site_owner"]
+NumberSystem = Literal["international", "indian"]
 
 
 class Organization(BaseModel):
@@ -163,6 +164,7 @@ class User(BaseModel):
     access_status: AccessStatus = "pending"
     access_granted_at: datetime | None = None
     access_code_used: str | None = None
+    number_system: NumberSystem = "international"
     created_at: datetime
     last_seen_at: datetime
 

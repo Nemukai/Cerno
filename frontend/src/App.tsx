@@ -69,8 +69,9 @@ import { BetaGate } from "./components/BetaGate";
 import { LandingPage as CernoLanding } from "./components/landing/LandingPage";
 import { ThemeProvider, ThemeToggle } from "./components/Theme";
 import { ActivityChart, TopBarChart, ChartPanel } from "./components/DashboardCharts";
-import { type CurrentUser } from "./lib/auth";
+import { updateUserSettings, type CurrentUser, type NumberSystem } from "./lib/auth";
 import { trackEvent } from "./lib/analytics";
+import { formatNumber } from "./lib/format-number";
 
 type WorkspaceMetric = {
   fileCount: number;
@@ -1039,6 +1040,7 @@ export function App() {
               onOpenOrganizationAdmin={(organizationId) =>
                 navigate({ kind: "org-admin", organizationId })
               }
+              onUserUpdate={onUserUpdate}
               onSignOut={async () => {
                 trackEvent("cerno_user_signed_out", { surface: "workspaces" });
                 await signOut();
@@ -1187,6 +1189,7 @@ function WorkspacesPage({
   onBackToLanding,
   onOpenOwnerDashboard,
   onOpenOrganizationAdmin,
+  onUserUpdate,
   onSignOut,
 }: {
   user: CurrentUser;
@@ -1202,6 +1205,7 @@ function WorkspacesPage({
   onBackToLanding: () => void;
   onOpenOwnerDashboard: () => void;
   onOpenOrganizationAdmin: (organizationId: string) => void;
+  onUserUpdate: (next: CurrentUser) => void;
   onSignOut: () => Promise<void>;
 }) {
   const [name, setName] = useState("");
@@ -1352,6 +1356,7 @@ function WorkspacesPage({
             user={user}
             onOpenOwnerDashboard={onOpenOwnerDashboard}
             onOpenOrganizationAdmin={onOpenOrganizationAdmin}
+            onUserUpdate={onUserUpdate}
             onSignOut={onSignOut}
           />
         </div>
@@ -1364,15 +1369,34 @@ function UserProfilePanel({
   user,
   onOpenOwnerDashboard,
   onOpenOrganizationAdmin,
+  onUserUpdate,
   onSignOut,
 }: {
   user: CurrentUser;
   onOpenOwnerDashboard: () => void;
   onOpenOrganizationAdmin: (organizationId: string) => void;
+  onUserUpdate: (next: CurrentUser) => void;
   onSignOut: () => Promise<void>;
 }) {
   const displayName = userDisplayName(user);
   const adminOrganizations = user.organizations.filter((org) => org.role === "admin");
+  const [savingNumberSystem, setSavingNumberSystem] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
+  const handleNumberSystemChange = async (next: NumberSystem) => {
+    if (next === user.number_system || savingNumberSystem) return;
+    setSavingNumberSystem(true);
+    setSettingsError(null);
+    try {
+      const updated = await updateUserSettings({ number_system: next });
+      onUserUpdate(updated);
+      trackEvent("cerno_number_system_updated", { number_system: next });
+    } catch (err) {
+      setSettingsError((err as Error).message);
+    } finally {
+      setSavingNumberSystem(false);
+    }
+  };
 
   return (
     <aside className="h-fit border border-border bg-card p-4 lg:sticky lg:top-6">
@@ -1396,6 +1420,32 @@ function UserProfilePanel({
       </div>
 
       <div className="grid gap-2 pt-4">
+        <div className="border-b border-border pb-4">
+          <label className="grid gap-2">
+            <span className="font-hud text-[10px] text-foreground/45">
+              NUMBER FORMAT
+            </span>
+            <select
+              value={user.number_system}
+              disabled={savingNumberSystem}
+              onChange={(event) =>
+                handleNumberSystemChange(event.target.value as NumberSystem)
+              }
+              className="border border-border bg-background px-3 py-2 font-mono text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <option value="international">International</option>
+              <option value="indian">Indian</option>
+            </select>
+          </label>
+          <div className="mt-2 font-mono text-xs text-foreground/52">
+            {formatNumber(1234567.89, user.number_system)}
+          </div>
+          {settingsError ? (
+            <div className="mt-2 border border-destructive/40 bg-destructive/10 px-2 py-1 font-mono text-xs text-destructive">
+              {settingsError}
+            </div>
+          ) : null}
+        </div>
         {user.site_role === "site_owner" ? (
           <button
             type="button"

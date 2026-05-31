@@ -1,4 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { NumberSystem } from "./format-number";
+
+export type { NumberSystem } from "./format-number";
 
 export type AccessStatus = "pending" | "granted" | "revoked";
 export type OrganizationRole = "admin" | "member" | "viewer";
@@ -10,6 +13,7 @@ export type CurrentUser = {
   picture: string | null;
   access_status: AccessStatus;
   site_role: "user" | "site_owner";
+  number_system: NumberSystem;
   organizations: Array<{
     id: string;
     name: string;
@@ -48,6 +52,22 @@ export async function logout(): Promise<void> {
     method: "POST",
     credentials: "same-origin",
   });
+}
+
+export async function updateUserSettings(input: {
+  number_system: NumberSystem;
+}): Promise<CurrentUser> {
+  const res = await fetch(`${AUTH_BASE}/me/settings`, {
+    method: "PATCH",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText} ${body}`.trim());
+  }
+  return (await res.json()) as CurrentUser;
 }
 
 export type UseUser = {

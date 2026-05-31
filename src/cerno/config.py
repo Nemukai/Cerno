@@ -22,8 +22,28 @@ class DiscoveryProcessingConfig:
 
 
 @dataclass(frozen=True)
+class OCRProcessingConfig:
+    engine: str = "openai"
+    model: str = "gpt-5.4-mini"
+
+
+@dataclass(frozen=True)
+class EmbeddingProcessingConfig:
+    provider: str = "openai"
+    model: str = "text-embedding-3-small"
+
+
+@dataclass(frozen=True)
 class ProcessingConfig:
     discovery: DiscoveryProcessingConfig = DiscoveryProcessingConfig()
+    ocr: OCRProcessingConfig = OCRProcessingConfig()
+    embedding: EmbeddingProcessingConfig = EmbeddingProcessingConfig()
+
+
+@dataclass(frozen=True)
+class ClientModulesConfig:
+    enabled: tuple[str, ...] = ()
+    entry_point_group: str = "cerno.client_modules"
 
 
 _REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh"}
@@ -166,6 +186,10 @@ class Settings(BaseSettings):
     def processing(self) -> ProcessingConfig:
         return load_processing_config(self.config_path())
 
+    @property
+    def client_modules(self) -> ClientModulesConfig:
+        return load_client_modules_config(self.config_path())
+
     def object_cache_path(self, object_key: str) -> Path:
         return self.cache_dir() / object_key
 
@@ -185,30 +209,62 @@ def load_processing_config(path: Path) -> ProcessingConfig:
 
     processing = _optional_table(raw, "processing", path)
     discovery = _optional_table(processing, "discovery", path)
-    defaults = DiscoveryProcessingConfig()
+    ocr = _optional_table(processing, "ocr", path)
+    embedding = _optional_table(processing, "embedding", path)
+    discovery_defaults = DiscoveryProcessingConfig()
+    ocr_defaults = OCRProcessingConfig()
+    embedding_defaults = EmbeddingProcessingConfig()
 
-    model = _string_value(discovery, "model", defaults.model, path)
+    model = _string_value(discovery, "model", discovery_defaults.model, path)
     reasoning_effort = _string_value(
         discovery,
         "reasoning_effort",
-        defaults.reasoning_effort,
+        discovery_defaults.reasoning_effort,
         path,
     ).lower()
     reasoning_summary = _string_value(
         discovery,
         "reasoning_summary",
-        defaults.reasoning_summary,
+        discovery_defaults.reasoning_summary,
         path,
     ).lower()
     analysis_model = _string_value(
-        discovery, "analysis_model", defaults.analysis_model, path
+        discovery, "analysis_model", discovery_defaults.analysis_model, path
     )
     analysis_reasoning_effort = _string_value(
         discovery,
         "analysis_reasoning_effort",
-        defaults.analysis_reasoning_effort,
+        discovery_defaults.analysis_reasoning_effort,
         path,
     ).lower()
+    ocr_engine = _string_value(
+        ocr,
+        "engine",
+        ocr_defaults.engine,
+        path,
+        section="processing.ocr",
+    ).lower()
+    ocr_model = _string_value(
+        ocr,
+        "model",
+        ocr_defaults.model,
+        path,
+        section="processing.ocr",
+    )
+    embedding_provider = _string_value(
+        embedding,
+        "provider",
+        embedding_defaults.provider,
+        path,
+        section="processing.embedding",
+    ).lower()
+    embedding_model = _string_value(
+        embedding,
+        "model",
+        embedding_defaults.model,
+        path,
+        section="processing.embedding",
+    )
 
     if reasoning_effort not in _REASONING_EFFORTS:
         allowed = ", ".join(sorted(_REASONING_EFFORTS))
@@ -236,7 +292,39 @@ def load_processing_config(path: Path) -> ProcessingConfig:
             reasoning_summary=reasoning_summary,
             analysis_model=analysis_model,
             analysis_reasoning_effort=analysis_reasoning_effort,
-        )
+        ),
+        ocr=OCRProcessingConfig(engine=ocr_engine, model=ocr_model),
+        embedding=EmbeddingProcessingConfig(
+            provider=embedding_provider,
+            model=embedding_model,
+        ),
+    )
+
+
+def load_client_modules_config(path: Path) -> ClientModulesConfig:
+    if not path.exists():
+        return ClientModulesConfig()
+
+    try:
+        with path.open("rb") as f:
+            raw = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        raise CernoConfigError(f"Invalid Cerno config at {path}: {exc}") from exc
+
+    if not isinstance(raw, dict):
+        raise CernoConfigError(f"Invalid Cerno config at {path}: expected a TOML table")
+
+    modules = _optional_table(raw, "modules", path)
+    defaults = ClientModulesConfig()
+    return ClientModulesConfig(
+        enabled=_string_list_value(modules, "enabled", defaults.enabled, path),
+        entry_point_group=_string_value(
+            modules,
+            "entry_point_group",
+            defaults.entry_point_group,
+            path,
+            section="modules",
+        ),
     )
 
 
@@ -252,13 +340,34 @@ def _string_value(
     key: str,
     default: str,
     path: Path,
+    *,
+    section: str = "processing.discovery",
 ) -> str:
     value = table.get(key, default)
     if not isinstance(value, str) or not value.strip():
         raise CernoConfigError(
-            f"Invalid processing.discovery.{key} in {path}: expected a non-empty string"
+            f"Invalid {section}.{key} in {path}: expected a non-empty string"
         )
     return value.strip()
+
+
+def _string_list_value(
+    table: dict[str, object],
+    key: str,
+    default: tuple[str, ...],
+    path: Path,
+) -> tuple[str, ...]:
+    value = table.get(key, default)
+    if not isinstance(value, list | tuple):
+        raise CernoConfigError(f"Invalid modules.{key} in {path}: expected a list of strings")
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise CernoConfigError(
+                f"Invalid modules.{key} in {path}: expected a list of non-empty strings"
+            )
+        items.append(item.strip())
+    return tuple(items)
 
 
 _settings: Settings | None = None

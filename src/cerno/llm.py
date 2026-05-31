@@ -8,7 +8,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import httpx
 
@@ -611,7 +611,10 @@ class _HttpxTransport:
 
 
 def _response_request_id(response: httpx.Response) -> str | None:
-    return response.headers.get("x-request-id") or response.headers.get("openai-request-id")
+    return cast(
+        str | None,
+        response.headers.get("x-request-id") or response.headers.get("openai-request-id"),
+    )
 
 
 def _elapsed_ms(started_at: float) -> int:

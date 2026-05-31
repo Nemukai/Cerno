@@ -27,6 +27,7 @@ from cerno.models import (
     Link,
     LinkReview,
     MessageRole,
+    NumberSystem,
     Organization,
     OrganizationEntitlements,
     OrganizationInvite,
@@ -2329,6 +2330,7 @@ def _row_to_user(row: DbRow) -> User:
         if "access_granted_at" in keys
         else None,
         access_code_used=row["access_code_used"] if "access_code_used" in keys else None,
+        number_system=row["number_system"] if "number_system" in keys else "international",
         created_at=datetime.fromisoformat(row["created_at"]),
         last_seen_at=datetime.fromisoformat(row["last_seen_at"]),
     )
@@ -2617,6 +2619,13 @@ class UserRepository:
         self.conn.execute(
             "UPDATE users SET access_status = ? WHERE id = ?",
             (status, user_id),
+        )
+        return self.get(user_id)
+
+    def update_number_system(self, user_id: str, number_system: NumberSystem) -> User | None:
+        self.conn.execute(
+            "UPDATE users SET number_system = ? WHERE id = ?",
+            (number_system, user_id),
         )
         return self.get(user_id)
 

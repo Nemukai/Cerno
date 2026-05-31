@@ -36,9 +36,10 @@ from cerno.repositories import (
 )
 from cerno.services.artifact_cache import ensure_file_artifact_cached
 from cerno.services.ingest import first_n_raw_rows, slugify_table_name
+from cerno.services.profiling import profile_table
 from cerno.storage import ObjectStore
 
-SAMPLE_ROWS = 10
+LAYOUT_SAMPLE_ROWS = 3
 LINK_VALUE_SAMPLE_LIMIT = 5_000
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ class LinkCandidate:
 
 
 SYSTEM_PROMPT = """You are Cerno's highly capable data discovery engine. Tabular files have been uploaded for analysis.
-Your job is to deeply analyze the raw first rows and the Python analysis notes, then systematically determine:
+Your job is to deeply analyze the column profiles, representative examples, and Python analysis notes, then systematically determine:
 
 1. The exact header row (0-indexed). Account for files with title rows, blank rows, or metadata before actual headers.
 2. A clean, human-friendly business name for each file (e.g., 'Customer Orders', 'Inventory Log'). Omit extensions and raw timestamps.
@@ -377,8 +378,9 @@ def _build_prompt(file_payload: list[dict[str, Any]], analysis: str) -> str:
         "and plain-language description. Then identify "
         "cross-file column links, write a session overview, and create the internal "
         "documentation used by the chat analyst.\n\n"
-        "Use the Python analysis notes as higher-confidence evidence than the sample "
-        "rows when they conflict.\n\n"
+        "Use the column profiles as the primary evidence. Use example rows only for "
+        "layout/header context, and use Python analysis notes as higher-confidence "
+        "evidence than examples when they conflict.\n\n"
         "Return STRICT JSON matching the provided schema. No prose, no fences.\n\n"
         f"Python analysis notes:\n{analysis}\n\n"
         f"Files:\n{json.dumps(file_payload, default=str, indent=2)}"
@@ -430,26 +432,10 @@ def _load_raw_tables(files: list[File]) -> tuple[dict[str, pd.DataFrame], list[d
     return tables, catalog
 
 
-def _profile_table(df: pd.DataFrame) -> dict[str, Any]:
-    stats: dict[str, Any] = {}
-    for col in df.columns:
-        series = df[col]
-        nulls = int(series.isnull().sum())
-        distinct = int(series.nunique())
-        stats[str(col)] = {
-            "dtype": str(series.dtype),
-            "nulls": nulls,
-            "null_pct": round(nulls / len(df) * 100, 1) if len(df) > 0 else 0,
-            "distinct": distinct,
-            "sample": [str(x) for x in series.dropna().unique()[:3]],
-        }
-    return {"row_count": len(df), "columns": stats}
-
-
 def _profile_all_tables(
     raw_tables: dict[str, pd.DataFrame],
 ) -> dict[str, dict[str, Any]]:
-    return {name: _profile_table(df) for name, df in raw_tables.items()}
+    return {name: profile_table(df) for name, df in raw_tables.items()}
 
 
 def _find_shared_identifiers(
@@ -837,19 +823,6 @@ async def run_discovery(
     )
 
     raw_tables, raw_catalog = _load_raw_tables(files)
-    file_payload: list[dict[str, Any]] = []
-    for f in files:
-        if not f.raw_parquet_path:
-            raise DiscoveryError(f"file {f.filename} missing raw parquet")
-        rows = first_n_raw_rows(Path(f.raw_parquet_path), limit=SAMPLE_ROWS)
-        file_payload.append(
-            {
-                "file_id": f.id,
-                "filename": f.filename,
-                "row_count": f.row_count,
-                "first_rows": rows,
-            }
-        )
 
     # ── Phase 2: Deterministic profiling (no LLM needed) ──
     events_repo.append(
@@ -868,6 +841,24 @@ async def run_discovery(
         job_id,
     )
     profiles = _profile_all_tables(raw_tables)
+    files_by_id = {file.id: file for file in files}
+    file_payload: list[dict[str, Any]] = []
+    for entry in raw_catalog:
+        payload_file = files_by_id[str(entry["file_id"])]
+        if not payload_file.raw_parquet_path:
+            raise DiscoveryError(f"file {payload_file.filename} missing raw parquet")
+        file_payload.append(
+            {
+                "file_id": payload_file.id,
+                "filename": payload_file.filename,
+                "row_count": payload_file.row_count,
+                "table_name": entry["table_name"],
+                "column_profiles": profiles[str(entry["table_name"])]["columns"],
+                "example_rows": first_n_raw_rows(
+                    Path(payload_file.raw_parquet_path), limit=LAYOUT_SAMPLE_ROWS
+                ),
+            }
+        )
 
     events_repo.append(
         session_id=session_id,

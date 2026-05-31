@@ -9,7 +9,7 @@ from typing import Any
 
 from cerno.config import Settings
 
-POSTGRES_SCHEMA_VERSION = 10
+POSTGRES_SCHEMA_VERSION = 11
 
 
 class DbRow:
@@ -552,6 +552,9 @@ _POSTGRES_MIGRATIONS = {
           ) = 1
         """,
     ],
+    11: [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS number_system TEXT NOT NULL DEFAULT 'international'",
+    ],
 }
 
 
@@ -566,6 +569,7 @@ _POSTGRES_SCHEMA = [
         access_status TEXT NOT NULL DEFAULT 'pending',
         access_granted_at TEXT,
         access_code_used TEXT,
+        number_system TEXT NOT NULL DEFAULT 'international',
         created_at TEXT NOT NULL,
         last_seen_at TEXT NOT NULL
     )

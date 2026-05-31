@@ -23,7 +23,8 @@ import sys
 from datetime import UTC, datetime, timedelta
 
 from cerno.config import get_settings
-from cerno.db import DbConnection, connect
+from cerno.db import DbConnection, DbRow, connect
+from cerno.models import Organization
 from cerno.repositories import (
     ApprovedEmailRepository,
     BetaCodeRepository,
@@ -365,7 +366,7 @@ def _org_slug(name: str) -> str:
     return re.sub(r"-+", "-", slug) or f"org-{new_id()[:8]}"
 
 
-def _get_org_by_slug(conn: DbConnection, slug: str):
+def _get_org_by_slug(conn: DbConnection, slug: str) -> DbRow | None:
     row = conn.execute("SELECT * FROM organizations WHERE slug = ?", (slug,)).fetchone()
     return row
 
@@ -428,14 +429,16 @@ def cmd_move_users_to_org(args: argparse.Namespace) -> None:
     try:
         org_repo = OrganizationRepository(conn)
         row = _get_org_by_slug(conn, slug)
+        target: Organization
         if row is None:
             target = org_repo.create(name=args.org_name, slug=slug)
             org_repo.ensure_entitlements(target.id)
             print(f"created organization {target.name} ({target.id})")
         else:
-            target = org_repo.get(row["id"])
-            if target is None:
+            existing = org_repo.get(row["id"])
+            if existing is None:
                 sys.exit(f"organization disappeared: {row['id']}")
+            target = existing
             print(f"using organization {target.name} ({target.id})")
 
         users = []
@@ -474,14 +477,15 @@ def cmd_move_users_to_org(args: argparse.Namespace) -> None:
 
             for membership in old_memberships:
                 old_org_id = membership["organization_id"]
-                member_count = conn.execute(
+                count_row = conn.execute(
                     """SELECT COUNT(*) AS count
                        FROM organization_members
                        WHERE organization_id = ?
                          AND user_id <> ?
                          AND status = 'active'""",
                     (old_org_id, user.id),
-                ).fetchone()["count"]
+                ).fetchone()
+                member_count = int(count_row["count"] or 0) if count_row else 0
                 if member_count:
                     conn.execute(
                         """UPDATE organization_members

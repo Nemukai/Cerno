@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
 from cerno.llm import Tool, ToolRegistry
-from cerno.models import DataDoc, Widget
+from cerno.models import DataDoc, Widget, WidgetKind
 from cerno.services.sandbox import run_python
 
 
@@ -261,7 +261,7 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
     return registry
 
 
-def _normalize_widget_args(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _normalize_widget_args(args: dict[str, Any]) -> tuple[WidgetKind, dict[str, Any]]:
     kind = str(args["kind"])
     options = dict(args.get("options") or {})
     hint_text = " ".join(
@@ -303,10 +303,10 @@ def _normalize_widget_args(args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if kind == "horizontal_bar":
         options["horizontal"] = True
 
-    return kind, options
+    return cast(WidgetKind, kind), options
 
 
-def _hinted_widget_kind(text: str) -> str | None:
+def _hinted_widget_kind(text: str) -> WidgetKind | None:
     hints = (
         ("stacked area", "stacked_area"),
         ("area chart", "area"),
@@ -327,7 +327,7 @@ def _hinted_widget_kind(text: str) -> str | None:
     )
     for phrase, kind in hints:
         if phrase in text:
-            return kind
+            return cast(WidgetKind, kind)
     return None
 
 

@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field
 from cerno.api.deps import ConnDep, SettingsDep, UserDep, cookie_serializer
 from cerno.auth import build_oauth
 from cerno.config import Settings
-from cerno.models import AccessStatus, OrganizationRole, SiteRole
+from cerno.db import DbConnection
+from cerno.models import AccessStatus, NumberSystem, OrganizationRole, SiteRole, User
 from cerno.repositories import (
     AnalyticsRepository,
     ApprovedEmailRepository,
@@ -34,7 +35,12 @@ class CurrentUser(BaseModel):
     picture: str | None = None
     access_status: AccessStatus = "pending"
     site_role: SiteRole = "user"
+    number_system: NumberSystem = "international"
     organizations: list[CurrentOrganization] = Field(default_factory=list)
+
+
+class UserSettingsUpdate(BaseModel):
+    number_system: NumberSystem
 
 
 def _set_session_cookie(response: Response, *, settings: Settings, user_id: str) -> None:
@@ -123,6 +129,7 @@ def me(conn: ConnDep, settings: SettingsDep, user: UserDep) -> CurrentUser:
         picture=synced.picture,
         access_status=synced.access_status,
         site_role="site_owner" if is_site_owner else "user",
+        number_system=synced.number_system,
         organizations=[
             CurrentOrganization(
                 id=org["id"],
@@ -135,11 +142,57 @@ def me(conn: ConnDep, settings: SettingsDep, user: UserDep) -> CurrentUser:
     )
 
 
+@router.patch("/me/settings", response_model=CurrentUser)
+def update_me_settings(
+    body: UserSettingsUpdate,
+    conn: ConnDep,
+    settings: SettingsDep,
+    user: UserDep,
+) -> CurrentUser:
+    updated = UserRepository(conn).update_number_system(user.id, body.number_system)
+    if updated is None:
+        raise HTTPException(status_code=401, detail="user not found")
+    conn.commit()
+    return _current_user_body(conn, settings, updated)
+
+
 @router.post("/logout", status_code=204)
 def logout(settings: SettingsDep) -> Response:
     response = Response(status_code=204)
     response.delete_cookie(settings.session_cookie_name, path="/")
     return response
+
+
+def _current_user_body(conn: DbConnection, settings: Settings, user: User) -> CurrentUser:
+    is_site_owner = user.email.strip().lower() in settings.site_owner_email_set()
+    organizations = conn.execute(
+        """SELECT o.id, o.name, o.slug, m.role
+           FROM organizations o
+           JOIN organization_members m ON m.organization_id = o.id
+           WHERE m.user_id = ?
+             AND m.status = 'active'
+             AND o.status = 'active'
+           ORDER BY o.created_at""",
+        (user.id,),
+    ).fetchall()
+    return CurrentUser(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        picture=user.picture,
+        access_status=user.access_status,
+        site_role="site_owner" if is_site_owner else "user",
+        number_system=user.number_system,
+        organizations=[
+            CurrentOrganization(
+                id=org["id"],
+                name=org["name"],
+                slug=org["slug"],
+                role=org["role"],
+            )
+            for org in organizations
+        ],
+    )
 
 
 __all__ = ["router"]

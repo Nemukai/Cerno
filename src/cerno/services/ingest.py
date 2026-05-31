@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
+import clevercsv
 import polars as pl
+from charset_normalizer import from_bytes
+from clevercsv.dialect import SimpleDialect
 from python_calamine import CalamineWorkbook
 
 from cerno.config import Settings
@@ -18,11 +23,17 @@ from cerno.repositories import (
     WorkspaceTableRepository,
     new_id,
 )
+from cerno.services.canonicalize import (
+    canonicalize_inferred_column,
+    normalize_cell,
+    to_polars_series,
+)
 from cerno.storage import ObjectStore, raw_artifact_key, source_object_key
 
 CSV_SUFFIXES = {".csv", ".tsv"}
 EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xlsb", ".xls", ".ods"}
 SUPPORTED_SUFFIXES = CSV_SUFFIXES | EXCEL_SUFFIXES
+logger = logging.getLogger(__name__)
 
 
 class IngestError(RuntimeError):
@@ -62,21 +73,36 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _normalize_cell(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped if stripped else None
-    return value
+def _decode_text_file(source_path: Path) -> str:
+    payload = source_path.read_bytes()
+    match = from_bytes(payload).best()
+    if match is None:
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise IngestError(f"could not detect encoding for {source_path.name}") from exc
+    encoding = match.encoding or "utf-8"
+    coherence = float(match.percent_coherence)
+    if coherence < 20:
+        logger.warning(
+            "low-confidence decode for %s: encoding=%s coherence=%.1f",
+            source_path.name,
+            encoding,
+            coherence,
+        )
+    try:
+        return payload.decode(encoding)
+    except UnicodeDecodeError:
+        return str(match)
 
 
-def _read_csv_rows(source_path: Path, separator: str) -> list[list[Any]]:
-    with source_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
-        import csv
-
-        reader = csv.reader(f, delimiter=separator)
-        rows = [[_normalize_cell(cell) for cell in row] for row in reader]
+def _read_csv_rows(source_path: Path) -> list[list[Any]]:
+    text = _decode_text_file(source_path)
+    dialect = clevercsv.Sniffer().sniff(text)
+    if dialect is None:
+        dialect = SimpleDialect("\t" if source_path.suffix.lower() == ".tsv" else ",", "", "")
+    reader = clevercsv.reader(StringIO(text), dialect=dialect)
+    rows = [[normalize_cell(cell) for cell in row] for row in reader]
     width = max((len(r) for r in rows), default=0)
     return [r + [None] * (width - len(r)) for r in rows]
 
@@ -84,8 +110,7 @@ def _read_csv_rows(source_path: Path, separator: str) -> list[list[Any]]:
 def read_raw_sheets(source_path: Path) -> list[RawSheet]:
     suffix = source_path.suffix.lower()
     if suffix in CSV_SUFFIXES:
-        separator = "\t" if suffix == ".tsv" else ","
-        rows = _read_csv_rows(source_path, separator)
+        rows = _read_csv_rows(source_path)
         if not rows:
             raise IngestError(f"{source_path.name} is empty")
         return [RawSheet(sheet_name=None, rows=rows)]
@@ -97,7 +122,7 @@ def read_raw_sheets(source_path: Path) -> list[RawSheet]:
             for name in workbook.sheet_names:
                 sheet = workbook.get_sheet_by_name(name)
                 sheet_rows: list[list[Any]] = sheet.to_python()
-                normalized = [[_normalize_cell(cell) for cell in row] for row in sheet_rows]
+                normalized = [[normalize_cell(cell) for cell in row] for row in sheet_rows]
                 width = max((len(r) for r in normalized), default=0)
                 if width == 0:
                     continue
@@ -121,10 +146,11 @@ def _raw_to_frame(rows: list[list[Any]]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame()
     width = len(rows[0])
-    columns = {
-        f"c{i}": [str(row[i]) if row[i] is not None else None for row in rows] for i in range(width)
-    }
-    return pl.DataFrame(columns)
+    series = []
+    for i in range(width):
+        column = canonicalize_inferred_column([row[i] for row in rows])
+        series.append(to_polars_series(f"c{i}", column))
+    return pl.DataFrame(series)
 
 
 def ingest_file(
