@@ -3,11 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <script>
-      // Apply saved theme before paint to avoid a flash. Defaults to dark.
+      // Apply theme before paint to avoid a flash. Explicit preference wins;
+      // otherwise the landing ("/") defaults dark and the app defaults light.
       (function () {
         try {
           var t = localStorage.getItem("cerno-theme");
-          document.documentElement.classList.toggle("dark", t !== "light");
+          var def = location.pathname === "/" ? "dark" : "light";
+          var theme = t === "dark" || t === "light" ? t : def;
+          document.documentElement.classList.toggle("dark", theme === "dark");
         } catch (e) {}
       })();
     </script>
