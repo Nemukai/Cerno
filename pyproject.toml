@@ -67,8 +67,15 @@ python_version = "3.12"
 strict = true
 files = ["src"]
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires Docker and a pgvector-enabled Postgres container",
+]
+addopts = "-m 'not integration'"
+
 [dependency-groups]
 dev = [
     "pandas-stubs>=3.0.0.260204",
     "pytest==9.0.3",
+    "testcontainers[postgres]==4.14.2",
 ]
