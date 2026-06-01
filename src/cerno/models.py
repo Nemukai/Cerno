@@ -11,6 +11,9 @@ ProcessingEventKind = Literal[
     "queued",
     "uploading",
     "ingesting_file",
+    "reading_document",
+    "ocr_page",
+    "quality_review",
     "started",
     "loading_artifacts",
     "reading_files",
@@ -24,9 +27,11 @@ ProcessingEventKind = Literal[
     "done",
     "error",
 ]
-ProcessingJobKind = Literal["ingest_upload", "discovery"]
+ProcessingJobKind = Literal["ingest_upload", "ingest_document", "discovery"]
 ProcessingJobStatus = Literal["queued", "running", "succeeded", "failed"]
 UploadIntentStatus = Literal["pending", "uploaded", "processing", "processed", "failed"]
+DocumentStatus = Literal["processing", "processed", "failed"]
+DocumentPageSource = Literal["text_layer", "ocr", "ocr_retry"]
 InferredKind = Literal["string", "int", "float", "date", "datetime", "bool", "category"]
 LinkDirection = Literal["many_to_one", "one_to_one", "many_to_many"]
 WidgetKind = Literal[
@@ -66,6 +71,7 @@ MembershipStatus = Literal["active", "revoked"]
 InviteStatus = Literal["pending", "accepted", "revoked", "expired"]
 ContractStatus = Literal["trial", "active", "paused", "suspended", "archived"]
 SiteRole = Literal["user", "site_owner"]
+NumberSystem = Literal["international", "indian"]
 
 
 class Organization(BaseModel):
@@ -163,6 +169,7 @@ class User(BaseModel):
     access_status: AccessStatus = "pending"
     access_granted_at: datetime | None = None
     access_code_used: str | None = None
+    number_system: NumberSystem = "international"
     created_at: datetime
     last_seen_at: datetime
 
@@ -214,6 +221,54 @@ class File(BaseModel):
     description: str | None = None
     content_hash: str | None = None
     created_at: datetime
+
+
+class Document(BaseModel):
+    id: str
+    session_id: str
+    user_id: str
+    organization_id: str
+    filename: str
+    content_hash: str
+    page_count: int
+    status: DocumentStatus
+    created_at: datetime
+
+
+class DocumentPage(BaseModel):
+    id: str
+    document_id: str
+    page_number: int
+    source: DocumentPageSource
+    markdown: str
+    char_count: int
+    quality_score: float
+    low_confidence: bool
+    quality_reasons: list[str] = Field(default_factory=list)
+    image_object_key: str | None = None
+
+
+class DocumentChunk(BaseModel):
+    id: str
+    document_id: str
+    session_id: str
+    organization_id: str
+    chunk_index: int
+    text: str
+    heading_path: list[str] = Field(default_factory=list)
+    section_no: str | None = None
+    clause_no: str | None = None
+    page_number: int
+    start_char: int
+    end_char: int
+    low_confidence: bool = False
+    created_at: datetime
+
+
+class DocumentChunkSearchRow(BaseModel):
+    chunk: DocumentChunk
+    document_filename: str
+    rank: float = 0.0
 
 
 class SourceAsset(BaseModel):
@@ -315,6 +370,7 @@ class SchemaColumn(BaseModel):
     position: int
     column_id: str | None = None
     description: str | None = None
+    confidence_reason: str | None = None
 
 
 class FileSchema(BaseModel):
@@ -328,6 +384,8 @@ class DataDocColumn(BaseModel):
     dtype: str
     meaning: str
     role: str | None = None
+    confidence: float = 1.0
+    low_confidence_reasons: list[str] = Field(default_factory=list)
 
 
 class DataDocFile(BaseModel):
@@ -350,6 +408,8 @@ class DataDocRelationship(BaseModel):
     right_file_id: str
     right_column: str
     explanation: str
+    confidence: float = 1.0
+    low_confidence_reasons: list[str] = Field(default_factory=list)
 
 
 class DataDocGlossaryItem(BaseModel):

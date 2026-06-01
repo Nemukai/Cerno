@@ -16,6 +16,7 @@ from cerno.api.dashboards import router as dashboards_router
 from cerno.api.organizations import router as organizations_router
 from cerno.api.owner import router as owner_router
 from cerno.api.sessions import router as sessions_router
+from cerno.client_modules import configure_client_modules
 from cerno.config import get_settings
 from cerno.log_config import configure_logging
 
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings)
     settings.validate_runtime_safety()
+    configure_client_modules(settings)
     app = FastAPI(
         title="Cerno",
         version=__version__,

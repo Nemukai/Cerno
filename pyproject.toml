@@ -26,6 +26,11 @@ dependencies = [
     "boto3>=1.35",
     "urllib3==2.7.0",
     "psycopg[binary]>=3.2",
+    "charset-normalizer==3.4.7",
+    "ftfy==6.3.1",
+    "clevercsv==0.8.5",
+    "dateparser==1.4.0",
+    "pypdfium2==5.8.0",
 ]
 
 [project.optional-dependencies]
@@ -62,7 +67,15 @@ python_version = "3.12"
 strict = true
 files = ["src"]
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires Docker and a pgvector-enabled Postgres container",
+]
+addopts = "-m 'not integration'"
+
 [dependency-groups]
 dev = [
     "pandas-stubs>=3.0.0.260204",
+    "pytest==9.0.3",
+    "testcontainers[postgres]==4.14.2",
 ]

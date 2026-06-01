@@ -22,11 +22,13 @@ from cerno.models import (
     Widget,
     WorkspaceTable,
 )
+from cerno.providers import resolve_embedding_provider
 from cerno.repositories import (
     AssetArtifactRepository,
     ChatArtifactRepository,
     ChatRepository,
     DataDocRepository,
+    DocumentChunkRepository,
     FileRepository,
     SchemaRepository,
     WorkspaceTableRepository,
@@ -55,6 +57,15 @@ SYSTEM_PROMPT = (
     "Use read_schema_guide when you need to understand what the data contains, where "
     "fields live, caveats, relationships, or good ways to answer the user's question. "
     "Use list_tables and describe_table when you need exact dataframe columns. "
+    "For compliance, regulatory, contract, policy, or document cross-check questions, first use "
+    "search_regulations to retrieve relevant session documents, then use run_python to compute the "
+    "actual values from uploaded DataFrames. Cite the returned document/page/section/clause label for "
+    "every regulatory claim. Every number must come from run_python output, not from memory or mental math. "
+    "If a retrieved chunk has low_confidence, say it is based on a low-quality scan and should be verified. "
+    "If search_regulations returns no governing clause, say that no governing clause was found instead of inventing one. "
+    "When reporting a possible issue, use a compact structured finding: what was checked, cited clause/page, "
+    "computed value, verdict, and confidence. Chat tools are read-only; do not mutate schema, recast data, "
+    "or apply schema corrections from chat. "
     "When the answer benefits from a chart, KPI, or table, call render_widget before the final text — those "
     "widgets are shown directly in this chat. If the question is purely "
     "conversational and no widget is useful, just reply in text. "
@@ -93,6 +104,8 @@ async def run_chat_turn(
     chat_artifacts_repo: ChatArtifactRepository,
     artifacts_repo: AssetArtifactRepository,
     data_docs_repo: DataDocRepository,
+    user_id: str | None = None,
+    organization_id: str | None = None,
 ) -> ChatTurnResult:
     runtime = await _prepare_chat_runtime(
         session_id=session_id,
@@ -100,6 +113,8 @@ async def run_chat_turn(
         turn_id=turn_id,
         settings=settings,
         llm_client=llm_client,
+        user_id=user_id,
+        organization_id=organization_id,
         files_repo=files_repo,
         chat_repo=chat_repo,
         artifacts_repo=artifacts_repo,
@@ -198,6 +213,8 @@ async def stream_chat_turn(
     chat_artifacts_repo: ChatArtifactRepository,
     artifacts_repo: AssetArtifactRepository,
     data_docs_repo: DataDocRepository,
+    user_id: str | None = None,
+    organization_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     try:
         runtime = await _prepare_chat_runtime(
@@ -206,6 +223,8 @@ async def stream_chat_turn(
             turn_id=turn_id,
             settings=settings,
             llm_client=llm_client,
+            user_id=user_id,
+            organization_id=organization_id,
             files_repo=files_repo,
             chat_repo=chat_repo,
             artifacts_repo=artifacts_repo,
@@ -511,6 +530,8 @@ async def _prepare_chat_runtime(
     artifacts_repo: AssetArtifactRepository,
     data_docs_repo: DataDocRepository,
     schemas_repo: SchemaRepository,
+    user_id: str | None = None,
+    organization_id: str | None = None,
 ) -> ChatRuntime:
     turn = chat_repo.get_turn(turn_id) if turn_id else None
     if turn is not None and turn.session_id != session_id:
@@ -582,6 +603,20 @@ async def _prepare_chat_runtime(
         session_id=session_id,
         tables=tables,
         data_doc=data_doc,
+        organization_id=organization_id,
+        user_id=user_id,
+        settings=settings,
+        regulation_search_store=(
+            DocumentChunkRepository(files_repo.conn)
+            if user_id is not None and organization_id is not None
+            else None
+        ),
+        embedding_provider=(
+            resolve_embedding_provider(settings)
+            if user_id is not None and organization_id is not None
+            else None
+        ),
+        llm_client=_with_llm_context(llm_client, session_id=session_id, turn_id=turn.id),
     )
     return ChatRuntime(
         turn=turn,

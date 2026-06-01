@@ -176,6 +176,8 @@ async def post_chat(
             chat_artifacts_repo=ChatArtifactRepository(conn),
             artifacts_repo=AssetArtifactRepository(conn),
             data_docs_repo=DataDocRepository(conn),
+            user_id=user.id,
+            organization_id=organization.id,
         )
     except Exception as exc:
         AnalyticsRepository(conn, auto_commit=True).record_product_event(
@@ -250,6 +252,8 @@ async def stream_chat(
                 chat_artifacts_repo=ChatArtifactRepository(conn),
                 artifacts_repo=AssetArtifactRepository(conn),
                 data_docs_repo=DataDocRepository(conn),
+                user_id=user.id,
+                organization_id=organization.id,
             ):
                 event_name = str(event.get("type") or "message")
                 event_turn_id = str(event.get("turn_id") or "")

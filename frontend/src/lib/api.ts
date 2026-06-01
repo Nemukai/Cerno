@@ -3,6 +3,8 @@ import type {
   ChatFeedTurn,
   ChatTurn,
   DataDoc,
+  DocumentDetail,
+  DocumentRecord,
   DiscoveredFile,
   DiscoveredLink,
   DiscoveryResponse,
@@ -14,6 +16,8 @@ import type {
   OrganizationMemberBody,
   ProcessingEvent,
   ProcessingJobResponse,
+  SchemaCorrectionApplyResponse,
+  SchemaCorrectionPatch,
   Session,
   WorkspaceResponse,
 } from "./types";
@@ -226,6 +230,19 @@ export function listFiles(sessionId: string): Promise<FileRecord[]> {
   return request<FileRecord[]>(`/sessions/${sessionId}/files`);
 }
 
+export function listDocuments(sessionId: string): Promise<DocumentRecord[]> {
+  return request<DocumentRecord[]>(`/sessions/${sessionId}/documents`);
+}
+
+export function getDocument(
+  sessionId: string,
+  documentId: string,
+): Promise<DocumentDetail> {
+  return request<DocumentDetail>(
+    `/sessions/${sessionId}/documents/${documentId}`,
+  );
+}
+
 export async function deleteFile(fileId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/files/${fileId}`, { method: "DELETE" });
   if (!res.ok && res.status !== 204) {
@@ -262,6 +279,27 @@ export function approveSchema(
   return postJson<DiscoveryResponse>(
     `/sessions/${sessionId}/approve-schema`,
     body,
+  );
+}
+
+export function interpretSchemaCorrection(
+  sessionId: string,
+  instruction: string,
+): Promise<SchemaCorrectionPatch> {
+  return postJson<SchemaCorrectionPatch>(
+    `/sessions/${sessionId}/schema/interpret-correction`,
+    { instruction },
+  );
+}
+
+export function applySchemaCorrection(
+  sessionId: string,
+  patch: SchemaCorrectionPatch,
+  approvedOpIds: string[] = [],
+): Promise<SchemaCorrectionApplyResponse> {
+  return postJson<SchemaCorrectionApplyResponse>(
+    `/sessions/${sessionId}/schema/apply-correction`,
+    { patch, approved_op_ids: approvedOpIds },
   );
 }
 

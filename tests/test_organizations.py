@@ -25,6 +25,7 @@ def _make_conn() -> sqlite3.Connection:
             access_status TEXT NOT NULL DEFAULT 'pending',
             access_granted_at TEXT,
             access_code_used TEXT,
+            number_system TEXT NOT NULL DEFAULT 'international',
             created_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL
         )

@@ -13,10 +13,13 @@ from cerno.db import DbConnection, connect
 from cerno.llm import LLMClient, LLMTokenBudget
 from cerno.log_config import configure_logging
 from cerno.models import ProcessingJob
+from cerno.providers import resolve_embedding_provider, resolve_ocr_engine
 from cerno.repositories import (
     AnalyticsRepository,
     AssetArtifactRepository,
     DataDocRepository,
+    DocumentChunkRepository,
+    DocumentRepository,
     FileRepository,
     LinkRepository,
     LLMUsageRepository,
@@ -30,6 +33,8 @@ from cerno.repositories import (
     WorkspaceTableRepository,
 )
 from cerno.services.discovery import DiscoveryError, run_discovery
+from cerno.services.document_ingest import ingest_document
+from cerno.services.document_search import index_document_chunks
 from cerno.services.ingest import hash_file, ingest_file
 from cerno.storage import get_object_store
 
@@ -256,6 +261,197 @@ async def _run_ingest_upload(settings: Settings, job: ProcessingJob, worker_id: 
         conn.close()
 
 
+async def _run_ingest_document(settings: Settings, job: ProcessingJob, worker_id: str) -> None:
+    conn = connect(settings)
+    object_store = get_object_store(settings)
+    try:
+        jobs_repo = ProcessingJobRepository(conn)
+        events_repo = ProcessingEventRepository(conn)
+        sessions_repo = SessionRepository(conn)
+        intents_repo = UploadIntentRepository(conn)
+        intent_id = job.checkpoint_json.get("upload_intent_id")
+        if not isinstance(intent_id, str):
+            raise RuntimeError("document ingest job missing upload_intent_id")
+        intent = intents_repo.get(intent_id, user_id=job.user_id)
+        if intent is None:
+            raise RuntimeError(f"upload intent not found: {intent_id}")
+        organization_id = job.organization_id
+        if organization_id is None:
+            raise RuntimeError("document ingest requires organization_id")
+
+        intents_repo.mark_processing(intent.id)
+        sessions_repo.set_status(job.session_id, "ingesting")
+        _append_event(
+            events_repo,
+            job=job,
+            kind="reading_document",
+            step_key="loading_artifacts",
+            progress=10,
+            message=f"loading {intent.original_filename} from R2",
+        )
+        conn.commit()
+
+        local_path = settings.object_cache_path(intent.object_key)
+        object_store.get_to_path(intent.object_key, local_path)
+        jobs_repo.heartbeat(
+            job_id=job.id,
+            worker_id=worker_id,
+            checkpoint_json={**job.checkpoint_json, "phase": "downloaded_document"},
+            lock_seconds=settings.worker_lock_seconds,
+        )
+        conn.commit()
+
+        def progress(
+            kind: str,
+            step_key: str,
+            message: str,
+            progress_value: int,
+            details: dict[str, object] | None,
+        ) -> None:
+            event_details = dict(details or {})
+            level = str(event_details.pop("level", "info"))
+            _append_event(
+                events_repo,
+                job=job,
+                kind=kind,
+                step_key=step_key,
+                progress=progress_value,
+                message=message,
+                level=level,
+                details=event_details,
+            )
+            jobs_repo.heartbeat(
+                job_id=job.id,
+                worker_id=worker_id,
+                checkpoint_json={
+                    **job.checkpoint_json,
+                    "phase": step_key,
+                    "progress": progress_value,
+                },
+                lock_seconds=settings.worker_lock_seconds,
+            )
+            conn.commit()
+
+        ocr_client = LLMClient(settings=settings).with_usage(
+            LLMUsageRepository(conn, auto_commit=True),
+            job.user_id,
+            organization_id=organization_id,
+            token_budget=_llm_budget(settings, conn, job),
+            metadata={"session_id": job.session_id, "job_id": job.id, "kind": "ocr"},
+        )
+        ingested = await ingest_document(
+            source_path=Path(local_path),
+            original_filename=intent.original_filename,
+            original_content_type=intent.mime_type,
+            original_size_bytes=intent.observed_size_bytes or intent.expected_size_bytes,
+            user_id=job.user_id,
+            organization_id=organization_id,
+            session_id=job.session_id,
+            settings=settings,
+            documents_repo=DocumentRepository(conn),
+            source_assets_repo=SourceAssetRepository(conn),
+            workspace_assets_repo=WorkspaceAssetRepository(conn),
+            artifacts_repo=AssetArtifactRepository(conn),
+            object_store=object_store,
+            ocr_engine=resolve_ocr_engine(settings),
+            llm_client=ocr_client,
+            progress=progress,
+        )
+        _append_event(
+            events_repo,
+            job=job,
+            kind="reading_document",
+            step_key="embedding_chunks",
+            progress=97,
+            message=f"embedding {len(ingested.pages)} document page(s)",
+        )
+        jobs_repo.heartbeat(
+            job_id=job.id,
+            worker_id=worker_id,
+            checkpoint_json={**job.checkpoint_json, "phase": "embedding_chunks", "progress": 97},
+            lock_seconds=settings.worker_lock_seconds,
+        )
+        await index_document_chunks(
+            document=ingested.document,
+            pages=ingested.pages,
+            chunk_repo=DocumentChunkRepository(conn),
+            embedding_provider=resolve_embedding_provider(settings),
+            settings=settings,
+            llm_client=LLMClient(settings=settings).with_usage(
+                LLMUsageRepository(conn, auto_commit=True),
+                job.user_id,
+                organization_id=organization_id,
+                token_budget=_llm_budget(settings, conn, job),
+                metadata={"session_id": job.session_id, "job_id": job.id, "kind": "embedding"},
+            ),
+        )
+        content_hash = hash_file(Path(local_path))
+        source_asset = SourceAssetRepository(conn).get_by_hash(
+            job.user_id,
+            content_hash,
+            organization_id=organization_id,
+        )
+        intents_repo.mark_processed(
+            intent.id,
+            source_asset_id=source_asset.id if source_asset is not None else None,
+        )
+        sessions_repo.set_status(job.session_id, "new")
+        jobs_repo.mark_succeeded(job.id)
+        AnalyticsRepository(conn).record_product_event(
+            event_name="processing_job_completed",
+            organization_id=job.organization_id,
+            user_id=job.user_id,
+            session_id=job.session_id,
+            metric_value=float(_job_duration_ms(job)),
+            metadata={
+                "kind": "ingest_document",
+                "job_id": job.id,
+                "document_id": ingested.document.id,
+                "page_count": len(ingested.pages),
+                "truncated": ingested.truncated,
+            },
+        )
+        conn.commit()
+        try:
+            object_store.delete(intent.object_key)
+        except Exception:
+            logger.warning(
+                "event=document_upload_staging.delete_failed user_id=%s session_id=%s job_id=%s object_key=%s",
+                job.user_id,
+                job.session_id,
+                job.id,
+                intent.object_key,
+            )
+    except Exception as exc:
+        conn.rollback()
+        try:
+            intent_id = job.checkpoint_json.get("upload_intent_id")
+            if isinstance(intent_id, str):
+                UploadIntentRepository(conn).mark_failed(intent_id, str(exc))
+            SessionRepository(conn).set_status(job.session_id, "new")
+            ProcessingJobRepository(conn).mark_failed(job.id, str(exc))
+            _append_event(
+                ProcessingEventRepository(conn),
+                job=job,
+                kind="error",
+                step_key="error",
+                level="error",
+                progress=100,
+                message=f"Document ingest failed: {exc}",
+            )
+            conn.commit()
+        finally:
+            logger.exception(
+                "event=processing.failed user_id=%s session_id=%s job_id=%s kind=ingest_document",
+                job.user_id,
+                job.session_id,
+                job.id,
+            )
+        raise
+    finally:
+        conn.close()
+
+
 async def _run_discovery(settings: Settings, job: ProcessingJob) -> None:
     conn = connect(settings)
     try:
@@ -351,6 +547,9 @@ def _mark_discovery_failed(conn: DbConnection, job: ProcessingJob, message: str)
 async def _process_job(settings: Settings, job: ProcessingJob, worker_id: str) -> None:
     if job.kind == "ingest_upload":
         await _run_ingest_upload(settings, job, worker_id)
+        return
+    if job.kind == "ingest_document":
+        await _run_ingest_document(settings, job, worker_id)
         return
     if job.kind == "discovery":
         await _run_discovery(settings, job)

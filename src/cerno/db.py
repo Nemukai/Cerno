@@ -9,7 +9,9 @@ from typing import Any
 
 from cerno.config import Settings
 
-POSTGRES_SCHEMA_VERSION = 10
+POSTGRES_SCHEMA_VERSION = 14
+_PGVECTOR_EXTENSION_MARKER = "__cerno_create_pgvector_extension__"
+_DOCUMENT_CHUNKS_TABLE_MARKER = "__cerno_create_document_chunks_table__"
 
 
 class DbRow:
@@ -94,7 +96,7 @@ def connect_postgres(settings: Settings) -> PostgresCompatConnection:
 
     conn = psycopg.connect(settings.postgres_url, row_factory=dict_row)
     wrapped = PostgresCompatConnection(conn)
-    _apply_postgres_migrations(wrapped)
+    _apply_postgres_migrations(wrapped, settings)
     return wrapped
 
 
@@ -122,7 +124,7 @@ def _maybe_add_lastrowid_returning(sql: str) -> tuple[str, bool]:
     return sql, False
 
 
-def _apply_postgres_migrations(conn: PostgresCompatConnection) -> None:
+def _apply_postgres_migrations(conn: PostgresCompatConnection, settings: Settings) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS cerno_schema_migrations (
@@ -134,8 +136,9 @@ def _apply_postgres_migrations(conn: PostgresCompatConnection) -> None:
     row = conn.execute("SELECT max(version) AS version FROM cerno_schema_migrations").fetchone()
     current = int(row["version"] or 0) if row else 0
     if current == 0:
+        _ensure_pgvector_extension(conn)
         for statement in _POSTGRES_SCHEMA:
-            conn.execute(statement)
+            _execute_schema_statement(conn, statement, settings)
         conn.execute(
             "INSERT INTO cerno_schema_migrations (version, applied_at) VALUES (%s, %s)",
             (1, datetime.now().isoformat()),
@@ -145,12 +148,63 @@ def _apply_postgres_migrations(conn: PostgresCompatConnection) -> None:
         if version <= current:
             continue
         for statement in _POSTGRES_MIGRATIONS[version]:
-            conn.execute(statement)
+            _execute_schema_statement(conn, statement, settings)
         conn.execute(
             "INSERT INTO cerno_schema_migrations (version, applied_at) VALUES (%s, %s)",
             (version, datetime.now().isoformat()),
         )
     conn.commit()
+
+
+def _execute_schema_statement(
+    conn: PostgresCompatConnection,
+    statement: str,
+    settings: Settings,
+) -> None:
+    if statement == _PGVECTOR_EXTENSION_MARKER:
+        _ensure_pgvector_extension(conn)
+        return
+    if statement == _DOCUMENT_CHUNKS_TABLE_MARKER:
+        conn.execute(_document_chunks_table_sql(settings.processing.embedding.dimension))
+        return
+    conn.execute(statement)
+
+
+def _ensure_pgvector_extension(conn: PostgresCompatConnection) -> None:
+    try:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    except Exception as exc:
+        raise RuntimeError(
+            "Cerno document search requires the Postgres pgvector extension. "
+            "Grant this database role permission to run `CREATE EXTENSION vector`, "
+            "or install pgvector as a database owner before starting Cerno."
+        ) from exc
+
+
+def _document_chunks_table_sql(dimension: int) -> str:
+    if dimension < 1:
+        raise RuntimeError("embedding dimension must be a positive integer")
+    return f"""
+        CREATE TABLE IF NOT EXISTS document_chunks (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            chunk_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            heading_path TEXT NOT NULL DEFAULT '[]',
+            section_no TEXT,
+            clause_no TEXT,
+            page_number INTEGER NOT NULL,
+            start_char INTEGER NOT NULL,
+            end_char INTEGER NOT NULL,
+            low_confidence BOOLEAN NOT NULL DEFAULT FALSE,
+            embedding vector({dimension}),
+            tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+            created_at TEXT NOT NULL,
+            UNIQUE(document_id, chunk_index)
+        )
+        """
 
 
 _POSTGRES_MIGRATIONS = {
@@ -552,6 +606,54 @@ _POSTGRES_MIGRATIONS = {
           ) = 1
         """,
     ],
+    11: [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS number_system TEXT NOT NULL DEFAULT 'international'",
+    ],
+    12: [
+        "ALTER TABLE schema_columns ADD COLUMN IF NOT EXISTS confidence_reason TEXT",
+    ],
+    13: [
+        """
+        CREATE TABLE IF NOT EXISTS documents (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            page_count INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(session_id, content_hash)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_documents_session ON documents(session_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_org ON documents(organization_id, created_at)",
+        """
+        CREATE TABLE IF NOT EXISTS document_pages (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            page_number INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            markdown TEXT NOT NULL,
+            char_count INTEGER NOT NULL,
+            quality_score DOUBLE PRECISION NOT NULL,
+            low_confidence BOOLEAN NOT NULL DEFAULT FALSE,
+            quality_reasons TEXT NOT NULL DEFAULT '[]',
+            image_object_key TEXT,
+            UNIQUE(document_id, page_number)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_document_pages_document ON document_pages(document_id, page_number)",
+        "CREATE INDEX IF NOT EXISTS idx_document_pages_low_confidence ON document_pages(document_id, low_confidence)",
+    ],
+    14: [
+        _PGVECTOR_EXTENSION_MARKER,
+        _DOCUMENT_CHUNKS_TABLE_MARKER,
+        "CREATE INDEX IF NOT EXISTS idx_document_chunks_session_org ON document_chunks(organization_id, session_id, document_id)",
+        "CREATE INDEX IF NOT EXISTS idx_document_chunks_tsv ON document_chunks USING GIN (tsv)",
+        "CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding ON document_chunks USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL",
+    ],
 }
 
 
@@ -566,6 +668,7 @@ _POSTGRES_SCHEMA = [
         access_status TEXT NOT NULL DEFAULT 'pending',
         access_granted_at TEXT,
         access_code_used TEXT,
+        number_system TEXT NOT NULL DEFAULT 'international',
         created_at TEXT NOT NULL,
         last_seen_at TEXT NOT NULL
     )
@@ -579,6 +682,16 @@ _POSTGRES_SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_approved_emails_email ON approved_emails(email)",
+    """
+    CREATE TABLE IF NOT EXISTS organizations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT UNIQUE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -611,6 +724,43 @@ _POSTGRES_SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_files_session ON files(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_files_session_hash ON files(session_id, content_hash)",
     """
+    CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        filename TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        page_count INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(session_id, content_hash)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_documents_session ON documents(session_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_documents_org ON documents(organization_id, created_at)",
+    """
+    CREATE TABLE IF NOT EXISTS document_pages (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        page_number INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        markdown TEXT NOT NULL,
+        char_count INTEGER NOT NULL,
+        quality_score DOUBLE PRECISION NOT NULL,
+        low_confidence BOOLEAN NOT NULL DEFAULT FALSE,
+        quality_reasons TEXT NOT NULL DEFAULT '[]',
+        image_object_key TEXT,
+        UNIQUE(document_id, page_number)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_document_pages_document ON document_pages(document_id, page_number)",
+    "CREATE INDEX IF NOT EXISTS idx_document_pages_low_confidence ON document_pages(document_id, low_confidence)",
+    _DOCUMENT_CHUNKS_TABLE_MARKER,
+    "CREATE INDEX IF NOT EXISTS idx_document_chunks_session_org ON document_chunks(organization_id, session_id, document_id)",
+    "CREATE INDEX IF NOT EXISTS idx_document_chunks_tsv ON document_chunks USING GIN (tsv)",
+    "CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding ON document_chunks USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL",
+    """
     CREATE TABLE IF NOT EXISTS schema_columns (
         id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
         file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -622,6 +772,7 @@ _POSTGRES_SCHEMA = [
         position INTEGER NOT NULL,
         column_id TEXT,
         description TEXT,
+        confidence_reason TEXT,
         UNIQUE(file_id, schema_version, name)
     )
     """,

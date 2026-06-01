@@ -43,6 +43,9 @@ class ObjectStore:
     ) -> str:
         raise NotImplementedError
 
+    def presigned_get_url(self, object_key: str, *, expires_seconds: int) -> str:
+        raise NotImplementedError
+
 
 class R2ObjectStore(ObjectStore):
     backend = "r2"
@@ -119,6 +122,16 @@ class R2ObjectStore(ObjectStore):
             ),
         )
 
+    def presigned_get_url(self, object_key: str, *, expires_seconds: int) -> str:
+        return cast(
+            str,
+            self.client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": object_key},
+                ExpiresIn=expires_seconds,
+            ),
+        )
+
 
 def get_object_store(settings: Settings) -> ObjectStore:
     if settings.use_r2():
@@ -144,3 +157,18 @@ def raw_artifact_key(user_id: str, asset_id: str, file_id: str) -> str:
 
 def processed_artifact_key(user_id: str, session_id: str, file_id: str, schema_version: int) -> str:
     return f"users/{user_id}/sessions/{session_id}/tables/{file_id}/processed-v{schema_version}.parquet"
+
+
+def document_page_image_key(
+    user_id: str,
+    session_id: str,
+    document_id: str,
+    page_number: int,
+    *,
+    retry: bool = False,
+) -> str:
+    suffix = "retry" if retry else "initial"
+    return (
+        f"users/{user_id}/sessions/{session_id}/documents/{document_id}/"
+        f"pages/{page_number:04d}-{suffix}.png"
+    )

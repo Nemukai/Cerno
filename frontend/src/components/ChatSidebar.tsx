@@ -4,12 +4,14 @@ import type {
   ChatMessage,
   ChatTurn,
   DataDoc,
+  DocumentRecord,
   DiscoveryResponse,
   DiscoveryStatus,
   FileRecord,
   Widget,
 } from "../lib/types";
 import { WidgetRenderer } from "./WidgetRenderer";
+import type { DocumentTarget } from "./DocumentViewer";
 
 type Props = {
   turns: ChatTurn[];
@@ -17,6 +19,7 @@ type Props = {
   artifactsByTurn: Record<string, ChatArtifact[]>;
   activeTurnId: string | null;
   files: FileRecord[];
+  documents: DocumentRecord[];
   discovery: DiscoveryResponse | null;
   dataDoc: DataDoc | null;
   discoveryStatus: DiscoveryStatus;
@@ -25,6 +28,7 @@ type Props = {
   liveChat: LiveChatState | null;
   onSend: (message: string) => void;
   onOpenInsights: () => void;
+  onOpenDocumentCitation?: (target: DocumentTarget) => void;
 };
 
 type LiveChatState = {
@@ -47,11 +51,13 @@ export function ChatSidebar({
   messagesByTurn,
   artifactsByTurn,
   activeTurnId,
+  documents,
   dataDoc,
   disabled,
   sending,
   liveChat,
   onSend,
+  onOpenDocumentCitation,
 }: Props) {
   const [input, setInput] = useState("");
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
@@ -171,6 +177,7 @@ export function ChatSidebar({
                     messages,
                     traceItems,
                   );
+                  const references = regulationReferencesFromTrace(assistantTraceItems);
                   const assistantWidgets = widgetArtifactsForMessage(
                     message,
                     messages,
@@ -186,6 +193,13 @@ export function ChatSidebar({
                         />
                       ) : null}
                       <AssistantBubble text={message.content} />
+                      {references.length > 0 ? (
+                        <RegulationReferences
+                          references={references}
+                          documents={documents}
+                          onOpenDocumentCitation={onOpenDocumentCitation}
+                        />
+                      ) : null}
                       {assistantWidgets.length > 0 ? (
                         <WidgetGrid
                           widgets={assistantWidgets.map((item) => item.widget)}
@@ -200,7 +214,13 @@ export function ChatSidebar({
           })
         )}
 
-        {showLiveChat && liveChat ? <LiveChatBlock liveChat={liveChat} /> : null}
+        {showLiveChat && liveChat ? (
+          <LiveChatBlock
+            liveChat={liveChat}
+            documents={documents}
+            onOpenDocumentCitation={onOpenDocumentCitation}
+          />
+        ) : null}
         {!showLiveChat && pendingMessage && sending ? (
           <LiveChatBlock
             liveChat={{
@@ -211,6 +231,8 @@ export function ChatSidebar({
               tools: [],
               error: null,
             }}
+            documents={documents}
+            onOpenDocumentCitation={onOpenDocumentCitation}
           />
         ) : null}
       </div>
@@ -395,6 +417,147 @@ function WidgetGrid({
   );
 }
 
+type RegulationReference = {
+  key: string;
+  documentId: string | null;
+  document: string;
+  page: number | null;
+  label: string;
+  sectionNo: string | null;
+  clauseNo: string | null;
+  lowConfidence: boolean;
+  text: string;
+};
+
+function RegulationReferences({
+  references,
+  documents,
+  onOpenDocumentCitation,
+}: {
+  references: RegulationReference[];
+  documents: DocumentRecord[];
+  onOpenDocumentCitation?: (target: DocumentTarget) => void;
+}) {
+  const uniqueReferences = uniqueRegulationReferences(references);
+  if (uniqueReferences.length === 0) return null;
+
+  return (
+    <div className="mb-4 mt-2 max-w-3xl border border-border bg-card">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div className="small-caps text-[10px] text-muted-foreground">regulation references</div>
+        <div className="font-mono text-[10px] text-muted-foreground/70">
+          {uniqueReferences.length}
+        </div>
+      </div>
+      <div className="grid gap-2 p-2">
+        {uniqueReferences.map((reference) => {
+          const documentId =
+            reference.documentId ??
+            documents.find((document) => document.filename === reference.document)?.id ??
+            null;
+          const canOpen = Boolean(documentId && onOpenDocumentCitation);
+          return (
+            <button
+              key={reference.key}
+              type="button"
+              disabled={!canOpen}
+              onClick={() => {
+                if (!documentId || !onOpenDocumentCitation) return;
+                onOpenDocumentCitation({
+                  documentId,
+                  pageNumber: reference.page ?? undefined,
+                });
+              }}
+              className="border border-border bg-background px-3 py-2 text-left transition hover:border-primary disabled:cursor-default disabled:hover:border-border"
+            >
+              <span className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs text-foreground">
+                  {reference.label}
+                </span>
+                {reference.lowConfidence ? (
+                  <span className="border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+                    low-quality scan
+                  </span>
+                ) : null}
+              </span>
+              {reference.text ? (
+                <span className="mt-1 line-clamp-2 block text-xs leading-5 text-muted-foreground">
+                  {reference.text}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function regulationReferencesFromTrace(items: TraceItem[]): RegulationReference[] {
+  return items.flatMap((item) => referencesFromToolResult(item.result?.tool_result));
+}
+
+function regulationReferencesFromLiveTools(tools: LiveChatState["tools"]): RegulationReference[] {
+  return tools.flatMap((tool) =>
+    tool.name === "search_regulations" ? referencesFromToolResult(tool.result) : [],
+  );
+}
+
+function referencesFromToolResult(result: Record<string, unknown> | null | undefined): RegulationReference[] {
+  if (!result || result.ok !== true || !Array.isArray(result.chunks)) return [];
+  return result.chunks.flatMap((chunk, index) => {
+    if (!chunk || typeof chunk !== "object") return [];
+    const candidate = chunk as Record<string, unknown>;
+    const citation = candidate.citation;
+    if (!citation || typeof citation !== "object") return [];
+    const citationRecord = citation as Record<string, unknown>;
+    const document = stringValue(citationRecord.document) || "Document";
+    const label =
+      stringValue(citationRecord.label) ||
+      [document, numberValue(citationRecord.page) ? `page ${numberValue(citationRecord.page)}` : ""]
+        .filter(Boolean)
+        .join(", ");
+    return [
+      {
+        key: `${stringValue(citationRecord.document_id) ?? document}:${numberValue(citationRecord.page) ?? index}:${label}`,
+        documentId: stringValue(citationRecord.document_id),
+        document,
+        page: numberValue(citationRecord.page),
+        label,
+        sectionNo: stringValue(citationRecord.section_no),
+        clauseNo: stringValue(citationRecord.clause_no),
+        lowConfidence: candidate.low_confidence === true,
+        text: stringValue(candidate.text) ?? "",
+      },
+    ];
+  });
+}
+
+function uniqueRegulationReferences(references: RegulationReference[]) {
+  const seen = new Set<string>();
+  const unique: RegulationReference[] = [];
+  for (const reference of references) {
+    const key = reference.key;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(reference);
+  }
+  return unique;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function fallbackMessages(turn: ChatTurn): ChatMessage[] {
   const messages: ChatMessage[] = [
     {
@@ -446,9 +609,18 @@ function AssistantBubble({ text }: { text: string }) {
   );
 }
 
-function LiveChatBlock({ liveChat }: { liveChat: LiveChatState }) {
+function LiveChatBlock({
+  liveChat,
+  documents,
+  onOpenDocumentCitation,
+}: {
+  liveChat: LiveChatState;
+  documents: DocumentRecord[];
+  onOpenDocumentCitation?: (target: DocumentTarget) => void;
+}) {
   const [traceOpen, setTraceOpen] = useState(false);
   const hasTrace = Boolean(liveChat.reasoningText.trim()) || liveChat.tools.length > 0;
+  const references = regulationReferencesFromLiveTools(liveChat.tools);
 
   return (
     <div className="border-border border-b py-4">
@@ -472,6 +644,13 @@ function LiveChatBlock({ liveChat }: { liveChat: LiveChatState }) {
       ) : hasTrace ? null : (
         <ThinkingIndicator />
       )}
+      {references.length > 0 ? (
+        <RegulationReferences
+          references={references}
+          documents={documents}
+          onOpenDocumentCitation={onOpenDocumentCitation}
+        />
+      ) : null}
     </div>
   );
 }
