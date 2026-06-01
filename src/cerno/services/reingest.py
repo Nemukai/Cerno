@@ -59,6 +59,7 @@ class ColumnSpec:
     name: str
     dtype: str
     description: str
+    scale_factor: float = 1.0
 
 
 @dataclass
@@ -189,6 +190,7 @@ def reingest_file(
     if not spec.columns:
         logger.warning("skipping reingest for %s: no columns in spec", file_id)
         return
+    schema_version = files_repo.bump_schema_version(file.id)
 
     raw_path = ensure_file_artifact_cached(
         file=file,
@@ -231,6 +233,8 @@ def reingest_file(
         for i, col in enumerate(spec.columns):
             name = column_names[i]
             casted = _cast_column_with_metadata(frame[name], col.dtype)
+            if col.scale_factor != 1.0:
+                casted = _scale_casted_column(casted, col.scale_factor)
             casted_columns[name] = casted
             frame = frame.with_columns(casted.series.alias(name))
 
@@ -238,7 +242,7 @@ def reingest_file(
     processed_path.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(processed_path)
     processed_artifact_id: str | None = None
-    key = processed_artifact_key(user_id, file.session_id, file.id, file.schema_version)
+    key = processed_artifact_key(user_id, file.session_id, file.id, schema_version)
     stored = object_store.put_path(
         processed_path,
         key,
@@ -269,7 +273,7 @@ def reingest_file(
     tables_repo.set_processed_artifact(
         legacy_file_id=file.id,
         artifact_id=processed_artifact_id,
-        schema_version=file.schema_version,
+        schema_version=schema_version,
         row_count=frame.height,
     )
 
@@ -287,7 +291,7 @@ def reingest_file(
         schema_columns.append(
             SchemaColumn(
                 file_id=file.id,
-                schema_version=file.schema_version,
+                schema_version=schema_version,
                 name=name,
                 dtype=str(frame.schema[name]),
                 inferred_kind=casted.inferred_kind,
@@ -299,10 +303,23 @@ def reingest_file(
         )
     schema = FileSchema(
         file_id=file.id,
-        schema_version=file.schema_version,
+        schema_version=schema_version,
         columns=schema_columns,
     )
     schemas_repo.replace(schema)
+
+
+def _scale_casted_column(casted: CastedColumn, scale_factor: float) -> CastedColumn:
+    if casted.inferred_kind not in {"int", "float"}:
+        return CastedColumn(casted.series, casted.inferred_kind, min(casted.confidence, 0.5))
+    scaled = casted.series.cast(pl.Float64, strict=False) * scale_factor
+    if casted.inferred_kind == "int" and float(scale_factor).is_integer():
+        return CastedColumn(
+            scaled.round(0).cast(pl.Int64, strict=False).alias(casted.series.name),
+            "int",
+            casted.confidence,
+        )
+    return CastedColumn(scaled.alias(casted.series.name), "float", casted.confidence)
 
 
 def apply_approval(
