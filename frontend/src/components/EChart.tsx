@@ -15,9 +15,14 @@ export function EChart({ option, height = 240, onClick }: Props) {
     if (!ref.current) return;
     const chart = echarts.init(ref.current, null, { renderer: "canvas" });
     chartRef.current = chart;
-    const observer = new ResizeObserver(() => chart.resize());
+    let resizeTimer: number | undefined;
+    const observer = new ResizeObserver(() => {
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => chart.resize(), 120);
+    });
     observer.observe(ref.current);
     return () => {
+      window.clearTimeout(resizeTimer);
       observer.disconnect();
       chart.dispose();
       chartRef.current = null;
@@ -25,8 +30,17 @@ export function EChart({ option, height = 240, onClick }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!chartRef.current) return;
-    chartRef.current.setOption(option, true);
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.setOption(option, true);
+    // Re-apply after the browser has settled the container size. Layout-based
+    // series (e.g. graph) compute absolute positions at setOption time, so a
+    // stale width on first paint would otherwise pin them to a corner.
+    const raf = requestAnimationFrame(() => {
+      chart.resize();
+      chart.setOption(option, true);
+    });
+    return () => cancelAnimationFrame(raf);
   }, [option]);
 
   useEffect(() => {

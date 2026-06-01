@@ -344,7 +344,7 @@ def _json_safe_list(values: list[Any]) -> list[Any]:
     return [_json_safe(value) for value in values]
 
 
-def _preview_value(value: Any, *, max_rows: int = 20) -> tuple[str, dict[str, Any] | None]:
+def _preview_value(value: Any, *, max_rows: int = 12) -> tuple[str, dict[str, Any] | None]:
     if isinstance(value, pd.DataFrame):
         head = value.head(max_rows).astype(object)
         rows = [_json_safe_list(list(row)) for row in head.values.tolist()]

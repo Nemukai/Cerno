@@ -128,7 +128,16 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
             caption=args.get("caption"),
         )
         ctx.rendered_widgets.append(widget)
-        return {"widget": widget.model_dump()}
+        data = args["data"]
+        data_points = len(data) if isinstance(data, (list, dict)) else None
+        return {
+            "ok": True,
+            "rendered": True,
+            "kind": str(getattr(widget.kind, "value", widget.kind)),
+            "title": widget.title,
+            "data_points": data_points,
+            "message": "Widget rendered and shown to the user. Do not repeat its data in your reply.",
+        }
 
     async def read_schema_guide(_args: dict[str, Any]) -> dict[str, Any]:
         if ctx.data_doc is None:
@@ -143,7 +152,10 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
             }
         return {
             "ok": True,
-            "schema_guide": ctx.data_doc.model_dump(mode="json"),
+            "schema_guide": ctx.data_doc.model_dump(
+                mode="json",
+                exclude={"starter_questions", "created_at", "updated_at"},
+            ),
             "available_tables": available_table_names,
         }
 

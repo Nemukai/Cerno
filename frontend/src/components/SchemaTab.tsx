@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { EChart } from "./EChart";
+import { useTheme } from "@/lib/theme";
 import {
   applySchemaCorrection,
   getFilePreview,
@@ -1327,9 +1328,10 @@ function RelationshipDiagram({
   linkStats: Map<string, LinkStat>;
   onSelectFile: (fileId: string) => void;
 }) {
+  const { theme } = useTheme();
   const option = useMemo(
     () => buildRelationshipGraphOption(files, links, fileNameMap, linkStats),
-    [files, links, fileNameMap, linkStats],
+    [files, links, fileNameMap, linkStats, theme],
   );
   const handleGraphClick = (params: Record<string, unknown>) => {
     if (params.dataType !== "node") return;
@@ -2429,12 +2431,28 @@ type GraphFormatterParam = {
   };
 };
 
+// ECharts' canvas renderer cannot resolve CSS custom properties like
+// `hsl(var(--primary))`, so it falls back to black. Read the computed HSL
+// triplet from the document and wrap it into a concrete color string.
+function cssHsl(name: string, fallback: string): string {
+  if (typeof document === "undefined") return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value ? `hsl(${value})` : fallback;
+}
+
 function buildRelationshipGraphOption(
   files: DiscoveredFile[],
   links: DiscoveredLink[],
   fileNameMap: Map<string, string>,
   linkStats: Map<string, LinkStat>,
 ): Record<string, unknown> {
+  const primary = cssHsl("--primary", "#6E66C9");
+  const destructive = cssHsl("--destructive", "#e0492f");
+  const border = cssHsl("--border", "#cfc9e6");
+  const foreground = cssHsl("--foreground", "#15131c");
+  const mutedForeground = cssHsl("--muted-foreground", "#6b6680");
+  const card = cssHsl("--card", "#ffffff");
+
   const fileIds = new Set(files.map((file) => file.file_id));
   const nodes = files.map((file) => {
     const low = file.columns.some((column) =>
@@ -2443,10 +2461,10 @@ function buildRelationshipGraphOption(
     return {
       id: file.file_id,
       name: fileNameMap.get(file.file_id) ?? file.friendly_name,
-      symbolSize: Math.max(58, Math.min(96, 52 + file.columns.length * 3)),
+      symbolSize: Math.max(26, Math.min(46, 22 + Math.log2(file.columns.length + 1) * 6)),
       itemStyle: {
-        color: low ? "hsl(var(--destructive))" : "hsl(var(--primary))",
-        borderColor: "hsl(var(--border))",
+        color: low ? destructive : primary,
+        borderColor: border,
         borderWidth: 1,
       },
     };
@@ -2464,15 +2482,16 @@ function buildRelationshipGraphOption(
         target: link.file_b_id,
         value: relationshipLabel(link, fileNameMap),
         lineStyle: {
-          color: weak ? "hsl(var(--destructive))" : "hsl(var(--primary))",
-          opacity: weak ? 0.45 : 0.75,
+          color: weak ? destructive : primary,
+          opacity: weak ? 0.4 : 0.65,
           width: weak ? 1 : 2,
+          curveness: 0.08,
         },
       };
     });
 
   return {
-    animationDuration: 300,
+    animation: false,
     tooltip: {
       confine: true,
       formatter: (params: GraphFormatterParam) => {
@@ -2483,31 +2502,36 @@ function buildRelationshipGraphOption(
     series: [
       {
         type: "graph",
-        layout: "force",
-        roam: false,
+        // Circular layout is deterministic and always centered — no force
+        // simulation, so the diagram renders once and never jitters.
+        layout: "circular",
+        circular: { rotateLabel: false },
+        roam: true,
         draggable: true,
         data: nodes,
         links: graphLinks,
         label: {
           show: true,
-          color: "hsl(var(--primary-foreground))",
-          fontSize: 12,
-          formatter: (params: GraphFormatterParam) => params.name ?? "",
+          position: "bottom",
+          distance: 4,
+          color: foreground,
+          fontSize: 11,
+          fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+          formatter: (params: GraphFormatterParam) => shortText(params.name ?? "", 22),
         },
-        edgeLabel: {
-          show: true,
-          color: "hsl(var(--muted-foreground))",
-          fontSize: 10,
-          formatter: (params: GraphFormatterParam) =>
-            shortText(params.data?.value ?? "", 58),
-        },
-        force: {
-          repulsion: 260,
-          edgeLength: [130, 190],
-          gravity: 0.08,
-        },
+        // Edge labels are hidden by default — with many cross-links they
+        // overlap into an unreadable mess. They appear on hover instead.
+        edgeLabel: { show: false },
         emphasis: {
           focus: "adjacency",
+          edgeLabel: {
+            show: true,
+            color: mutedForeground,
+            backgroundColor: card,
+            padding: [2, 4],
+            fontSize: 10,
+            formatter: (params: GraphFormatterParam) => shortText(params.data?.value ?? "", 48),
+          },
         },
       },
     ],
