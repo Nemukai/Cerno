@@ -24,6 +24,15 @@ class ProcessingConfigTests(unittest.TestCase):
         self.assertEqual(config.ocr.engine, "openai")
         self.assertEqual(config.embedding.provider, "openai")
         self.assertEqual(config.embedding.model, "text-embedding-3-small")
+        self.assertEqual(config.embedding.dimension, 1536)
+        self.assertEqual(config.embedding.batch_size, 64)
+        self.assertEqual(config.embedding.chunk_max_chars, 1800)
+        self.assertEqual(config.embedding.chunk_min_chars, 120)
+        settings = Settings(_env_file=None)
+        self.assertEqual(settings.link_containment_threshold, 0.85)
+        self.assertEqual(settings.link_parent_uniqueness_threshold, 0.95)
+        self.assertEqual(settings.link_candidate_score_threshold, 0.72)
+        self.assertEqual(settings.discovery_reask_max_fields, 20)
 
     def test_valid_config_overrides_discovery_processing_settings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -43,6 +52,10 @@ class ProcessingConfigTests(unittest.TestCase):
                         "[processing.embedding]",
                         'provider = "openai"',
                         'model = "text-embedding-3-large"',
+                        "dimension = 3072",
+                        "batch_size = 32",
+                        "chunk_max_chars = 2400",
+                        "chunk_min_chars = 180",
                     ]
                 ),
                 encoding="utf-8",
@@ -56,6 +69,10 @@ class ProcessingConfigTests(unittest.TestCase):
         self.assertEqual(config.ocr.model, "gpt-5.4-mini")
         self.assertEqual(config.embedding.provider, "openai")
         self.assertEqual(config.embedding.model, "text-embedding-3-large")
+        self.assertEqual(config.embedding.dimension, 3072)
+        self.assertEqual(config.embedding.batch_size, 32)
+        self.assertEqual(config.embedding.chunk_max_chars, 2400)
+        self.assertEqual(config.embedding.chunk_min_chars, 180)
 
     def test_invalid_reasoning_effort_raises_clear_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

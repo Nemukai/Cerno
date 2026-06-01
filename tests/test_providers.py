@@ -24,6 +24,7 @@ class ProviderRegistryTests(unittest.TestCase):
         self.assertEqual(ocr.model, "gpt-5.4-mini")
         self.assertEqual(embeddings.name, "openai")
         self.assertEqual(embeddings.model, "text-embedding-3-small")
+        self.assertEqual(embeddings.dimension, 1536)
         self.assertEqual(available_ocr_engines(), ("openai",))
         self.assertEqual(available_embedding_providers(), ("openai",))
 
@@ -38,6 +39,7 @@ class ProviderRegistryTests(unittest.TestCase):
                         "",
                         "[processing.embedding]",
                         'model = "text-embedding-3-large"',
+                        "dimension = 3072",
                     ]
                 ),
                 encoding="utf-8",
@@ -49,6 +51,7 @@ class ProviderRegistryTests(unittest.TestCase):
 
         self.assertEqual(ocr.model, "gpt-5.5")
         self.assertEqual(embeddings.model, "text-embedding-3-large")
+        self.assertEqual(embeddings.dimension, 3072)
 
 
 if __name__ == "__main__":
