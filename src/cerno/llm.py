@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
@@ -252,6 +252,42 @@ class LLMClient:
         if not isinstance(conversation_id, str) or not conversation_id:
             raise LLMError("OpenAI conversation response did not include an id")
         return conversation_id
+
+    async def embed_texts(
+        self,
+        *,
+        texts: Sequence[str],
+        model: str,
+        dimensions: int | None = None,
+    ) -> list[list[float]]:
+        if not texts:
+            return []
+        body: dict[str, Any] = {"model": model, "input": list(texts)}
+        if dimensions is not None:
+            body["dimensions"] = dimensions
+        url = f"{self.settings.llm_base_url.rstrip('/')}/embeddings"
+        self._ensure_token_budget()
+        started_at = time.perf_counter()
+        try:
+            response = await self._call_with_retry(url, body)
+        except Exception as exc:
+            self._record_llm_call(
+                model=model,
+                status="failed",
+                duration_ms=_elapsed_ms(started_at),
+                error_message=str(exc),
+            )
+            raise
+        usage = _parse_usage(response.get("usage"))
+        duration_ms = _elapsed_ms(started_at)
+        self._record_token_usage(usage, model=model, duration_ms=duration_ms)
+        self._record_llm_call(
+            model=model,
+            status="completed",
+            duration_ms=duration_ms,
+            usage=usage,
+        )
+        return _parse_embeddings(response)
 
     async def stream_response(
         self,
@@ -676,10 +712,34 @@ def _parse_response(raw: dict[str, Any]) -> LLMResponse:
     )
 
 
+def _parse_embeddings(raw: dict[str, Any]) -> list[list[float]]:
+    data = raw.get("data")
+    if not isinstance(data, list):
+        raise LLMError("embedding response did not include a data array")
+    ordered: list[tuple[int, list[float]]] = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise LLMError("embedding response item was not an object")
+        raw_embedding = item.get("embedding")
+        if not isinstance(raw_embedding, list):
+            raise LLMError("embedding response item did not include an embedding array")
+        vector: list[float] = []
+        for value in raw_embedding:
+            if not isinstance(value, int | float):
+                raise LLMError("embedding vector contained a non-numeric value")
+            vector.append(float(value))
+        raw_index = item.get("index")
+        item_index = raw_index if isinstance(raw_index, int) else index
+        ordered.append((item_index, vector))
+    return [vector for _, vector in sorted(ordered, key=lambda pair: pair[0])]
+
+
 def _parse_usage(usage: Any) -> LLMUsageDetails:
     if not isinstance(usage, dict):
         return LLMUsageDetails()
-    input_tokens = _int_value(usage.get("input_tokens"))
+    input_tokens = _int_value(usage.get("input_tokens")) or _int_value(
+        usage.get("prompt_tokens")
+    )
     output_tokens = _int_value(usage.get("output_tokens"))
     input_details = usage.get("input_tokens_details")
     output_details = usage.get("output_tokens_details")
