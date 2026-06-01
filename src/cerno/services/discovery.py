@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -35,8 +36,20 @@ from cerno.repositories import (
     SessionRepository,
 )
 from cerno.services.artifact_cache import ensure_file_artifact_cached
+from cerno.services.discovery_validation import (
+    ColumnValidation,
+    FieldValidationInput,
+    validate_discovered_column,
+)
 from cerno.services.ingest import first_n_raw_rows, slugify_table_name
 from cerno.services.profiling import profile_table
+from cerno.services.relationships import (
+    RelationshipCandidate,
+    RelationshipColumn,
+    RelationshipScoringConfig,
+    build_relationship_column,
+    score_relationship_candidates,
+)
 from cerno.storage import ObjectStore
 
 LAYOUT_SAMPLE_ROWS = 3
@@ -99,18 +112,6 @@ class DiscoveryResult:
     raw_response: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class LinkCandidate:
-    file_a_id: str
-    col_a: str
-    file_b_id: str
-    col_b: str
-    direction: LinkDirection
-    overlap: float
-    score: float
-    summary: str
-
-
 SYSTEM_PROMPT = """You are Cerno's highly capable data discovery engine. Tabular files have been uploaded for analysis.
 Your job is to deeply analyze the column profiles, representative examples, and Python analysis notes, then systematically determine:
 
@@ -119,13 +120,11 @@ Your job is to deeply analyze the column profiles, representative examples, and 
 3. A concise, non-technical 1-2 sentence description of the file's primary purpose and grain (what one row represents).
 4. The exact schema: column names (post-header), plain-language descriptions, and the correct data type (string, int, float, date, datetime, bool, category).
 
-Next, synthesize cross-file relationships. Identify strong identifiers (e.g. transaction_id, user_id, sku) and declare links.
-For each link, write a clear 1-sentence explanation of how they join, and establish the direction (one_to_one, many_to_one, many_to_many).
-Prioritize meaningful business keys over coincidental low-cardinality matches.
+Do not propose cross-file links in the discovery JSON. Return an empty links array; a separate deterministic candidate scorer and verifier will handle relationships.
 
 Finally, construct the internal DataDoc (documentation):
 - Write a 2-4 sentence cohesive overview of the entire workspace and how the files interconnect.
-- Ensure the 'grain' and 'caveats' for each file are well-documented.
+- Ensure the 'grain' and 'caveats' for each file are well-documented, but do not invent relationship documentation.
 - Generate a robust glossary of business terms or acronyms found in the headers or data.
 - Supply 3-5 highly relevant, analytical 'starter questions' that a user might want to ask this data.
 
@@ -307,6 +306,79 @@ RESPONSE_SCHEMA = {
 }
 
 
+LINK_VERIFIER_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["verifications"],
+    "properties": {
+        "verifications": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["candidate_id", "confirmed", "direction", "summary"],
+                "properties": {
+                    "candidate_id": {"type": "string"},
+                    "confirmed": {"type": "boolean"},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["one_to_one", "many_to_one", "many_to_many"],
+                    },
+                    "summary": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+
+REASK_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["corrections"],
+    "properties": {
+        "corrections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["file_id", "column_id", "name", "description", "dtype"],
+                "properties": {
+                    "file_id": {"type": "string"},
+                    "column_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "dtype": {
+                        "type": "string",
+                        "enum": [
+                            "string",
+                            "int",
+                            "float",
+                            "date",
+                            "datetime",
+                            "bool",
+                            "category",
+                        ],
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+LINK_VERIFIER_PROMPT = """You verify deterministic relationship candidates for Cerno.
+Confirm a candidate only when the evidence supports a real analytical relationship, such as a foreign key or intentional shared business key.
+Reject coincidental overlaps, low-cardinality domains, calendar/date coincidences, booleans, and columns whose names or types suggest different meanings.
+Do not add candidates. Return one verification object for every candidate_id supplied."""
+
+
+REASK_PROMPT = """You are Cerno's targeted schema reviewer.
+You will receive only low-confidence fields from an earlier strict schema pass, plus validator evidence and compact column profiles.
+Correct only the supplied fields. Prefer conservative, general-purpose types. If evidence is ambiguous, keep the best field name/description but choose the type that validates best against the observed values.
+Return strictly the requested corrections array. Do not add files or columns."""
+
+
 def _parse_json_block(content: str) -> dict[str, Any]:
     stripped = content.strip()
     fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", stripped, re.DOTALL)
@@ -318,6 +390,52 @@ def _parse_json_block(content: str) -> dict[str, Any]:
         raise DiscoveryError(
             f"LLM returned invalid JSON: {exc}\n--- raw ---\n{content[:2000]}"
         ) from exc
+
+
+async def _respond_json_schema_with_retry(
+    *,
+    llm_client: LLMClient,
+    input_payload: list[dict[str, Any]],
+    instructions: str,
+    model: str,
+    reasoning_effort: str,
+    reasoning_summary: str,
+    response_format: dict[str, Any],
+    attempts: int = 2,
+) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        response = await llm_client.respond(
+            input=input_payload,
+            instructions=instructions,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_summary=reasoning_summary,
+            response_format=response_format,
+        )
+        try:
+            _raise_for_refusal(response.raw, response.status)
+            return _parse_json_block(response.content)
+        except DiscoveryError as exc:
+            last_error = exc
+            if attempt + 1 >= attempts:
+                break
+            await asyncio.sleep(0.5 * (2**attempt))
+    assert last_error is not None
+    raise last_error
+
+
+def _raise_for_refusal(raw: dict[str, Any], status: str) -> None:
+    if status != "completed":
+        raise DiscoveryError(f"LLM response did not complete: status={status}")
+    for item in raw.get("output", []) or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for part in item.get("content", []) or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "refusal" or part.get("refusal"):
+                raise DiscoveryError("LLM refused the structured discovery request")
 
 
 def _parse_response(payload: dict[str, Any]) -> DiscoveryResult:
@@ -375,27 +493,29 @@ def _build_prompt(file_payload: list[dict[str, Any]], analysis: str) -> str:
     return (
         "For each file below, decide the header row, a 2-4 word business-friendly name, "
         "a concise non-technical description, and the columns (post-header) with type "
-        "and plain-language description. Then identify "
-        "cross-file column links, write a session overview, and create the internal "
-        "documentation used by the chat analyst.\n\n"
+        "and plain-language description. Then write a session overview and create the "
+        "internal documentation used by the chat analyst.\n\n"
         "Use the column profiles as the primary evidence. Use example rows only for "
         "layout/header context, and use Python analysis notes as higher-confidence "
         "evidence than examples when they conflict.\n\n"
+        "Do not propose cross-file links. Set top-level links to [] and "
+        "documentation.relationships to []; link verification runs separately over "
+        "deterministic candidates.\n\n"
         "Return STRICT JSON matching the provided schema. No prose, no fences.\n\n"
         f"Python analysis notes:\n{analysis}\n\n"
         f"Files:\n{json.dumps(file_payload, default=str, indent=2)}"
     )
 
 
-ANALYSIS_SUMMARY_PROMPT = """You are Cerno's internal data profiler. Below are pre-computed column profiles and
-shared-identifier overlaps for every uploaded file. Synthesise them into concise analysis notes covering:
+ANALYSIS_SUMMARY_PROMPT = """You are Cerno's internal data profiler. Below are pre-computed column profiles
+for every uploaded file. Synthesise them into concise analysis notes covering:
 
 - File Purpose & Grain: What does each file represent? What does one row mean?
 - Schema Reality: Likely header row index (0 = first row is already headers). Are there title/metadata rows to skip?
 - Column Roles: Primary keys/IDs, date columns, key measures, categoricals, and highly null columns.
-- Relationships: Which shared identifiers look like real foreign-key joins vs. coincidental overlap?
 - Data Quality & Caveats: Missing data patterns or gotchas a non-technical user must know.
 
+Do not propose cross-file relationships. Those are verified separately from deterministic candidates.
 Be concise. Focus on facts that help build an accurate schema."""
 
 
@@ -438,81 +558,24 @@ def _profile_all_tables(
     return {name: profile_table(df) for name, df in raw_tables.items()}
 
 
-def _find_shared_identifiers(
-    df_a: pd.DataFrame, df_b: pd.DataFrame
-) -> list[dict[str, Any]]:
-    value_cache_a: dict[str, set[str]] = {}
-    value_cache_b: dict[str, set[str]] = {}
-    results: list[dict[str, Any]] = []
-    for col_a in df_a.columns:
-        if col_a not in value_cache_a:
-            value_cache_a[col_a] = set(df_a[col_a].dropna().astype(str).unique())
-        set_a = value_cache_a[col_a]
-        if len(set_a) < 2:
-            continue
-        for col_b in df_b.columns:
-            if col_b not in value_cache_b:
-                value_cache_b[col_b] = set(df_b[col_b].dropna().astype(str).unique())
-            set_b = value_cache_b[col_b]
-            if len(set_b) < 2:
-                continue
-
-            intersection = set_a & set_b
-            if not intersection:
-                continue
-
-            overlap_a = len(intersection) / len(set_a)
-            overlap_b = len(intersection) / len(set_b)
-            if overlap_a > 0.1 or overlap_b > 0.1:
-                results.append(
-                    {
-                        "col_a": str(col_a),
-                        "col_b": str(col_b),
-                        "overlap_a": round(overlap_a, 3),
-                        "overlap_b": round(overlap_b, 3),
-                        "distinct_a": len(set_a),
-                        "distinct_b": len(set_b),
-                        "intersection_size": len(intersection),
-                    }
-                )
-    results.sort(key=lambda x: max(x["overlap_a"], x["overlap_b"]), reverse=True)
-    return results[:10]
-
-
-def _find_all_overlaps(
-    raw_tables: dict[str, pd.DataFrame],
-) -> dict[str, list[dict[str, Any]]]:
-    names = list(raw_tables)
-    overlaps: dict[str, list[dict[str, Any]]] = {}
-    for i, name_a in enumerate(names):
-        for name_b in names[i + 1 :]:
-            key = f"{name_a} ↔ {name_b}"
-            links = _find_shared_identifiers(raw_tables[name_a], raw_tables[name_b])
-            if links:
-                overlaps[key] = links
-    return overlaps
-
-
 async def _summarize_analysis(
     *,
     llm_client: LLMClient,
     profiles: dict[str, dict[str, Any]],
-    overlaps: dict[str, list[dict[str, Any]]],
     catalog: list[dict[str, Any]],
     config: DiscoveryProcessingConfig,
 ) -> str:
     user_content = (
         f"{ANALYSIS_SUMMARY_PROMPT}\n\n"
         f"Table catalog:\n{json.dumps(catalog, default=str, indent=2)}\n\n"
-        f"Column profiles:\n{json.dumps(profiles, default=str, indent=2)}\n\n"
-        f"Shared identifiers:\n{json.dumps(overlaps, default=str, indent=2)}"
+        f"Column profiles:\n{json.dumps(profiles, default=str, indent=2)}"
     )
     response = await llm_client.respond(
         input=[{"role": "user", "content": user_content}],
         instructions=(
             "You are Cerno's internal data profiler. Write concise analysis notes "
-            "about grain, column roles, and relationships based on the pre-computed "
-            "profiles. Do not ask for tools or additional data."
+            "about grain and column roles based on the pre-computed profiles. "
+            "Do not propose relationships, ask for tools, or request additional data."
         ),
         model=config.analysis_model,
         reasoning_effort=config.analysis_reasoning_effort,
@@ -521,9 +584,16 @@ async def _summarize_analysis(
     return response.content
 
 
-def _data_doc_from_result(session_id: str, result: DiscoveryResult) -> DataDoc:
+def _data_doc_from_result(
+    session_id: str,
+    result: DiscoveryResult,
+    *,
+    validations: dict[tuple[str, str], ColumnValidation] | None = None,
+    link_candidates: dict[frozenset[tuple[str, str]], RelationshipCandidate] | None = None,
+) -> DataDoc:
     now = datetime.now(UTC)
     raw = result.documentation
+    discovered_by_id = {file.file_id: file for file in result.files}
     file_docs = [
         DataDocFile(
             file_id=str(item.get("file_id") or ""),
@@ -532,11 +602,11 @@ def _data_doc_from_result(session_id: str, result: DiscoveryResult) -> DataDoc:
             grain=str(item.get("grain") or ""),
             row_count=int(item.get("row_count") or 0),
             columns=[
-                DataDocColumn(
-                    name=str(col.get("name") or ""),
-                    dtype="auto",
-                    meaning=str(col.get("meaning") or ""),
-                    role="auto",
+                _data_doc_column(
+                    file_id=str(item.get("file_id") or ""),
+                    raw_column=col,
+                    discovered=discovered_by_id.get(str(item.get("file_id") or "")),
+                    validations=validations,
                 )
                 for col in item.get("columns", [])
                 if isinstance(col, dict)
@@ -551,16 +621,27 @@ def _data_doc_from_result(session_id: str, result: DiscoveryResult) -> DataDoc:
         if isinstance(item, dict)
     ]
     relationships = [
-        DataDocRelationship(
-            left_file_id=str(item.get("left_file_id") or ""),
-            left_column=str(item.get("left_column") or ""),
-            right_file_id=str(item.get("right_file_id") or ""),
-            right_column=str(item.get("right_column") or ""),
-            explanation=str(item.get("explanation") or ""),
+        _data_doc_relationship(
+            raw_relationship=item,
+            link_candidates=link_candidates,
         )
         for item in raw.get("relationships", [])
         if isinstance(item, dict)
     ]
+    if not relationships:
+        relationships = [
+            _data_doc_relationship(
+                raw_relationship={
+                    "left_file_id": link.file_a_id,
+                    "left_column": link.col_a,
+                    "right_file_id": link.file_b_id,
+                    "right_column": link.col_b,
+                    "explanation": link.summary,
+                },
+                link_candidates=link_candidates,
+            )
+            for link in result.links
+        ]
     glossary = [
         DataDocGlossaryItem(
             term=str(item.get("term") or ""),
@@ -582,69 +663,70 @@ def _data_doc_from_result(session_id: str, result: DiscoveryResult) -> DataDoc:
     )
 
 
-def _normalized_value(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip().lower()
-    if not text or text in {"nan", "none", "null"}:
-        return None
-    if len(text) > 100:
-        return None
-    return re.sub(r"\s+", " ", text)
+def _data_doc_column(
+    *,
+    file_id: str,
+    raw_column: dict[str, Any],
+    discovered: DiscoveredFile | None,
+    validations: dict[tuple[str, str], ColumnValidation] | None,
+) -> DataDocColumn:
+    name = str(raw_column.get("name") or "")
+    matched = None
+    if discovered is not None:
+        matched = next((column for column in discovered.columns if column.name == name), None)
+    validation = (
+        _column_validation(validations, file_id, matched)
+        if matched is not None
+        else None
+    )
+    return DataDocColumn(
+        name=name,
+        dtype=matched.dtype if matched is not None else "auto",
+        meaning=str(raw_column.get("meaning") or ""),
+        role="auto",
+        confidence=validation.confidence if validation is not None else 1.0,
+        low_confidence_reasons=list(validation.reasons) if validation is not None else [],
+    )
 
 
-def _values_for_column(file: File, discovered: DiscoveredFile, col_idx: int) -> set[str]:
-    if not file.raw_parquet_path or col_idx >= len(discovered.columns):
-        return set()
-    rows = pl.read_parquet(file.raw_parquet_path).to_numpy().tolist()
-    data_rows = rows[discovered.header_row + 1 :]
-    values: set[str] = set()
-    for row in data_rows:
-        if col_idx >= len(row):
-            continue
-        normalized = _normalized_value(row[col_idx])
-        if normalized is None:
-            continue
-        values.add(normalized)
-        if len(values) >= LINK_VALUE_SAMPLE_LIMIT:
-            break
-    return values
+def _data_doc_relationship(
+    *,
+    raw_relationship: dict[str, Any],
+    link_candidates: dict[frozenset[tuple[str, str]], RelationshipCandidate] | None,
+) -> DataDocRelationship:
+    relationship = DataDocRelationship(
+        left_file_id=str(raw_relationship.get("left_file_id") or ""),
+        left_column=str(raw_relationship.get("left_column") or ""),
+        right_file_id=str(raw_relationship.get("right_file_id") or ""),
+        right_column=str(raw_relationship.get("right_column") or ""),
+        explanation=str(raw_relationship.get("explanation") or ""),
+    )
+    if link_candidates is None:
+        return relationship
+    key = frozenset(
+        {
+            (relationship.left_file_id, relationship.left_column.lower()),
+            (relationship.right_file_id, relationship.right_column.lower()),
+        }
+    )
+    candidate = link_candidates.get(key)
+    if candidate is None:
+        return relationship
+    relationship.confidence = candidate.score
+    relationship.low_confidence_reasons = (
+        [] if candidate.score >= 0.85 else ["link_confidence_below_threshold"]
+    )
+    return relationship
 
 
-def _looks_like_fk(left: str, right: str) -> bool:
-    left_name = left.lower().replace(" ", "_")
-    right_name = right.lower().replace(" ", "_")
-    if right_name in {"id", "code", "number", "no"} and left_name.endswith(
-        f"_{right_name}"
-    ):
-        return True
-    if right_name.endswith("_id") and left_name == right_name:
-        return True
-    return False
-
-
-def _candidate_direction(
-    a_col: str,
-    b_col: str,
-    a_distinct: int,
-    b_distinct: int,
-    overlap_a: float,
-    overlap_b: float,
-) -> tuple[LinkDirection, bool]:
-    if _looks_like_fk(a_col, b_col):
-        return "many_to_one", False
-    if _looks_like_fk(b_col, a_col):
-        return "many_to_one", True
-    if overlap_a >= 0.95 and overlap_b >= 0.95 and abs(a_distinct - b_distinct) <= 1:
-        return "one_to_one", False
-    if a_distinct > b_distinct and overlap_b >= 0.8:
-        return "many_to_one", False
-    if b_distinct > a_distinct and overlap_a >= 0.8:
-        return "many_to_one", True
-    return "many_to_many", False
-
-
-def _link_key(link: DiscoveredLink | LinkCandidate) -> frozenset[tuple[str, str]]:
+def _link_key(link: DiscoveredLink | RelationshipCandidate) -> frozenset[tuple[str, str]]:
+    if isinstance(link, RelationshipCandidate):
+        return frozenset(
+            {
+                (link.child_file_id, link.child_column.lower()),
+                (link.parent_file_id, link.parent_column.lower()),
+            }
+        )
     return frozenset(
         {
             (link.file_a_id, link.col_a.lower()),
@@ -653,98 +735,344 @@ def _link_key(link: DiscoveredLink | LinkCandidate) -> frozenset[tuple[str, str]
     )
 
 
-def _find_overlap_candidates(
-    *, files: list[File], discovered_files: list[DiscoveredFile], settings: Settings
-) -> list[LinkCandidate]:
-    files_by_id = {file.id: file for file in files}
-    column_values: dict[tuple[str, str], set[str]] = {}
+def _relationship_scoring_config(settings: Settings) -> RelationshipScoringConfig:
+    return RelationshipScoringConfig(
+        containment_threshold=settings.link_containment_threshold,
+        parent_uniqueness_threshold=settings.link_parent_uniqueness_threshold,
+        score_threshold=settings.link_candidate_score_threshold,
+        min_distinct=settings.link_min_distinct,
+        min_shared_distinct=settings.link_min_shared_distinct,
+        low_cardinality_distinct=settings.link_low_cardinality_distinct,
+        max_avg_length=settings.link_max_avg_length,
+        max_candidates=settings.link_max_llm_candidates,
+    )
 
+
+def _column_key(file_id: str, column: DiscoveredColumn) -> tuple[str, str]:
+    return (file_id, (column.column_id or column.name).strip().lower())
+
+
+def _validation_values(file: File, discovered: DiscoveredFile, col_idx: int) -> list[Any]:
+    if not file.raw_parquet_path or col_idx >= len(discovered.columns):
+        return []
+    try:
+        rows = pl.read_parquet(file.raw_parquet_path).to_numpy().tolist()
+    except Exception:
+        logger.exception("event=discovery.validation.read_failed file_id=%s", file.id)
+        return []
+    if discovered.header_row >= len(rows):
+        return []
+    data_rows = rows[discovered.header_row + 1 :]
+    values: list[Any] = []
+    for row in data_rows:
+        values.append(row[col_idx] if col_idx < len(row) else None)
+    return values
+
+
+def _validate_discovery_columns(
+    *, files: list[File], discovered_files: list[DiscoveredFile]
+) -> dict[tuple[str, str], ColumnValidation]:
+    files_by_id = {file.id: file for file in files}
+    validations: dict[tuple[str, str], ColumnValidation] = {}
+    for discovered in discovered_files:
+        file = files_by_id.get(discovered.file_id)
+        sibling_names = tuple(column.name for column in discovered.columns)
+        for idx, column in enumerate(discovered.columns):
+            if file is None:
+                validations[_column_key(discovered.file_id, column)] = ColumnValidation(
+                    confidence=0.0,
+                    reasons=("file_not_found",),
+                    profile={},
+                )
+                continue
+            values = _validation_values(file, discovered, idx)
+            validations[_column_key(discovered.file_id, column)] = validate_discovered_column(
+                FieldValidationInput(
+                    file_id=discovered.file_id,
+                    file_name=discovered.friendly_name or file.filename,
+                    column_id=column.column_id or column.name,
+                    name=column.name,
+                    dtype=column.dtype,
+                    description=column.description,
+                    values=values,
+                    sibling_names=sibling_names,
+                )
+            )
+    return validations
+
+
+def _low_confidence_reask_payload(
+    *,
+    result: DiscoveryResult,
+    validations: dict[tuple[str, str], ColumnValidation],
+    threshold: float,
+    limit: int,
+) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    for discovered in result.files:
+        for column in discovered.columns:
+            key = _column_key(discovered.file_id, column)
+            validation = validations.get(key)
+            if validation is None or validation.confidence >= threshold:
+                continue
+            fields.append(
+                {
+                    "file_id": discovered.file_id,
+                    "file_name": discovered.friendly_name,
+                    "column_id": column.column_id or column.name,
+                    "current": {
+                        "name": column.name,
+                        "description": column.description,
+                        "dtype": column.dtype,
+                    },
+                    "validator": {
+                        "confidence": validation.confidence,
+                        "reasons": list(validation.reasons),
+                    },
+                    "profile": validation.profile,
+                }
+            )
+    fields.sort(key=lambda field: float(field["validator"]["confidence"]))
+    return fields[:limit]
+
+
+async def _targeted_reask_low_confidence_fields(
+    *,
+    llm_client: LLMClient,
+    result: DiscoveryResult,
+    files: list[File],
+    validations: dict[tuple[str, str], ColumnValidation],
+    settings: Settings,
+    config: DiscoveryProcessingConfig,
+) -> dict[tuple[str, str], ColumnValidation]:
+    fields = _low_confidence_reask_payload(
+        result=result,
+        validations=validations,
+        threshold=settings.schema_confidence_threshold,
+        limit=settings.discovery_reask_max_fields,
+    )
+    if not fields:
+        return validations
+
+    originals: dict[tuple[str, str], DiscoveredColumn] = {}
+    for discovered in result.files:
+        for column in discovered.columns:
+            key = _column_key(discovered.file_id, column)
+            if any(
+                field["file_id"] == discovered.file_id
+                and field["column_id"] == (column.column_id or column.name)
+                for field in fields
+            ):
+                originals[key] = DiscoveredColumn(
+                    column_id=column.column_id,
+                    name=column.name,
+                    description=column.description,
+                    dtype=column.dtype,
+                )
+
+    payload = await _respond_json_schema_with_retry(
+        llm_client=llm_client,
+        input_payload=[
+            {
+                "role": "user",
+                "content": "Re-check only these low-confidence fields:\n"
+                f"{json.dumps(fields, default=str, indent=2)}",
+            }
+        ],
+        instructions=REASK_PROMPT,
+        model=config.analysis_model,
+        reasoning_effort=config.analysis_reasoning_effort,
+        reasoning_summary=config.reasoning_summary,
+        response_format={
+            "type": "json_schema",
+            "name": "discovery_recheck",
+            "schema": REASK_RESPONSE_SCHEMA,
+            "strict": True,
+        },
+    )
+    _apply_reask_corrections(result, payload)
+    updated = _validate_discovery_columns(files=files, discovered_files=result.files)
+    for key, original in originals.items():
+        before = validations.get(key)
+        after = updated.get(key)
+        if before is None or after is None or after.confidence >= settings.schema_confidence_threshold:
+            continue
+        if after.confidence <= before.confidence:
+            _restore_column(result, key, original)
+    return _validate_discovery_columns(files=files, discovered_files=result.files)
+
+
+def _apply_reask_corrections(result: DiscoveryResult, payload: dict[str, Any]) -> None:
+    corrections = payload.get("corrections")
+    if not isinstance(corrections, list):
+        return
+    by_file = {file.file_id: file for file in result.files}
+    allowed = {"string", "int", "float", "date", "datetime", "bool", "category"}
+    for item in corrections:
+        if not isinstance(item, dict):
+            continue
+        discovered = by_file.get(str(item.get("file_id") or ""))
+        if discovered is None:
+            continue
+        column_id = str(item.get("column_id") or "").strip().lower()
+        column = next(
+            (
+                col
+                for col in discovered.columns
+                if (col.column_id or col.name).strip().lower() == column_id
+            ),
+            None,
+        )
+        if column is None:
+            continue
+        dtype = str(item.get("dtype") or column.dtype)
+        if dtype not in allowed:
+            continue
+        column.name = str(item.get("name") or column.name)
+        column.description = str(item.get("description") or column.description)
+        column.dtype = dtype
+
+
+def _restore_column(
+    result: DiscoveryResult, key: tuple[str, str], original: DiscoveredColumn
+) -> None:
+    file_id, column_key = key
+    discovered = next((file for file in result.files if file.file_id == file_id), None)
+    if discovered is None:
+        return
+    column = next(
+        (
+            col
+            for col in discovered.columns
+            if (col.column_id or col.name).strip().lower() == column_key
+        ),
+        None,
+    )
+    if column is None:
+        return
+    column.column_id = original.column_id
+    column.name = original.name
+    column.description = original.description
+    column.dtype = original.dtype
+
+
+def _column_validation(
+    validations: dict[tuple[str, str], ColumnValidation] | None,
+    file_id: str,
+    column: DiscoveredColumn,
+) -> ColumnValidation | None:
+    if validations is None:
+        return None
+    return validations.get(_column_key(file_id, column))
+
+
+def _column_values_for_relationships(
+    file: File, discovered: DiscoveredFile, col_idx: int
+) -> list[Any]:
+    if not file.raw_parquet_path or col_idx >= len(discovered.columns):
+        return []
+    rows = pl.read_parquet(file.raw_parquet_path).to_numpy().tolist()
+    data_rows = rows[discovered.header_row + 1 :]
+    values: list[Any] = []
+    for row in data_rows:
+        if col_idx >= len(row):
+            continue
+        values.append(row[col_idx])
+        if len(values) >= LINK_VALUE_SAMPLE_LIMIT:
+            break
+    return values
+
+
+def _relationship_columns(
+    *, files: list[File], discovered_files: list[DiscoveredFile]
+) -> list[RelationshipColumn]:
+    files_by_id = {file.id: file for file in files}
+    columns: list[RelationshipColumn] = []
     for discovered in discovered_files:
         file = files_by_id.get(discovered.file_id)
         if file is None:
             continue
+        file_name = discovered.friendly_name or file.filename
         for idx, col in enumerate(discovered.columns):
-            column_values[(discovered.file_id, col.name)] = _values_for_column(
-                file, discovered, idx
+            values = _column_values_for_relationships(file, discovered, idx)
+            columns.append(
+                build_relationship_column(
+                    file_id=discovered.file_id,
+                    file_name=file_name,
+                    column_name=col.name,
+                    dtype=col.dtype,
+                    values=values,
+                )
             )
-
-    candidates: list[LinkCandidate] = []
-    for a_idx, a_file in enumerate(discovered_files):
-        for b_file in discovered_files[a_idx + 1 :]:
-            for a_col in a_file.columns:
-                a_values = column_values.get((a_file.file_id, a_col.name), set())
-                if len(a_values) < settings.link_min_distinct:
-                    continue
-                for b_col in b_file.columns:
-                    b_values = column_values.get((b_file.file_id, b_col.name), set())
-                    if len(b_values) < settings.link_min_distinct:
-                        continue
-                    overlap = a_values & b_values
-                    if not overlap:
-                        continue
-                    overlap_a = len(overlap) / len(a_values)
-                    overlap_b = len(overlap) / len(b_values)
-                    strength = max(overlap_a, overlap_b)
-                    if strength < settings.link_overlap_threshold:
-                        continue
-                    direction, swap = _candidate_direction(
-                        a_col.name,
-                        b_col.name,
-                        len(a_values),
-                        len(b_values),
-                        overlap_a,
-                        overlap_b,
-                    )
-                    if swap:
-                        source_file, source_col = b_file, b_col
-                        target_file, target_col = a_file, a_col
-                        overlap_score = overlap_b
-                    else:
-                        source_file, source_col = a_file, a_col
-                        target_file, target_col = b_file, b_col
-                        overlap_score = overlap_a
-                    summary = (
-                        f"{source_file.friendly_name}.{source_col.name} shares "
-                        f"{len(overlap)} distinct values with "
-                        f"{target_file.friendly_name}.{target_col.name}."
-                    )
-                    candidates.append(
-                        LinkCandidate(
-                            file_a_id=source_file.file_id,
-                            col_a=source_col.name,
-                            file_b_id=target_file.file_id,
-                            col_b=target_col.name,
-                            direction=direction,
-                            overlap=overlap_score,
-                            score=strength,
-                            summary=summary,
-                        )
-                    )
-    candidates.sort(key=lambda c: c.score, reverse=True)
-    return candidates
+    return columns
 
 
-def _merge_links(
-    links: list[DiscoveredLink], candidates: list[LinkCandidate]
+def _find_relationship_candidates(
+    *, files: list[File], discovered_files: list[DiscoveredFile], settings: Settings
+) -> list[RelationshipCandidate]:
+    return score_relationship_candidates(
+        _relationship_columns(files=files, discovered_files=discovered_files),
+        _relationship_scoring_config(settings),
+    )
+
+
+async def _verify_relationship_candidates(
+    *,
+    llm_client: LLMClient,
+    candidates: list[RelationshipCandidate],
+    config: DiscoveryProcessingConfig,
 ) -> list[DiscoveredLink]:
-    seen = {_link_key(link) for link in links}
-    merged = list(links)
-    for candidate in candidates:
+    if not candidates:
+        return []
+    candidate_payload = [candidate.verifier_payload() for candidate in candidates]
+    payload = await _respond_json_schema_with_retry(
+        llm_client=llm_client,
+        input_payload=[
+            {
+                "role": "user",
+                "content": "Verify these relationship candidates:\n"
+                f"{json.dumps(candidate_payload, default=str, indent=2)}",
+            }
+        ],
+        instructions=LINK_VERIFIER_PROMPT,
+        model=config.analysis_model,
+        reasoning_effort=config.analysis_reasoning_effort,
+        reasoning_summary=config.reasoning_summary,
+        response_format={
+            "type": "json_schema",
+            "name": "link_verification",
+            "schema": LINK_VERIFIER_RESPONSE_SCHEMA,
+            "strict": True,
+        },
+    )
+    raw_verifications = payload.get("verifications")
+    if not isinstance(raw_verifications, list):
+        return []
+    candidates_by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    verified: list[DiscoveredLink] = []
+    seen: set[frozenset[tuple[str, str]]] = set()
+    for item in raw_verifications:
+        if not isinstance(item, dict) or not item.get("confirmed"):
+            continue
+        candidate = candidates_by_id.get(str(item.get("candidate_id") or ""))
+        if candidate is None:
+            continue
         key = _link_key(candidate)
         if key in seen:
             continue
         seen.add(key)
-        merged.append(
+        direction = cast(LinkDirection, item.get("direction") or candidate.direction)
+        verified.append(
             DiscoveredLink(
-                file_a_id=candidate.file_a_id,
-                col_a=candidate.col_a,
-                file_b_id=candidate.file_b_id,
-                col_b=candidate.col_b,
-                direction=candidate.direction,
-                summary=candidate.summary,
+                file_a_id=candidate.child_file_id,
+                col_a=candidate.child_column,
+                file_b_id=candidate.parent_file_id,
+                col_b=candidate.parent_column,
+                direction=direction,
+                summary=str(item.get("summary") or candidate.summary),
             )
         )
-    return merged
+    return verified
 
 
 async def run_discovery(
@@ -875,13 +1203,11 @@ async def run_discovery(
         session_id,
         job_id,
     )
-    overlaps = _find_all_overlaps(raw_tables)
     logger.info(
-        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=profiling_done overlap_pairs=%s progress=30",
+        "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=profiling_done progress=30",
         user_id,
         session_id,
         job_id,
-        len(overlaps),
     )
 
     # ── Phase 3: Single LLM call to summarize profiles ──
@@ -905,7 +1231,6 @@ async def run_discovery(
         analysis = await _summarize_analysis(
             llm_client=llm_client,
             profiles=profiles,
-            overlaps=overlaps,
             catalog=raw_catalog,
             config=discovery_config,
         )
@@ -943,7 +1268,7 @@ async def run_discovery(
         step_key="building_data_map",
         level="info",
         progress=55,
-        message="Building the data map — naming files, explaining columns, and checking connections",
+        message="Building the data map — naming files and explaining columns",
     )
 
     try:
@@ -954,8 +1279,9 @@ async def run_discovery(
             job_id,
             discovery_config.model,
         )
-        response = await llm_client.respond(
-            input=[{"role": "user", "content": user_prompt}],
+        payload = await _respond_json_schema_with_retry(
+            llm_client=llm_client,
+            input_payload=[{"role": "user", "content": user_prompt}],
             instructions=SYSTEM_PROMPT,
             model=discovery_config.model,
             reasoning_effort=discovery_config.reasoning_effort,
@@ -1008,8 +1334,9 @@ async def run_discovery(
         session_id,
         job_id,
     )
-    payload = _parse_json_block(response.content)
     result = _parse_response(payload)
+    result.links = []
+    result.documentation["relationships"] = []
 
     valid_ids = {f.id for f in files}
     result.files = [df for df in result.files if df.file_id in valid_ids]
@@ -1023,6 +1350,47 @@ async def run_discovery(
         sessions_repo.set_discovery_status(session_id, "failed")
         raise DiscoveryError("LLM did not return schema for any uploaded file")
 
+    validations = _validate_discovery_columns(files=files, discovered_files=result.files)
+    low_confidence_count = sum(
+        validation.confidence < settings.schema_confidence_threshold
+        for validation in validations.values()
+    )
+    if low_confidence_count:
+        events_repo.append(
+            session_id=session_id,
+            job_id=job_id,
+            kind="calling_llm",
+            step_key="rechecking_low_confidence_fields",
+            level="info",
+            progress=88,
+            message=f"Rechecking {min(low_confidence_count, settings.discovery_reask_max_fields)} low-confidence field(s)",
+        )
+        try:
+            validations = await _targeted_reask_low_confidence_fields(
+                llm_client=llm_client,
+                result=result,
+                files=files,
+                validations=validations,
+                settings=settings,
+                config=discovery_config,
+            )
+        except Exception:
+            logger.exception(
+                "event=processing.warning user_id=%s session_id=%s job_id=%s phase=field_recheck_failed",
+                user_id,
+                session_id,
+                job_id,
+            )
+            events_repo.append(
+                session_id=session_id,
+                job_id=job_id,
+                kind="python_analysis",
+                step_key="rechecking_low_confidence_fields",
+                level="warning",
+                progress=88,
+                message="Some low-confidence fields could not be rechecked automatically",
+            )
+
     schema_writer = schemas_repo or SchemaRepository(files_repo.conn)
     for df in result.files:
         files_repo.set_metadata(
@@ -1033,12 +1401,49 @@ async def run_discovery(
         )
         file = next((f for f in files if f.id == df.file_id), None)
         if file is not None:
-            schema_writer.replace(_schema_from_discovered_file(df, file.schema_version))
+            schema_writer.replace(
+                _schema_from_discovered_file(
+                    df,
+                    file.schema_version,
+                    validations=validations,
+                )
+            )
 
-    candidates = _find_overlap_candidates(
+    candidates = _find_relationship_candidates(
         files=files, discovered_files=result.files, settings=settings
     )
-    result.links = _merge_links(result.links, candidates)
+    events_repo.append(
+        session_id=session_id,
+        job_id=job_id,
+        kind="calling_llm",
+        step_key="verifying_relationships",
+        level="info",
+        progress=90,
+        message="Verifying relationship candidates",
+    )
+    try:
+        result.links = await _verify_relationship_candidates(
+            llm_client=llm_client,
+            candidates=candidates,
+            config=discovery_config,
+        )
+    except Exception:
+        logger.exception(
+            "event=processing.warning user_id=%s session_id=%s job_id=%s phase=link_verification",
+            user_id,
+            session_id,
+            job_id,
+        )
+        events_repo.append(
+            session_id=session_id,
+            job_id=job_id,
+            kind="error",
+            step_key="verifying_relationships",
+            level="warning",
+            progress=92,
+            message="Relationship verification failed; continuing without automatic links",
+        )
+        result.links = []
     logger.info(
         "event=processing.checkpoint user_id=%s session_id=%s job_id=%s phase=resolving_links candidate_count=%s link_count=%s progress=95",
         user_id,
@@ -1049,24 +1454,32 @@ async def run_discovery(
     )
 
     links_repo.delete_for_session(session_id)
+    candidate_by_key = {_link_key(candidate): candidate for candidate in candidates}
     for link in result.links:
         if link.file_a_id not in valid_ids or link.file_b_id not in valid_ids:
             continue
-        candidate = next((c for c in candidates if _link_key(c) == _link_key(link)), None)
+        candidate = candidate_by_key.get(_link_key(link))
         links_repo.create(
             session_id=session_id,
             file_a=link.file_a_id,
             col_a=link.col_a,
             file_b=link.file_b_id,
             col_b=link.col_b,
-            overlap=candidate.overlap if candidate else 1.0,
+            overlap=candidate.containment if candidate else 1.0,
             direction=link.direction,
             score=candidate.score if candidate else 1.0,
             summary=link.summary or None,
         )
 
     sessions_repo.set_overview(session_id, result.overview)
-    data_docs_repo.replace(_data_doc_from_result(session_id, result))
+    data_docs_repo.replace(
+        _data_doc_from_result(
+            session_id,
+            result,
+            validations=validations,
+            link_candidates=candidate_by_key,
+        )
+    )
     sessions_repo.set_discovery_status(session_id, "pending_review")
     events_repo.append(
         session_id=session_id,
@@ -1089,7 +1502,9 @@ async def run_discovery(
 
 
 def _schema_from_discovered_file(
-    discovered: DiscoveredFile, schema_version: int
+    discovered: DiscoveredFile,
+    schema_version: int,
+    validations: dict[tuple[str, str], ColumnValidation] | None = None,
 ) -> FileSchema:
     return FileSchema(
         file_id=discovered.file_id,
@@ -1101,10 +1516,19 @@ def _schema_from_discovered_file(
                 name=column.name,
                 dtype=_normalize_simple_dtype(column.dtype),
                 inferred_kind=_inferred_kind_for_dtype(column.dtype),
-                confidence=1.0,
+                confidence=(
+                    validation.confidence
+                    if (validation := _column_validation(validations, discovered.file_id, column))
+                    else 1.0
+                ),
                 position=index,
                 column_id=column.column_id or column.name,
                 description=column.description,
+                confidence_reason=(
+                    validation.encoded_reasons()
+                    if (validation := _column_validation(validations, discovered.file_id, column))
+                    else None
+                ),
             )
             for index, column in enumerate(discovered.columns)
         ],

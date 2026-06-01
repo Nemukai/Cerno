@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -21,6 +23,12 @@ from cerno.models import (
     DashboardPage,
     DataDoc,
     DiscoveryStatus,
+    Document,
+    DocumentChunk,
+    DocumentChunkSearchRow,
+    DocumentPage,
+    DocumentPageSource,
+    DocumentStatus,
     EffectiveUsageLimits,
     File,
     FileSchema,
@@ -56,6 +64,16 @@ logger = logging.getLogger(__name__)
 
 def new_id() -> str:
     return str(uuid.uuid4())
+
+
+def vector_literal(values: Sequence[float]) -> str:
+    vector: list[str] = []
+    for value in values:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("embedding vector contained a non-finite value")
+        vector.append(format(parsed, ".9g"))
+    return f"[{','.join(vector)}]"
 
 
 def _now() -> datetime:
@@ -883,6 +901,260 @@ class FileRepository:
         )
 
 
+class DocumentRepository:
+    def __init__(self, conn: DbConnection) -> None:
+        self.conn = conn
+
+    def create(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        organization_id: str,
+        filename: str,
+        content_hash: str,
+        page_count: int,
+        status: DocumentStatus = "processing",
+        document_id: str | None = None,
+    ) -> Document:
+        did = document_id or new_id()
+        created_at = _now()
+        self.conn.execute(
+            """INSERT INTO documents
+               (id, session_id, user_id, organization_id, filename, content_hash,
+                page_count, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                did,
+                session_id,
+                user_id,
+                organization_id,
+                filename,
+                content_hash,
+                page_count,
+                status,
+                created_at.isoformat(),
+            ),
+        )
+        return Document(
+            id=did,
+            session_id=session_id,
+            user_id=user_id,
+            organization_id=organization_id,
+            filename=filename,
+            content_hash=content_hash,
+            page_count=page_count,
+            status=status,
+            created_at=created_at,
+        )
+
+    def find_by_hash(self, session_id: str, content_hash: str) -> Document | None:
+        row = self.conn.execute(
+            "SELECT * FROM documents WHERE session_id = ? AND content_hash = ? LIMIT 1",
+            (session_id, content_hash),
+        ).fetchone()
+        return _row_to_document(row) if row else None
+
+    def get(self, document_id: str) -> Document | None:
+        row = self.conn.execute(
+            "SELECT * FROM documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+        return _row_to_document(row) if row else None
+
+    def list_for_session(self, session_id: str) -> list[Document]:
+        rows = self.conn.execute(
+            "SELECT * FROM documents WHERE session_id = ? ORDER BY created_at",
+            (session_id,),
+        ).fetchall()
+        return [_row_to_document(row) for row in rows]
+
+    def set_status(self, document_id: str, status: DocumentStatus) -> None:
+        self.conn.execute(
+            "UPDATE documents SET status = ? WHERE id = ?",
+            (status, document_id),
+        )
+
+    def add_page(
+        self,
+        *,
+        document_id: str,
+        page_number: int,
+        source: DocumentPageSource,
+        markdown: str,
+        char_count: int,
+        quality_score: float,
+        low_confidence: bool,
+        quality_reasons: list[str],
+        image_object_key: str | None = None,
+        page_id: str | None = None,
+    ) -> DocumentPage:
+        pid = page_id or new_id()
+        self.conn.execute(
+            """INSERT INTO document_pages
+               (id, document_id, page_number, source, markdown, char_count,
+                quality_score, low_confidence, quality_reasons, image_object_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                pid,
+                document_id,
+                page_number,
+                source,
+                markdown,
+                char_count,
+                quality_score,
+                low_confidence,
+                dumps_json(quality_reasons),
+                image_object_key,
+            ),
+        )
+        return DocumentPage(
+            id=pid,
+            document_id=document_id,
+            page_number=page_number,
+            source=source,
+            markdown=markdown,
+            char_count=char_count,
+            quality_score=quality_score,
+            low_confidence=low_confidence,
+            quality_reasons=quality_reasons,
+            image_object_key=image_object_key,
+        )
+
+    def list_pages(self, document_id: str) -> list[DocumentPage]:
+        rows = self.conn.execute(
+            "SELECT * FROM document_pages WHERE document_id = ? ORDER BY page_number",
+            (document_id,),
+        ).fetchall()
+        return [_row_to_document_page(row) for row in rows]
+
+
+class DocumentChunkRepository:
+    def __init__(self, conn: DbConnection) -> None:
+        self.conn = conn
+
+    def delete_for_document(self, document_id: str) -> None:
+        self.conn.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
+
+    def add(
+        self,
+        *,
+        document_id: str,
+        session_id: str,
+        organization_id: str,
+        chunk_index: int,
+        text: str,
+        heading_path: Sequence[str],
+        section_no: str | None,
+        clause_no: str | None,
+        page_number: int,
+        start_char: int,
+        end_char: int,
+        low_confidence: bool,
+        embedding: Sequence[float],
+        chunk_id: str | None = None,
+    ) -> DocumentChunk:
+        cid = chunk_id or new_id()
+        created_at = _now()
+        self.conn.execute(
+            """INSERT INTO document_chunks
+               (id, document_id, session_id, organization_id, chunk_index, text,
+                heading_path, section_no, clause_no, page_number, start_char, end_char,
+                low_confidence, embedding, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::vector, ?)""",
+            (
+                cid,
+                document_id,
+                session_id,
+                organization_id,
+                chunk_index,
+                text,
+                dumps_json(list(heading_path)),
+                section_no,
+                clause_no,
+                page_number,
+                start_char,
+                end_char,
+                low_confidence,
+                vector_literal(embedding),
+                created_at.isoformat(),
+            ),
+        )
+        return DocumentChunk(
+            id=cid,
+            document_id=document_id,
+            session_id=session_id,
+            organization_id=organization_id,
+            chunk_index=chunk_index,
+            text=text,
+            heading_path=[str(item) for item in heading_path],
+            section_no=section_no,
+            clause_no=clause_no,
+            page_number=page_number,
+            start_char=start_char,
+            end_char=end_char,
+            low_confidence=low_confidence,
+            created_at=created_at,
+        )
+
+    def list_for_document(self, document_id: str) -> list[DocumentChunk]:
+        rows = self.conn.execute(
+            "SELECT * FROM document_chunks WHERE document_id = ? ORDER BY chunk_index",
+            (document_id,),
+        ).fetchall()
+        return [_row_to_document_chunk(row) for row in rows]
+
+    def search_bm25(
+        self,
+        *,
+        query: str,
+        session_id: str,
+        organization_id: str,
+        user_id: str,
+        limit: int,
+    ) -> list[DocumentChunkSearchRow]:
+        rows = self.conn.execute(
+            """WITH q AS (SELECT websearch_to_tsquery('english', ?) AS query)
+               SELECT c.*, d.filename AS document_filename, ts_rank_cd(c.tsv, q.query) AS rank
+               FROM document_chunks c
+               JOIN documents d ON d.id = c.document_id
+               CROSS JOIN q
+               WHERE c.organization_id = ?
+                 AND c.session_id = ?
+                 AND d.user_id = ?
+                 AND c.tsv @@ q.query
+               ORDER BY rank DESC, c.chunk_index ASC
+               LIMIT ?""",
+            (query, organization_id, session_id, user_id, limit),
+        ).fetchall()
+        return [_row_to_document_chunk_search_row(row) for row in rows]
+
+    def search_vector(
+        self,
+        *,
+        embedding: Sequence[float],
+        session_id: str,
+        organization_id: str,
+        user_id: str,
+        limit: int,
+    ) -> list[DocumentChunkSearchRow]:
+        vector = vector_literal(embedding)
+        rows = self.conn.execute(
+            """SELECT c.*, d.filename AS document_filename,
+                      1.0 - (c.embedding <=> ?::vector) AS rank
+               FROM document_chunks c
+               JOIN documents d ON d.id = c.document_id
+               WHERE c.organization_id = ?
+                 AND c.session_id = ?
+                 AND d.user_id = ?
+                 AND c.embedding IS NOT NULL
+               ORDER BY c.embedding <=> ?::vector, c.chunk_index ASC
+               LIMIT ?""",
+            (vector, organization_id, session_id, user_id, vector, limit),
+        ).fetchall()
+        return [_row_to_document_chunk_search_row(row) for row in rows]
+
+
 class SourceAssetRepository:
     def __init__(self, conn: DbConnection) -> None:
         self.conn = conn
@@ -1466,8 +1738,8 @@ class SchemaRepository:
             self.conn.execute(
                 """INSERT INTO schema_columns
                    (file_id, schema_version, name, dtype, inferred_kind,
-                    confidence, position, column_id, description)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    confidence, position, column_id, description, confidence_reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     col.file_id,
                     col.schema_version,
@@ -1478,6 +1750,7 @@ class SchemaRepository:
                     col.position,
                     col.column_id,
                     col.description,
+                    col.confidence_reason,
                 ),
             )
 
@@ -2177,6 +2450,68 @@ def _row_to_file(row: DbRow) -> File:
         description=row["description"] if "description" in keys else None,
         content_hash=row["content_hash"] if "content_hash" in keys else None,
         created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_document(row: DbRow) -> Document:
+    return Document(
+        id=row["id"],
+        session_id=row["session_id"],
+        user_id=row["user_id"],
+        organization_id=row["organization_id"],
+        filename=row["filename"],
+        content_hash=row["content_hash"],
+        page_count=row["page_count"],
+        status=row["status"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_document_page(row: DbRow) -> DocumentPage:
+    reasons = loads_json(row["quality_reasons"], [])
+    if not isinstance(reasons, list):
+        reasons = []
+    return DocumentPage(
+        id=row["id"],
+        document_id=row["document_id"],
+        page_number=row["page_number"],
+        source=row["source"],
+        markdown=row["markdown"],
+        char_count=row["char_count"],
+        quality_score=float(row["quality_score"]),
+        low_confidence=bool(row["low_confidence"]),
+        quality_reasons=[str(reason) for reason in reasons],
+        image_object_key=row["image_object_key"],
+    )
+
+
+def _row_to_document_chunk(row: DbRow) -> DocumentChunk:
+    heading_path = loads_json(row["heading_path"], [])
+    if not isinstance(heading_path, list):
+        heading_path = []
+    return DocumentChunk(
+        id=row["id"],
+        document_id=row["document_id"],
+        session_id=row["session_id"],
+        organization_id=row["organization_id"],
+        chunk_index=row["chunk_index"],
+        text=row["text"],
+        heading_path=[str(item) for item in heading_path],
+        section_no=row["section_no"],
+        clause_no=row["clause_no"],
+        page_number=row["page_number"],
+        start_char=row["start_char"],
+        end_char=row["end_char"],
+        low_confidence=bool(row["low_confidence"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _row_to_document_chunk_search_row(row: DbRow) -> DocumentChunkSearchRow:
+    return DocumentChunkSearchRow(
+        chunk=_row_to_document_chunk(row),
+        document_filename=row["document_filename"],
+        rank=float(row["rank"] or 0.0),
     )
 
 
@@ -2957,6 +3292,7 @@ def _row_to_schema_column(row: DbRow) -> SchemaColumn:
         position=row["position"],
         column_id=row["column_id"] if "column_id" in keys else None,
         description=row["description"] if "description" in keys else None,
+        confidence_reason=row["confidence_reason"] if "confidence_reason" in keys else None,
     )
 
 
