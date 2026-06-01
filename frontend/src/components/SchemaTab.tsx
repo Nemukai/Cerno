@@ -1,5 +1,14 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { getFilePreview } from "../lib/api";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { EChart } from "./EChart";
+import {
+  applySchemaCorrection,
+  getFilePreview,
+  interpretSchemaCorrection,
+} from "../lib/api";
+import {
+  formatNumber as formatNumberValue,
+  type NumberSystem,
+} from "../lib/format-number";
 import type {
   DataDoc,
   DiscoveredColumn,
@@ -11,14 +20,21 @@ import type {
   Link,
   LinkDirection,
   ProcessingEvent,
+  SchemaCorrectionApplyResponse,
+  SchemaCorrectionOperation,
+  SchemaCorrectionPatch,
   SimpleDtype,
 } from "../lib/types";
 
+const CONFIDENCE_REVIEW_THRESHOLD = 0.8;
+
 type Props = {
+  sessionId: string;
   files: FileRecord[];
   links: Link[];
   discovery: DiscoveryResponse | null;
   doc: DataDoc | null;
+  numberSystem: NumberSystem;
   events: ProcessingEvent[];
   processing: boolean;
   approving: boolean;
@@ -29,6 +45,10 @@ type Props = {
     links: DiscoveredLink[],
     overview: string,
   ) => void;
+  onCorrectionApplied: (
+    response: SchemaCorrectionApplyResponse,
+  ) => Promise<void> | void;
+  onCorrectionError: (message: string) => void;
   onDeleteFile: (fileId: string) => void;
 };
 
@@ -57,16 +77,20 @@ const STEPS: { key: string; label: string }[] = [
 ];
 
 export function SchemaTab({
+  sessionId,
   files,
   links: storedLinks,
   discovery,
   doc,
+  numberSystem,
   events,
   processing,
   approving,
   canProcess,
   onProcess,
   onApprove,
+  onCorrectionApplied,
+  onCorrectionError,
   onDeleteFile,
 }: Props) {
   const [editing, setEditing] = useState(false);
@@ -123,8 +147,19 @@ export function SchemaTab({
     events.length > 0 &&
     (processing || status === "discovering" || status === "failed");
   const summary = useMemo(
-    () => buildSummary(files, draftFiles, draftLinks, status),
-    [files, draftFiles, draftLinks, status],
+    () => buildSummary(files, draftFiles, draftLinks, status, numberSystem),
+    [files, draftFiles, draftLinks, status, numberSystem],
+  );
+  const narrative = useMemo(
+    () =>
+      buildNarrative(
+        draftOverview,
+        draftFiles,
+        draftLinks,
+        fileNameMap,
+        numberSystem,
+      ),
+    [draftOverview, draftFiles, draftLinks, fileNameMap, numberSystem],
   );
   const warnings = useMemo(
     () => buildWarnings(draftFiles, draftLinks, fileNameMap),
@@ -170,6 +205,15 @@ export function SchemaTab({
     setEditing(false);
   };
 
+  const handleCorrectionApplied = async (
+    response: SchemaCorrectionApplyResponse,
+  ) => {
+    setDraftFiles(response.discovery.files);
+    setDraftLinks(response.discovery.links);
+    setDraftOverview(response.discovery.overview);
+    await onCorrectionApplied(response);
+  };
+
   const updateFile = (idx: number, patch: Partial<DiscoveredFile>) => {
     setDraftFiles((prev) =>
       prev.map((file, i) => (i === idx ? { ...file, ...patch } : file)),
@@ -208,6 +252,8 @@ export function SchemaTab({
                   name: "new_column",
                   description: "",
                   dtype: "string",
+                  confidence: 0.5,
+                  low_confidence_reasons: ["manual_field_added"],
                 },
               ],
             }
@@ -247,6 +293,8 @@ export function SchemaTab({
         col_b: b.columns[0]?.name ?? "",
         direction: "many_to_one",
         summary: "",
+        confidence: 1,
+        low_confidence_reasons: [],
       },
     ]);
     setActiveFileId(a.file_id);
@@ -354,57 +402,46 @@ export function SchemaTab({
 
       {discovery && (status === "pending_review" || status === "approved") ? (
         <div className="relative z-10 grid gap-7">
-          <section className="grid gap-6 border-b border-foreground/12 pb-7 xl:grid-cols-[minmax(0,1.08fr)_minmax(28rem,0.92fr)]">
-            <div className="min-w-0">
-              <div className="small-caps text-xs text-foreground/42">summary</div>
-              {editing ? (
-                <textarea
-                  value={draftOverview}
-                  onChange={(e) => setDraftOverview(e.target.value)}
-                  rows={5}
-                  className="mt-3 w-full border border-foreground/18 bg-card/84 p-3 text-sm leading-6 focus:outline-none focus:ring-1 focus:ring-foreground"
-                />
-              ) : (
-                <p className="mt-3 max-w-3xl text-lg leading-8 text-foreground/72">
-                  {shortText(draftOverview || "No overview was generated.", 310)}
-                </p>
-              )}
-              {warnings.total > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const first = draftFiles.find((file) =>
-                      warnings.byFile.has(file.file_id),
-                    );
-                    if (first) setActiveFileId(first.file_id);
-                  }}
-                  className="mt-5 border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-left text-xs text-amber-600 transition hover:bg-amber-500/20"
-                >
-                  {warnings.total} item{warnings.total === 1 ? "" : "s"} need review.
-                  Open the marked document for detail.
-                </button>
-              ) : (
-                <div className="mt-5 inline-flex border border-primary/18 bg-primary/18 px-3 py-2 text-xs text-primary">
-                  No document warnings found.
-                </div>
-              )}
-            </div>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-5 border border-foreground/12 bg-card/70 p-5 shadow-[0_18px_60px_rgba(20,18,16,0.04)] sm:grid-cols-3">
-              <Stat label="rows" value={summary.rows} />
-              <Stat label="files" value={summary.files} />
-              <Stat label="fields" value={summary.columns} />
-              <Stat label="connections" value={summary.relationships} />
-              <Stat label="size" value={summary.size} />
-              <Stat label="state" value={summary.state} />
-            </div>
-          </section>
+          <NarrativeSummary
+            narrative={narrative}
+            overview={draftOverview}
+            editing={editing}
+            warnings={warnings}
+            files={draftFiles}
+            numberSystem={numberSystem}
+            onOverviewChange={setDraftOverview}
+            onSelectFile={setActiveFileId}
+          />
+
+          <SchemaCorrectionPanel
+            sessionId={sessionId}
+            disabled={editing}
+            draftFiles={draftFiles}
+            fileById={fileById}
+            fileNameMap={fileNameMap}
+            numberSystem={numberSystem}
+            onApplied={handleCorrectionApplied}
+            onError={onCorrectionError}
+          />
+
+          <StatsStrip summary={summary} />
+
+          <RelationshipDiagram
+            files={draftFiles}
+            links={draftLinks}
+            fileNameMap={fileNameMap}
+            linkStats={linkStats}
+            onSelectFile={setActiveFileId}
+          />
 
           <DocumentSummaryList
             files={draftFiles}
+            doc={doc}
             fileById={fileById}
             fileNameMap={fileNameMap}
             warnings={warnings}
             onSelectFile={setActiveFileId}
+            numberSystem={numberSystem}
           />
 
           <ConnectionSummaryList
@@ -415,12 +452,14 @@ export function SchemaTab({
             editing={editing}
             onAddLink={addLink}
             canAddLink={draftFiles.length >= 2}
+            numberSystem={numberSystem}
           />
 
           <AgentContextSummary
             summary={guideSummary}
             files={draftFiles}
             onSelectFile={setActiveFileId}
+            numberSystem={numberSystem}
           />
         </div>
       ) : null}
@@ -439,6 +478,7 @@ export function SchemaTab({
         draftFiles={draftFiles}
         fileNameMap={fileNameMap}
         warnings={activeFile ? warnings.byFile.get(activeFile.file_id) ?? [] : []}
+        numberSystem={numberSystem}
         onClose={() => setActiveFileId(null)}
         onUpdateFile={updateFile}
         onUpdateColumn={updateColumn}
@@ -573,10 +613,9 @@ function ProcessingCheckpoints({
         </div>
       </div>
 
-      {/* Progress bar */}
       <div className="relative h-1.5 overflow-hidden bg-muted mb-5">
         <div
-          className={`h-full transition-all duration-700 ease-out ${isDone ? "bg-emerald-500" : "bg-primary"}`}
+          className="h-full bg-primary transition-all duration-700 ease-out"
           style={{ width: `${progress}%` }}
         />
         {processing && !isDone && !latestError ? (
@@ -584,7 +623,6 @@ function ProcessingCheckpoints({
         ) : null}
       </div>
 
-      {/* Steps */}
       <div className="grid gap-1">
         {STEPS.map((step, idx) => {
           const isComplete = isDone || idx < (isDone ? STEPS.length : activeStepIdx);
@@ -603,7 +641,7 @@ function ProcessingCheckpoints({
               {/* Icon */}
               <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
                 {isComplete ? (
-                  <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                     <path strokeLinecap="square" strokeLinejoin="miter" d="M5 13l4 4L19 7" />
                   </svg>
                 ) : isActive ? (
@@ -613,7 +651,6 @@ function ProcessingCheckpoints({
                 )}
               </div>
 
-              {/* Label */}
               <span
                 className={`text-sm flex-1 ${
                   isComplete
@@ -626,7 +663,6 @@ function ProcessingCheckpoints({
                 {step.label}
               </span>
 
-              {/* Elapsed time */}
               {elapsed ? (
                 <span className="text-[10px] font-mono text-muted-foreground/70">
                   {elapsed}
@@ -641,7 +677,6 @@ function ProcessingCheckpoints({
         })}
       </div>
 
-      {/* Latest message */}
       {!latestError && events.length > 0 && !isDone ? (
         <p className="mt-3 px-3 text-xs text-muted-foreground/70 animate-pulse">
           {events.at(-1)?.message}
@@ -681,76 +716,744 @@ type WarningState = {
   byFile: Map<string, string[]>;
 };
 
+function NarrativeSummary({
+  narrative,
+  overview,
+  editing,
+  warnings,
+  files,
+  numberSystem,
+  onOverviewChange,
+  onSelectFile,
+}: {
+  narrative: string;
+  overview: string;
+  editing: boolean;
+  warnings: WarningState;
+  files: DiscoveredFile[];
+  numberSystem: NumberSystem;
+  onOverviewChange: (value: string) => void;
+  onSelectFile: (fileId: string) => void;
+}) {
+  const firstWarningFile = files.find((file) => warnings.byFile.has(file.file_id));
+  return (
+    <section className="grid gap-5 border-b border-border pb-6 xl:grid-cols-[minmax(0,1fr)_18rem]">
+      <div className="min-w-0">
+        <div className="small-caps text-xs text-primary">what cerno understood</div>
+        {editing ? (
+          <textarea
+            value={overview}
+            onChange={(event) => onOverviewChange(event.target.value)}
+            rows={5}
+            className="mt-3 w-full border border-border bg-card p-3 text-sm leading-6 focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        ) : (
+          <p className="mt-3 max-w-4xl text-xl leading-8 text-foreground">
+            {narrative}
+          </p>
+        )}
+      </div>
+      <div className="flex flex-col justify-between gap-3 border border-border bg-card p-4">
+        <ConfidenceBadge
+          low={warnings.total > 0}
+          reasons={
+            warnings.total > 0
+              ? [
+                  `${formatNumberValue(warnings.total, numberSystem)} item${
+                    warnings.total === 1 ? "" : "s"
+                  } need review`,
+                ]
+              : []
+          }
+        />
+        {warnings.total > 0 && firstWarningFile ? (
+          <button
+            type="button"
+            onClick={() => onSelectFile(firstWarningFile.file_id)}
+            className="small-caps border border-border bg-muted px-3 py-2 text-xs text-foreground transition hover:border-primary"
+          >
+            review marked fields
+          </button>
+        ) : (
+          <div className="text-sm leading-5 text-muted-foreground">
+            Cerno found no low-confidence fields in this draft.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+type CorrectionBusyState =
+  | "interpreting"
+  | "applying_minor"
+  | "applying_structural"
+  | null;
+
+function SchemaCorrectionPanel({
+  sessionId,
+  disabled,
+  draftFiles,
+  fileById,
+  fileNameMap,
+  numberSystem,
+  onApplied,
+  onError,
+}: {
+  sessionId: string;
+  disabled: boolean;
+  draftFiles: DiscoveredFile[];
+  fileById: Map<string, FileRecord>;
+  fileNameMap: Map<string, string>;
+  numberSystem: NumberSystem;
+  onApplied: (response: SchemaCorrectionApplyResponse) => Promise<void> | void;
+  onError: (message: string) => void;
+}) {
+  const [instruction, setInstruction] = useState("");
+  const [patch, setPatch] = useState<SchemaCorrectionPatch | null>(null);
+  const [selectedStructuralIds, setSelectedStructuralIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [appliedMinorIds, setAppliedMinorIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [appliedStructuralIds, setAppliedStructuralIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [busy, setBusy] = useState<CorrectionBusyState>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const minorOps = useMemo(
+    () => (patch?.operations ?? []).filter((op) => op.classification === "minor"),
+    [patch],
+  );
+  const structuralOps = useMemo(
+    () =>
+      (patch?.operations ?? []).filter(
+        (op) => op.classification === "structural",
+      ),
+    [patch],
+  );
+  const pendingStructuralOps = useMemo(
+    () =>
+      structuralOps.filter((op) => !appliedStructuralIds.has(op.op_id)),
+    [structuralOps, appliedStructuralIds],
+  );
+  const selectedPendingIds = useMemo(
+    () =>
+      pendingStructuralOps
+        .map((op) => op.op_id)
+        .filter((opId) => selectedStructuralIds.has(opId)),
+    [pendingStructuralOps, selectedStructuralIds],
+  );
+  const isBusy = busy !== null;
+
+  const resetPatchState = () => {
+    setPatch(null);
+    setSelectedStructuralIds(new Set());
+    setAppliedMinorIds(new Set());
+    setAppliedStructuralIds(new Set());
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const cleanInstruction = instruction.trim();
+    if (!cleanInstruction || disabled || isBusy) return;
+
+    setError(null);
+    resetPatchState();
+    try {
+      setBusy("interpreting");
+      const interpreted = await interpretSchemaCorrection(sessionId, cleanInstruction);
+      setPatch(interpreted);
+      const nextMinorOps = interpreted.operations.filter(
+        (op) => op.classification === "minor",
+      );
+      const nextStructuralOps = interpreted.operations.filter(
+        (op) => op.classification === "structural",
+      );
+      setSelectedStructuralIds(new Set(nextStructuralOps.map((op) => op.op_id)));
+
+      if (interpreted.operations.length === 0) {
+        setError("Cerno could not find a schema change in that correction.");
+        return;
+      }
+
+      if (nextMinorOps.length > 0) {
+        setBusy("applying_minor");
+        const result = await applySchemaCorrection(
+          sessionId,
+          { ...interpreted, operations: nextMinorOps },
+          [],
+        );
+        setAppliedMinorIds(new Set(nextMinorOps.map((op) => op.op_id)));
+        await onApplied(result);
+      }
+    } catch (err) {
+      const message = (err as Error).message;
+      setError(message);
+      onError(message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const approveStructuralOps = async (opIds: string[]) => {
+    if (!patch || opIds.length === 0 || isBusy) return;
+    const idSet = new Set(opIds);
+    const operations = structuralOps.filter((op) => idSet.has(op.op_id));
+    if (operations.length === 0) return;
+
+    setError(null);
+    try {
+      setBusy("applying_structural");
+      const result = await applySchemaCorrection(
+        sessionId,
+        { ...patch, operations },
+        operations.map((op) => op.op_id),
+      );
+      setAppliedStructuralIds((current) => {
+        const next = new Set(current);
+        for (const op of operations) next.add(op.op_id);
+        return next;
+      });
+      setSelectedStructuralIds((current) => {
+        const next = new Set(current);
+        for (const op of operations) next.delete(op.op_id);
+        return next;
+      });
+      await onApplied(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      setError(message);
+      onError(message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleStructuralOp = (opId: string) => {
+    setSelectedStructuralIds((current) => {
+      const next = new Set(current);
+      if (next.has(opId)) next.delete(opId);
+      else next.add(opId);
+      return next;
+    });
+  };
+
+  const selectAllStructuralOps = () => {
+    setSelectedStructuralIds(new Set(pendingStructuralOps.map((op) => op.op_id)));
+  };
+
+  return (
+    <section className="border border-border bg-card p-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+        <form onSubmit={handleSubmit} className="min-w-0">
+          <div className="small-caps text-xs text-primary">schema correction</div>
+          <label className="mt-2 block font-mono text-lg text-foreground">
+            Tell Cerno about a correction
+          </label>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+            This updates what Cerno understood about the files. It is separate from chat.
+          </p>
+          <div className="mt-4 flex flex-col gap-3 lg:flex-row">
+            <textarea
+              value={instruction}
+              onChange={(event) => setInstruction(event.target.value)}
+              disabled={disabled || isBusy}
+              rows={3}
+              placeholder="Example: the amount column is in lakhs, or file A's date is DD/MM."
+              className="min-h-[5.5rem] flex-1 border border-border bg-background p-3 text-sm leading-6 text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={!instruction.trim() || disabled || isBusy}
+              className="small-caps border border-foreground bg-primary px-4 py-2 text-xs text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40 lg:self-start"
+            >
+              {busy === "interpreting" ? "reading" : "preview correction"}
+            </button>
+          </div>
+        </form>
+        <div className="border border-border bg-muted/40 p-3 text-sm leading-6 text-muted-foreground">
+          {disabled ? (
+            "Finish or cancel structured editing before applying a natural-language correction."
+          ) : busy === "applying_structural" ? (
+            "Re-casting data and regenerating the data guide..."
+          ) : busy === "applying_minor" ? (
+            "Applying metadata-only changes..."
+          ) : (
+            "Minor wording changes apply automatically. Structural changes always need approval."
+          )}
+        </div>
+      </div>
+
+      {isBusy ? (
+        <div className="mt-4 h-1.5 overflow-hidden bg-muted">
+          <div className="h-full w-1/2 animate-pulse bg-primary" />
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="mt-4 border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      ) : null}
+
+      {patch ? (
+        <CorrectionPatchPreview
+          minorOps={minorOps}
+          structuralOps={structuralOps}
+          pendingStructuralOps={pendingStructuralOps}
+          selectedStructuralIds={selectedStructuralIds}
+          selectedPendingIds={selectedPendingIds}
+          appliedMinorIds={appliedMinorIds}
+          appliedStructuralIds={appliedStructuralIds}
+          draftFiles={draftFiles}
+          fileById={fileById}
+          fileNameMap={fileNameMap}
+          numberSystem={numberSystem}
+          busy={busy}
+          onToggleStructuralOp={toggleStructuralOp}
+          onSelectAllStructuralOps={selectAllStructuralOps}
+          onApproveSelected={() => approveStructuralOps(selectedPendingIds)}
+          onApproveAll={() =>
+            approveStructuralOps(pendingStructuralOps.map((op) => op.op_id))
+          }
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function CorrectionPatchPreview({
+  minorOps,
+  structuralOps,
+  pendingStructuralOps,
+  selectedStructuralIds,
+  selectedPendingIds,
+  appliedMinorIds,
+  appliedStructuralIds,
+  draftFiles,
+  fileById,
+  fileNameMap,
+  numberSystem,
+  busy,
+  onToggleStructuralOp,
+  onSelectAllStructuralOps,
+  onApproveSelected,
+  onApproveAll,
+}: {
+  minorOps: SchemaCorrectionOperation[];
+  structuralOps: SchemaCorrectionOperation[];
+  pendingStructuralOps: SchemaCorrectionOperation[];
+  selectedStructuralIds: Set<string>;
+  selectedPendingIds: string[];
+  appliedMinorIds: Set<string>;
+  appliedStructuralIds: Set<string>;
+  draftFiles: DiscoveredFile[];
+  fileById: Map<string, FileRecord>;
+  fileNameMap: Map<string, string>;
+  numberSystem: NumberSystem;
+  busy: CorrectionBusyState;
+  onToggleStructuralOp: (opId: string) => void;
+  onSelectAllStructuralOps: () => void;
+  onApproveSelected: () => void;
+  onApproveAll: () => void;
+}) {
+  const hasPendingStructural = pendingStructuralOps.length > 0;
+  return (
+    <div className="mt-5 grid gap-4">
+      {minorOps.length > 0 ? (
+        <CorrectionGroup
+          title="Applied metadata changes"
+          description="These do not re-cast stored data."
+          count={minorOps.length}
+          numberSystem={numberSystem}
+        >
+          {minorOps.map((operation) => (
+            <CorrectionOperationCard
+              key={operation.op_id}
+              operation={operation}
+              applied={appliedMinorIds.has(operation.op_id)}
+              draftFiles={draftFiles}
+              fileById={fileById}
+              fileNameMap={fileNameMap}
+              numberSystem={numberSystem}
+            />
+          ))}
+        </CorrectionGroup>
+      ) : null}
+
+      {structuralOps.length > 0 ? (
+        <CorrectionGroup
+          title="Structural changes need approval"
+          description="Approving these rewrites stored data or relationships and regenerates the data guide."
+          count={structuralOps.length}
+          numberSystem={numberSystem}
+          action={
+            hasPendingStructural ? (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={onSelectAllStructuralOps}
+                  disabled={busy !== null}
+                  className="small-caps border border-border bg-muted px-3 py-2 text-[10px] text-foreground transition hover:border-primary disabled:opacity-40"
+                >
+                  select all
+                </button>
+                <button
+                  type="button"
+                  onClick={onApproveSelected}
+                  disabled={selectedPendingIds.length === 0 || busy !== null}
+                  className="small-caps border border-foreground bg-primary px-3 py-2 text-[10px] text-primary-foreground transition hover:bg-primary/90 disabled:opacity-40"
+                >
+                  approve selected
+                </button>
+                <button
+                  type="button"
+                  onClick={onApproveAll}
+                  disabled={busy !== null}
+                  className="small-caps border border-foreground/28 bg-muted/70 px-3 py-2 text-[10px] text-foreground transition hover:bg-card disabled:opacity-40"
+                >
+                  approve all
+                </button>
+              </div>
+            ) : null
+          }
+        >
+          {structuralOps.map((operation) => (
+            <CorrectionOperationCard
+              key={operation.op_id}
+              operation={operation}
+              applied={appliedStructuralIds.has(operation.op_id)}
+              selected={selectedStructuralIds.has(operation.op_id)}
+              structural
+              draftFiles={draftFiles}
+              fileById={fileById}
+              fileNameMap={fileNameMap}
+              numberSystem={numberSystem}
+              onToggle={() => onToggleStructuralOp(operation.op_id)}
+            />
+          ))}
+        </CorrectionGroup>
+      ) : null}
+    </div>
+  );
+}
+
+function CorrectionGroup({
+  title,
+  description,
+  count,
+  numberSystem,
+  action,
+  children,
+}: {
+  title: string;
+  description: string;
+  count: number;
+  numberSystem: NumberSystem;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="border border-border bg-background">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border p-3">
+        <div>
+          <div className="small-caps text-[10px] text-muted-foreground">
+            {formatNumberValue(count, numberSystem)} change{count === 1 ? "" : "s"}
+          </div>
+          <h4 className="mt-1 font-mono text-base text-foreground">{title}</h4>
+          <p className="mt-1 text-sm leading-5 text-muted-foreground">{description}</p>
+        </div>
+        {action}
+      </div>
+      <div className="divide-y divide-border">{children}</div>
+    </div>
+  );
+}
+
+function CorrectionOperationCard({
+  operation,
+  applied,
+  selected,
+  structural = false,
+  draftFiles,
+  fileById,
+  fileNameMap,
+  numberSystem,
+  onToggle,
+}: {
+  operation: SchemaCorrectionOperation;
+  applied: boolean;
+  selected?: boolean;
+  structural?: boolean;
+  draftFiles: DiscoveredFile[];
+  fileById: Map<string, FileRecord>;
+  fileNameMap: Map<string, string>;
+  numberSystem: NumberSystem;
+  onToggle?: () => void;
+}) {
+  const target = correctionTargetLabel(operation, draftFiles, fileNameMap);
+  const impact = structural
+    ? structuralCorrectionImpact(operation, fileById, numberSystem)
+    : "Applied to the data map only; stored values were not rewritten.";
+  const before = formatCorrectionValue(operation.before_value, operation, numberSystem, "before");
+  const after = formatCorrectionValue(operation.after_value, operation, numberSystem, "after");
+
+  return (
+    <div className="grid gap-3 p-3 md:grid-cols-[minmax(0,1fr)_minmax(16rem,0.7fr)]">
+      <div className="min-w-0">
+        <div className="flex items-start gap-3">
+          {structural && !applied ? (
+            <input
+              type="checkbox"
+              checked={Boolean(selected)}
+              onChange={onToggle}
+              className="mt-1 h-4 w-4 accent-primary"
+              aria-label={`Select ${operation.description}`}
+            />
+          ) : null}
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-sm text-foreground">
+                {operationTitle(operation)}
+              </span>
+              <span
+                className={`small-caps border px-2 py-0.5 text-[10px] ${
+                  applied
+                    ? "border-primary/30 bg-primary/10 text-primary"
+                    : structural
+                      ? "border-destructive/40 bg-destructive/10 text-destructive"
+                      : "border-border bg-muted text-muted-foreground"
+                }`}
+              >
+                {applied ? "applied" : structural ? "needs approval" : "pending"}
+              </span>
+            </div>
+            <div className="mt-1 text-sm text-muted-foreground">{target}</div>
+            <p className="mt-2 text-sm leading-5 text-foreground/80">
+              {operation.description}
+            </p>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">{impact}</p>
+          </div>
+        </div>
+      </div>
+      <div className="grid gap-2 text-xs">
+        <DiffValue label="Before" value={before} />
+        <DiffValue label="After" value={after} strong />
+      </div>
+    </div>
+  );
+}
+
+function DiffValue({
+  label,
+  value,
+  strong = false,
+}: {
+  label: string;
+  value: string;
+  strong?: boolean;
+}) {
+  return (
+    <div className="grid gap-1 border border-border bg-card px-3 py-2">
+      <div className="small-caps text-[10px] text-muted-foreground">{label}</div>
+      <div className={`break-words font-mono ${strong ? "text-foreground" : "text-muted-foreground"}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function StatsStrip({ summary }: { summary: SummaryStats }) {
+  return (
+    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      <Stat label="files" value={summary.files} />
+      <Stat label="rows" value={summary.rows} />
+      <Stat label="fields" value={summary.columns} />
+      <Stat label="connections" value={summary.relationships} />
+      <Stat label="size" value={summary.size} />
+      <Stat label="state" value={summary.state} />
+    </section>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <div className="small-caps text-[11px] text-foreground/44">{label}</div>
+    <div className="border border-border bg-card px-3 py-3">
+      <div className="small-caps text-[11px] text-muted-foreground">{label}</div>
       <div className="mt-1 font-mono text-lg text-foreground">{value}</div>
     </div>
   );
 }
 
+function ConfidenceBadge({
+  low,
+  reasons,
+  compact = false,
+}: {
+  low: boolean;
+  reasons: string[];
+  compact?: boolean;
+}) {
+  const friendlyReasons = reasons.map(friendlyReason).filter(Boolean);
+  const label = low ? "needs review" : "confirmed";
+  const title = friendlyReasons.join("\n") || label;
+  return (
+    <span
+      title={title}
+      className={`small-caps inline-flex w-fit items-center border px-2 py-1 text-[10px] ${
+        low
+          ? "border-destructive/40 bg-destructive/10 text-destructive"
+          : "border-primary/30 bg-primary/10 text-primary"
+      }`}
+    >
+      {compact && low ? "review" : label}
+    </span>
+  );
+}
+
+function RelationshipDiagram({
+  files,
+  links,
+  fileNameMap,
+  linkStats,
+  onSelectFile,
+}: {
+  files: DiscoveredFile[];
+  links: DiscoveredLink[];
+  fileNameMap: Map<string, string>;
+  linkStats: Map<string, LinkStat>;
+  onSelectFile: (fileId: string) => void;
+}) {
+  const option = useMemo(
+    () => buildRelationshipGraphOption(files, links, fileNameMap, linkStats),
+    [files, links, fileNameMap, linkStats],
+  );
+  const handleGraphClick = (params: Record<string, unknown>) => {
+    if (params.dataType !== "node") return;
+    const data = params.data;
+    if (!data || typeof data !== "object") return;
+    const id = (data as { id?: unknown }).id;
+    if (typeof id === "string") onSelectFile(id);
+  };
+
+  return (
+    <section className="border-b border-border pb-7">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="small-caps text-xs text-primary">connections</div>
+          <h3 className="mt-1 font-mono text-xl text-foreground">How the files link together</h3>
+        </div>
+        <div className="text-xs text-muted-foreground">Click a document node to inspect it.</div>
+      </div>
+      <div className="border border-border bg-card p-3">
+        {files.length === 0 ? (
+          <div className="p-4 text-sm text-muted-foreground">No files available.</div>
+        ) : links.length === 0 ? (
+          <div className="grid min-h-[18rem] place-items-center text-center text-sm text-muted-foreground">
+            <div>
+              <div className="font-mono text-base text-foreground">No strong file links yet</div>
+              <p className="mt-2 max-w-md leading-6">
+                Cerno still understands each file on its own. Add or approve links from the detail drawer when needed.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <EChart option={option} height={360} onClick={handleGraphClick} />
+        )}
+      </div>
+    </section>
+  );
+}
+
 function DocumentSummaryList({
   files,
+  doc,
   fileById,
   fileNameMap,
   warnings,
   onSelectFile,
+  numberSystem,
 }: {
   files: DiscoveredFile[];
+  doc: DataDoc | null;
   fileById: Map<string, FileRecord>;
   fileNameMap: Map<string, string>;
   warnings: WarningState;
   onSelectFile: (fileId: string) => void;
+  numberSystem: NumberSystem;
 }) {
+  const docFiles = useMemo(
+    () => new Map((doc?.files ?? []).map((file) => [file.file_id, file])),
+    [doc],
+  );
   return (
     <section className="border-b border-foreground/12 pb-7">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div>
           <div className="small-caps text-xs text-primary">documents</div>
-          <h3 className="mt-1 font-mono text-xl text-foreground">Files Cerno can use</h3>
+          <h3 className="mt-1 font-mono text-xl text-foreground">Files Cerno understood</h3>
         </div>
-        <div className="text-xs text-foreground/46">Click a file for fields and rows.</div>
+        <div className="text-xs text-muted-foreground">Click a card for fields and sample rows.</div>
       </div>
-      <div className="divide-y divide-foreground/10 border-y border-foreground/12">
+      <div className="grid gap-4 lg:grid-cols-2">
         {files.map((file) => {
           const record = fileById.get(file.file_id);
           const fileWarnings = warnings.byFile.get(file.file_id) ?? [];
+          const docFile = docFiles.get(file.file_id);
+          const keyFields = pickKeyFields(file, docFile);
           return (
             <button
               key={file.file_id}
               type="button"
               onClick={() => onSelectFile(file.file_id)}
-              className="group grid w-full gap-3 px-3 py-4 text-left transition hover:bg-card/80 lg:grid-cols-[minmax(14rem,0.7fr)_minmax(0,1fr)_auto]"
+              className="group flex min-h-[15rem] w-full flex-col justify-between border border-border bg-card p-4 text-left transition hover:border-primary"
             >
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`h-2.5 w-2.5 ${fileWarnings.length > 0 ? "bg-primary" : "bg-primary"}`}
-                  />
-                  <span className="truncate font-mono text-base text-foreground">
+                <div className="flex items-start justify-between gap-3">
+                  <span className="truncate font-mono text-lg text-foreground" title={record?.filename ?? undefined}>
                     {fileNameMap.get(file.file_id) ?? file.friendly_name}
                   </span>
+                  <ConfidenceBadge
+                    low={fileWarnings.length > 0}
+                    reasons={fileWarnings}
+                    compact
+                  />
                 </div>
-                <div className="mt-1 truncate text-xs text-foreground/45">
-                  {record?.filename ?? "Original file unknown"}
+                <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                  {docFile?.grain || inferGrain(file) || "One row in this file."}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-foreground/72">
+                  {shortText(file.description || docFile?.description || "No description yet.", 140)}
+                </p>
+                {fileWarnings.length > 0 ? (
+                  <div className="mt-3 grid gap-1 text-xs text-destructive">
+                    {fileWarnings.slice(0, 2).map((warning) => (
+                      <div key={warning}>{friendlyReason(warning)}</div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-5">
+                <div className="mb-2 small-caps text-[11px] text-muted-foreground">
+                  key fields
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {keyFields.map((field) => (
+                    <span
+                      key={`${file.file_id}:${field.name}`}
+                      className="border border-border bg-muted px-2 py-1 text-xs text-foreground"
+                    >
+                      {friendlyFieldLabel(field.name, field.dtype)} · {field.name}
+                    </span>
+                  ))}
                 </div>
               </div>
-              <div className="min-w-0 text-sm leading-6 text-foreground/62">
-                {shortText(file.description || "No description yet.", 150)}
-              </div>
-              <div className="flex items-center gap-5 font-mono text-xs text-foreground/56 lg:justify-end">
-                <span>{formatNumber(record?.row_count ?? 0)} rows</span>
-                <span>{file.columns.length} fields</span>
-                <span
-                  className={`small-caps border px-2 py-1 font-sans text-[10px] ${
-                    fileWarnings.length > 0
-                      ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
-                      : "border-foreground/12 bg-muted/70 text-foreground/48"
-                  }`}
-                >
-                  {fileWarnings.length > 0 ? "review" : "ready"}
-                </span>
+              <div className="mt-5 flex items-center justify-between border-t border-border pt-3 font-mono text-xs text-muted-foreground">
+                <span>{formatNumberValue(record?.row_count ?? 0, numberSystem)} rows</span>
+                <span>{formatNumberValue(file.columns.length, numberSystem)} fields</span>
               </div>
             </button>
           );
@@ -768,6 +1471,7 @@ function ConnectionSummaryList({
   editing,
   onAddLink,
   canAddLink,
+  numberSystem,
 }: {
   groups: RelationshipGroup[];
   fileNameMap: Map<string, string>;
@@ -776,6 +1480,7 @@ function ConnectionSummaryList({
   editing: boolean;
   onAddLink: () => void;
   canAddLink: boolean;
+  numberSystem: NumberSystem;
 }) {
   const visibleGroups = [...groups]
     .sort((a, b) => b.links.length - a.links.length)
@@ -784,22 +1489,35 @@ function ConnectionSummaryList({
 
   return (
     <section className="border-b border-foreground/12 pb-7">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <div className="small-caps text-xs text-primary">connections</div>
-          <h3 className="mt-1 font-mono text-xl text-foreground">How files relate</h3>
-        </div>
-        {editing ? (
-          <button
-            type="button"
-            onClick={onAddLink}
-            disabled={!canAddLink}
-            className="small-caps border border-foreground/28 bg-muted/70 px-3 py-2 text-xs transition hover:bg-card disabled:opacity-40"
-          >
-            add connection
-          </button>
-        ) : null}
-      </div>
+      <details className="group border border-border bg-card">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3">
+          <div>
+            <div className="small-caps text-xs text-primary">connection details</div>
+            <h3 className="mt-1 font-mono text-base text-foreground">View relationship list</h3>
+          </div>
+          <span className="small-caps text-[10px] text-muted-foreground group-open:hidden">
+            expand
+          </span>
+          <span className="small-caps hidden text-[10px] text-muted-foreground group-open:inline">
+            collapse
+          </span>
+        </summary>
+        <div className="border-t border-border p-4">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+            <div className="text-sm text-muted-foreground">
+              These are the same links shown in the diagram, with editable fields.
+            </div>
+            {editing ? (
+              <button
+                type="button"
+                onClick={onAddLink}
+                disabled={!canAddLink}
+                className="small-caps border border-foreground/28 bg-muted/70 px-3 py-2 text-xs transition hover:bg-card disabled:opacity-40"
+              >
+                add connection
+              </button>
+            ) : null}
+          </div>
       {visibleGroups.length === 0 ? (
         <div className="border border-foreground/12 bg-card/62 p-4 text-sm text-foreground/58">
           No strong file connections found yet.
@@ -827,7 +1545,7 @@ function ConnectionSummaryList({
                   {fileNameMap.get(group.leftId) ?? group.leftId}
                 </button>
                 <span className="small-caps whitespace-nowrap border border-primary/22 bg-primary/8 px-2 py-1 text-[10px] text-primary">
-                  {group.links.length} link{group.links.length === 1 ? "" : "s"}
+                  {formatNumberValue(group.links.length, numberSystem)} link{group.links.length === 1 ? "" : "s"}
                 </span>
                 <button
                   type="button"
@@ -844,8 +1562,8 @@ function ConnectionSummaryList({
                   inspect
                 </button>
                 {weakCount > 0 ? (
-                  <div className="text-xs text-amber-600 md:col-span-4">
-                    {weakCount} weak link{weakCount === 1 ? "" : "s"}.
+                  <div className="text-xs text-destructive md:col-span-4">
+                    {formatNumberValue(weakCount, numberSystem)} weak link{weakCount === 1 ? "" : "s"}.
                   </div>
                 ) : null}
               </div>
@@ -853,11 +1571,13 @@ function ConnectionSummaryList({
           })}
           {hiddenCount > 0 ? (
             <div className="small-caps px-3 py-2 text-xs text-foreground/42">
-              {hiddenCount} more connection group{hiddenCount === 1 ? "" : "s"} hidden from this view.
+              {formatNumberValue(hiddenCount, numberSystem)} more connection group{hiddenCount === 1 ? "" : "s"} hidden from this view.
             </div>
           ) : null}
         </div>
       )}
+        </div>
+      </details>
     </section>
   );
 }
@@ -874,10 +1594,12 @@ function AgentContextSummary({
   summary,
   files,
   onSelectFile,
+  numberSystem,
 }: {
   summary: GuideSummary;
   files: DiscoveredFile[];
   onSelectFile: (fileId: string) => void;
+  numberSystem: NumberSystem;
 }) {
   return (
     <section className="pb-3">
@@ -897,20 +1619,30 @@ function AgentContextSummary({
         ) : null}
       </div>
       <div className="grid gap-3 md:grid-cols-5">
-        <ContextCount label="documents" value={summary.documented} />
-        <ContextCount label="notes" value={summary.notes} />
-        <ContextCount label="glossary" value={summary.glossary} />
-        <ContextCount label="questions" value={summary.questions} />
-        <ContextCount label="watch-outs" value={summary.caveats} />
+        <ContextCount label="documents" value={summary.documented} numberSystem={numberSystem} />
+        <ContextCount label="notes" value={summary.notes} numberSystem={numberSystem} />
+        <ContextCount label="glossary" value={summary.glossary} numberSystem={numberSystem} />
+        <ContextCount label="questions" value={summary.questions} numberSystem={numberSystem} />
+        <ContextCount label="watch-outs" value={summary.caveats} numberSystem={numberSystem} />
       </div>
     </section>
   );
 }
 
-function ContextCount({ label, value }: { label: string; value: number }) {
+function ContextCount({
+  label,
+  value,
+  numberSystem,
+}: {
+  label: string;
+  value: number;
+  numberSystem: NumberSystem;
+}) {
   return (
     <div className="border border-foreground/10 bg-card/52 px-3 py-3">
-      <div className="font-mono text-xl text-foreground">{formatNumber(value)}</div>
+      <div className="font-mono text-xl text-foreground">
+        {formatNumberValue(value, numberSystem)}
+      </div>
       <div className="small-caps mt-1 text-[10px] text-foreground/42">{label}</div>
     </div>
   );
@@ -943,6 +1675,7 @@ function FileSchemaDrawer({
   draftFiles,
   fileNameMap,
   warnings,
+  numberSystem,
   onClose,
   onUpdateFile,
   onUpdateColumn,
@@ -966,6 +1699,7 @@ function FileSchemaDrawer({
   draftFiles: DiscoveredFile[];
   fileNameMap: Map<string, string>;
   warnings: string[];
+  numberSystem: NumberSystem;
   onClose: () => void;
   onUpdateFile: (idx: number, patch: Partial<DiscoveredFile>) => void;
   onUpdateColumn: (
@@ -998,20 +1732,22 @@ function FileSchemaDrawer({
               <input
                 type="text"
                 value={file.friendly_name}
+                title={record?.filename ?? undefined}
                 onChange={(e) => onUpdateFile(fileIdx, { friendly_name: e.target.value })}
                 className="mt-2 w-full border border-border bg-card px-2 py-1 font-mono text-xl focus:outline-none focus:ring-1 focus:ring-ring"
               />
             ) : (
-              <h3 className="mt-1 truncate font-mono text-xl text-foreground">
+              <h3
+                className="mt-1 truncate font-mono text-xl text-foreground"
+                title={record?.filename ?? undefined}
+              >
                 {file.friendly_name}
               </h3>
             )}
             <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
-              <span>{record?.filename ?? "Original file unknown"}</span>
-              <span>{formatSize(record?.original_size_bytes)}</span>
-              <span>{formatNumber(record?.row_count ?? 0)} rows</span>
-              <span>{file.columns.length} columns</span>
-              <span>header starts on row {file.header_row}</span>
+              <span>{formatSize(record?.original_size_bytes, numberSystem)}</span>
+              <span>{formatNumberValue(record?.row_count ?? 0, numberSystem)} rows</span>
+              <span>{formatNumberValue(file.columns.length, numberSystem)} fields</span>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -1043,7 +1779,7 @@ function FileSchemaDrawer({
 
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
           {warnings.length > 0 ? (
-            <div className="border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-600">
+            <div className="border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
               {warnings.map((warning) => (
                 <div key={warning}>{warning}</div>
               ))}
@@ -1064,22 +1800,13 @@ function FileSchemaDrawer({
                 {file.description || "No description yet."}
               </p>
             )}
-            {editing ? (
-              <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-                Header starts on row
-                <input
-                  type="number"
-                  min={0}
-                  value={file.header_row}
-                  onChange={(e) =>
-                    onUpdateFile(fileIdx, {
-                      header_row: Math.max(0, Number(e.target.value) || 0),
-                    })
-                  }
-                  className="w-20 border border-border bg-card px-2 py-1"
-                />
-              </label>
-            ) : null}
+            <HeaderPreview
+              preview={preview}
+              headerRow={file.header_row}
+              editing={editing}
+              onHeaderRowChange={(headerRow) => onUpdateFile(fileIdx, { header_row: headerRow })}
+              numberSystem={numberSystem}
+            />
           </section>
 
           <section>
@@ -1098,13 +1825,24 @@ function FileSchemaDrawer({
                 </button>
               ) : null}
             </div>
-            <SchemaColumnTable
-              file={file}
-              fileIdx={fileIdx}
-              editing={editing}
-              onUpdateColumn={onUpdateColumn}
-              onRemoveColumn={onRemoveColumn}
-            />
+            <details open={editing} className="group border border-border bg-card">
+              <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-3 text-sm text-foreground">
+                <span className="font-mono">View fields</span>
+                <span className="small-caps text-[10px] text-muted-foreground group-open:hidden">
+                  {formatNumberValue(file.columns.length, numberSystem)} hidden
+                </span>
+                <span className="small-caps hidden text-[10px] text-muted-foreground group-open:inline">
+                  hide fields
+                </span>
+              </summary>
+              <SchemaColumnTable
+                file={file}
+                fileIdx={fileIdx}
+                editing={editing}
+                onUpdateColumn={onUpdateColumn}
+                onRemoveColumn={onRemoveColumn}
+              />
+            </details>
           </section>
 
           <section>
@@ -1143,7 +1881,7 @@ function FileSchemaDrawer({
               </div>
               {preview ? (
                 <div className="small-caps text-xs text-muted-foreground">
-                  {formatNumber(preview.total_rows)} rows
+                  {formatNumberValue(preview.total_rows, numberSystem)} rows
                 </div>
               ) : null}
             </div>
@@ -1152,7 +1890,7 @@ function FileSchemaDrawer({
             ) : previewError ? (
               <div className="py-4 text-sm text-destructive">{previewError}</div>
             ) : preview ? (
-              <PreviewTable preview={preview} />
+              <PreviewTable preview={preview} numberSystem={numberSystem} />
             ) : null}
           </section>
         </div>
@@ -1219,7 +1957,7 @@ function SchemaColumnTable({
                     className="w-full border border-border px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                 ) : (
-                  col.description || <span className="text-amber-600">Needs description</span>
+                  col.description || <span className="text-destructive">Needs description</span>
                 )}
               </Td>
               <Td>
@@ -1345,17 +2083,14 @@ function RelationshipList({
             ) : (
               <>
                 <div className="text-sm text-foreground">
-                  {relationshipSentence(link, fileNameMap)}
+                  {link.summary || relationshipSentence(link, fileNameMap)}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
                   <span className="small-caps border border-border px-1.5 py-0.5 text-[10px]">
                     {link.direction.replace(/_/g, " ")}
                   </span>
-                  <EvidenceLabel stat={stat} />
+                  <EvidenceLabel stat={stat} link={link} />
                 </div>
-                {link.summary ? (
-                  <p className="mt-2 text-sm leading-5 text-muted-foreground">{link.summary}</p>
-                ) : null}
               </>
             )}
           </div>
@@ -1410,7 +2145,87 @@ function ColumnPicker({
   );
 }
 
-function PreviewTable({ preview }: { preview: FilePreviewResponse }) {
+function HeaderPreview({
+  preview,
+  headerRow,
+  editing,
+  onHeaderRowChange,
+  numberSystem,
+}: {
+  preview: FilePreviewResponse | null;
+  headerRow: number;
+  editing: boolean;
+  onHeaderRowChange: (headerRow: number) => void;
+  numberSystem: NumberSystem;
+}) {
+  const rows = preview?.rows.slice(0, 5) ?? [];
+  const safeHeaderRow = Math.max(0, headerRow);
+
+  return (
+    <div className="mt-4 border border-border bg-card p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="small-caps text-[10px] text-muted-foreground">detected header</div>
+          <div className="mt-1 text-sm text-foreground">
+            Row {formatNumberValue(safeHeaderRow + 1, numberSystem)} is treated as the field names.
+          </div>
+        </div>
+        {editing ? (
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            Header row
+            <input
+              type="number"
+              min={0}
+              value={safeHeaderRow}
+              onChange={(event) =>
+                onHeaderRowChange(Math.max(0, Number(event.target.value) || 0))
+              }
+              className="w-20 border border-border bg-card px-2 py-1 text-foreground"
+            />
+          </label>
+        ) : null}
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-xs text-muted-foreground">Preview unavailable.</div>
+      ) : (
+        <div className="grid gap-1 overflow-x-auto">
+          {rows.map((row, index) => {
+            const isHeader = index === Math.min(safeHeaderRow, rows.length - 1);
+            return (
+              <div
+                key={index}
+                className={`grid min-w-[34rem] grid-cols-[4rem_1fr] border px-2 py-2 text-xs ${
+                  isHeader
+                    ? "border-primary bg-primary/10 text-foreground"
+                    : "border-border bg-muted/40 text-muted-foreground"
+                }`}
+              >
+                <span className="small-caps text-[10px]">
+                  row {formatNumberValue(index + 1, numberSystem)}
+                </span>
+                <span className="truncate font-mono">
+                  {row
+                    .map((value) => formatCell(value, numberSystem))
+                    .filter(Boolean)
+                    .slice(0, 6)
+                    .join(" | ") || "empty"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PreviewTable({
+  preview,
+  numberSystem,
+}: {
+  preview: FilePreviewResponse;
+  numberSystem: NumberSystem;
+}) {
   return (
     <div className="max-h-[22rem] overflow-auto border border-border border-t-0 bg-card">
       <table className="w-full min-w-max border-collapse text-xs">
@@ -1433,9 +2248,9 @@ function PreviewTable({ preview }: { preview: FilePreviewResponse }) {
                 <td
                   key={`${rowIdx}-${colIdx}`}
                   className="max-w-[18rem] truncate px-3 py-2 font-mono text-xs text-foreground/80"
-                  title={formatCell(row[colIdx])}
+                  title={formatCell(row[colIdx], numberSystem)}
                 >
-                  {formatCell(row[colIdx]) || <span className="text-muted-foreground/50">empty</span>}
+                  {formatCell(row[colIdx], numberSystem) || <span className="text-muted-foreground/50">empty</span>}
                 </td>
               ))}
             </tr>
@@ -1443,24 +2258,55 @@ function PreviewTable({ preview }: { preview: FilePreviewResponse }) {
         </tbody>
       </table>
       <div className="small-caps px-4 py-3 text-[10px] text-muted-foreground">
-        Showing {preview.rows.length} of {formatNumber(preview.total_rows)} rows
+        Showing {formatNumberValue(preview.rows.length, numberSystem)} of {formatNumberValue(preview.total_rows, numberSystem)} rows
       </div>
     </div>
   );
 }
 
-function EvidenceLabel({ stat }: { stat?: LinkStat }) {
-  const score = stat?.score ?? stat?.overlap;
-  if (score === undefined) {
-    return <span>semantic match</span>;
-  }
-  const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
+function EvidenceLabel({
+  stat,
+  link,
+}: {
+  stat?: LinkStat;
+  link: DiscoveredLink;
+}) {
+  const low = needsReview(link.confidence, link.low_confidence_reasons);
   const source = stat?.source === "user_added" ? "manual" : "value scan";
   return (
-    <span className={pct < 70 ? "text-amber-600" : ""}>
-      {pct}% match from {source}
+    <span className={low ? "text-destructive" : "text-muted-foreground"}>
+      {low ? "needs review" : "confirmed"} by {source}
     </span>
   );
+}
+
+function buildNarrative(
+  overview: string,
+  files: DiscoveredFile[],
+  links: DiscoveredLink[],
+  fileNameMap: Map<string, string>,
+  numberSystem: NumberSystem,
+): string {
+  if (files.length === 0) {
+    return "Cerno has not built a data map yet.";
+  }
+
+  const fileNames = files.map(
+    (file) => fileNameMap.get(file.file_id) ?? file.friendly_name,
+  );
+  const totalFields = files.reduce((sum, file) => sum + file.columns.length, 0);
+  const base = `Cerno read ${formatNumberValue(files.length, numberSystem)} file${
+    files.length === 1 ? "" : "s"
+  }: ${joinReadable(fileNames, numberSystem)}. It found ${formatNumberValue(
+    totalFields,
+    numberSystem,
+  )} field${totalFields === 1 ? "" : "s"} and ${formatNumberValue(
+    links.length,
+    numberSystem,
+  )} connection${links.length === 1 ? "" : "s"} between them.`;
+  const cleanOverview = overview.replace(/\s+/g, " ").trim();
+  if (!cleanOverview) return base;
+  return `${base} ${shortText(cleanOverview, 220)}`;
 }
 
 function buildGuideSummary(doc: DataDoc | null, files: DiscoveredFile[]): GuideSummary {
@@ -1488,6 +2334,7 @@ function buildSummary(
   draftFiles: DiscoveredFile[],
   draftLinks: DiscoveredLink[],
   status: string,
+  numberSystem: NumberSystem,
 ): SummaryStats {
   const knownSizes = files
     .map((file) => file.original_size_bytes)
@@ -1500,11 +2347,11 @@ function buildSummary(
     size:
       knownSizes.length === 0
         ? "Unknown"
-        : `${formatSize(totalSize)}${hasUnknownSize ? " +" : ""}`,
-    rows: formatNumber(totalRows),
-    files: formatNumber(draftFiles.length || files.length),
-    columns: formatNumber(columnCount),
-    relationships: formatNumber(draftLinks.length),
+        : `${formatSize(totalSize, numberSystem)}${hasUnknownSize ? " +" : ""}`,
+    rows: formatNumberValue(totalRows, numberSystem),
+    files: formatNumberValue(draftFiles.length || files.length, numberSystem),
+    columns: formatNumberValue(columnCount, numberSystem),
+    relationships: formatNumberValue(draftLinks.length, numberSystem),
     state: status === "approved" ? "Approved" : "Draft",
   };
 }
@@ -1529,6 +2376,18 @@ function buildWarnings(
     if (file.columns.some((column) => !column.description.trim())) {
       add(file.file_id, "Some columns need plain-language meanings.");
     }
+    for (const column of file.columns) {
+      const reasons = reviewReasons(
+        column.confidence,
+        column.low_confidence_reasons,
+      );
+      if (reasons.length > 0) {
+        add(
+          file.file_id,
+          `${column.name} needs review: ${friendlyReason(reasons[0]!)}`
+        );
+      }
+    }
     if (file.header_row > 5) {
       add(file.file_id, `Header row ${file.header_row} is unusually deep.`);
     }
@@ -1538,6 +2397,14 @@ function buildWarnings(
   for (const link of links) {
     linkedFiles.add(link.file_a_id);
     linkedFiles.add(link.file_b_id);
+    const reasons = reviewReasons(link.confidence, link.low_confidence_reasons);
+    if (reasons.length > 0) {
+      const message = `${link.col_a} to ${link.col_b} connection needs review: ${friendlyReason(
+        reasons[0]!,
+      )}`;
+      add(link.file_a_id, message);
+      add(link.file_b_id, message);
+    }
   }
   if (files.length > 1) {
     for (const file of files) {
@@ -1550,6 +2417,100 @@ function buildWarnings(
   return {
     byFile,
     total: [...byFile.values()].reduce((sum, items) => sum + items.length, 0),
+  };
+}
+
+type GraphFormatterParam = {
+  dataType?: string;
+  name?: string;
+  data?: {
+    name?: string;
+    value?: string;
+  };
+};
+
+function buildRelationshipGraphOption(
+  files: DiscoveredFile[],
+  links: DiscoveredLink[],
+  fileNameMap: Map<string, string>,
+  linkStats: Map<string, LinkStat>,
+): Record<string, unknown> {
+  const fileIds = new Set(files.map((file) => file.file_id));
+  const nodes = files.map((file) => {
+    const low = file.columns.some((column) =>
+      needsReview(column.confidence, column.low_confidence_reasons),
+    );
+    return {
+      id: file.file_id,
+      name: fileNameMap.get(file.file_id) ?? file.friendly_name,
+      symbolSize: Math.max(58, Math.min(96, 52 + file.columns.length * 3)),
+      itemStyle: {
+        color: low ? "hsl(var(--destructive))" : "hsl(var(--primary))",
+        borderColor: "hsl(var(--border))",
+        borderWidth: 1,
+      },
+    };
+  });
+  const graphLinks = links
+    .filter((link) => fileIds.has(link.file_a_id) && fileIds.has(link.file_b_id))
+    .map((link) => {
+      const stat = linkStats.get(
+        linkLookupKey(link.file_a_id, link.col_a, link.file_b_id, link.col_b),
+      );
+      const low = needsReview(link.confidence, link.low_confidence_reasons);
+      const weak = low || isWeakLink(stat);
+      return {
+        source: link.file_a_id,
+        target: link.file_b_id,
+        value: relationshipLabel(link, fileNameMap),
+        lineStyle: {
+          color: weak ? "hsl(var(--destructive))" : "hsl(var(--primary))",
+          opacity: weak ? 0.45 : 0.75,
+          width: weak ? 1 : 2,
+        },
+      };
+    });
+
+  return {
+    animationDuration: 300,
+    tooltip: {
+      confine: true,
+      formatter: (params: GraphFormatterParam) => {
+        if (params.dataType === "edge") return params.data?.value ?? "";
+        return params.name ?? params.data?.name ?? "";
+      },
+    },
+    series: [
+      {
+        type: "graph",
+        layout: "force",
+        roam: false,
+        draggable: true,
+        data: nodes,
+        links: graphLinks,
+        label: {
+          show: true,
+          color: "hsl(var(--primary-foreground))",
+          fontSize: 12,
+          formatter: (params: GraphFormatterParam) => params.name ?? "",
+        },
+        edgeLabel: {
+          show: true,
+          color: "hsl(var(--muted-foreground))",
+          fontSize: 10,
+          formatter: (params: GraphFormatterParam) =>
+            shortText(params.data?.value ?? "", 58),
+        },
+        force: {
+          repulsion: 260,
+          edgeLength: [130, 190],
+          gravity: 0.08,
+        },
+        emphasis: {
+          focus: "adjacency",
+        },
+      },
+    ],
   };
 }
 
@@ -1586,10 +2547,258 @@ function relationshipSentence(
   link: DiscoveredLink,
   fileNameMap: Map<string, string>,
 ): string {
+  const direction = link.direction.replace(/_/g, " ");
+  return `${relationshipLabel(link, fileNameMap)}. This looks like ${direction}.`;
+}
+
+function relationshipLabel(
+  link: DiscoveredLink,
+  fileNameMap: Map<string, string>,
+): string {
   const left = fileNameMap.get(link.file_a_id) ?? link.file_a_id;
   const right = fileNameMap.get(link.file_b_id) ?? link.file_b_id;
-  const direction = link.direction.replace(/_/g, " ");
-  return `${left} connects to ${right} through ${link.col_a} and ${link.col_b}. This looks like ${direction}.`;
+  const column =
+    link.col_a.trim().toLowerCase() === link.col_b.trim().toLowerCase()
+      ? humanizeLabel(link.col_a)
+      : `${humanizeLabel(link.col_a)} / ${humanizeLabel(link.col_b)}`;
+  return `${column} connects ${left} -> ${right}`;
+}
+
+function operationTitle(operation: SchemaCorrectionOperation): string {
+  const labels: Record<string, string> = {
+    add_column: "Add field",
+    add_link: "Add connection",
+    edit_link: "Edit connection",
+    remove_column: "Remove field",
+    remove_link: "Remove connection",
+    rename_column: "Rename field",
+    scale_column: "Rescale values",
+    set_column_description: "Update field meaning",
+    set_dtype: "Change field type",
+    set_file_description: "Update file description",
+    set_friendly_name: "Rename file",
+    set_glossary_term: "Update glossary",
+    set_header_row: "Change header row",
+    set_starter_question: "Update starter question",
+    set_usage_note: "Update usage note",
+  };
+  return labels[operation.op_type] ?? humanizeLabel(operation.op_type);
+}
+
+function correctionTargetLabel(
+  operation: SchemaCorrectionOperation,
+  files: DiscoveredFile[],
+  fileNameMap: Map<string, string>,
+): string {
+  if (operation.target_type === "data_doc") return "Data guide";
+  if (operation.target_type === "link") {
+    const leftId = operation.target.file_a_id;
+    const rightId = operation.target.file_b_id;
+    const left = leftId ? fileNameMap.get(leftId) ?? leftId : "source file";
+    const right = rightId ? fileNameMap.get(rightId) ?? rightId : "target file";
+    const leftColumn = operation.target.col_a ?? operation.target.left_column;
+    const rightColumn = operation.target.col_b ?? operation.target.right_column;
+    if (leftColumn || rightColumn) {
+      return `${left} ${leftColumn ?? ""} -> ${right} ${rightColumn ?? ""}`.trim();
+    }
+    return `${left} -> ${right}`;
+  }
+
+  const file = findCorrectionFile(operation, files);
+  const fileLabel = file
+    ? fileNameMap.get(file.file_id) ?? file.friendly_name
+    : operation.target.file_id ?? "File";
+  if (operation.target_type === "file") return fileLabel;
+
+  const column = findCorrectionColumn(operation, files);
+  return `${fileLabel} · ${column?.name ?? operation.target.column_id ?? "Field"}`;
+}
+
+function findCorrectionFile(
+  operation: SchemaCorrectionOperation,
+  files: DiscoveredFile[],
+): DiscoveredFile | undefined {
+  const fileId = extractTargetFileId(operation);
+  if (!fileId) return undefined;
+  return files.find((file) => file.file_id === fileId);
+}
+
+function findCorrectionColumn(
+  operation: SchemaCorrectionOperation,
+  files: DiscoveredFile[],
+): DiscoveredColumn | undefined {
+  const file = findCorrectionFile(operation, files);
+  if (!file) return undefined;
+  const columnId = operation.target.column_id ?? operation.target.column;
+  if (!columnId) return undefined;
+  return file.columns.find(
+    (column) => column.column_id === columnId || column.name === columnId,
+  );
+}
+
+function structuralCorrectionImpact(
+  operation: SchemaCorrectionOperation,
+  fileById: Map<string, FileRecord>,
+  numberSystem: NumberSystem,
+): string {
+  if (operation.target_type === "link") {
+    return "Will update relationships and regenerate the data guide.";
+  }
+  const fileId = extractTargetFileId(operation);
+  const rowCount = fileId ? fileById.get(fileId)?.row_count : undefined;
+  const rows =
+    typeof rowCount === "number"
+      ? `${formatNumberValue(rowCount, numberSystem)} row${
+          rowCount === 1 ? "" : "s"
+        }`
+      : "the affected rows";
+  if (operation.op_type === "set_header_row") {
+    return `Will re-read the header, re-cast ${rows}, and regenerate the data guide.`;
+  }
+  if (operation.target_type === "column") {
+    return `Will re-cast up to ${rows} for this field and regenerate the data guide.`;
+  }
+  return "Will rewrite the stored data map and regenerate the data guide.";
+}
+
+function extractTargetFileId(operation: SchemaCorrectionOperation): string | undefined {
+  return (
+    operation.target.file_id ??
+    operation.target.file_a_id ??
+    operation.target.left_file_id
+  );
+}
+
+function formatCorrectionValue(
+  value: unknown,
+  operation: SchemaCorrectionOperation,
+  numberSystem: NumberSystem,
+  side: "before" | "after",
+): string {
+  if (operation.op_type === "scale_column" && side === "after") {
+    const factor = operation.transform?.factor;
+    if (typeof factor === "number") {
+      return `multiply values by ${formatNumberValue(factor, numberSystem)}`;
+    }
+  }
+  if (value === null || value === undefined || value === "") return "empty";
+  if (typeof value === "number") return formatNumberValue(value, numberSystem);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "string") return shortText(value, 180);
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => formatCorrectionValue(item, operation, numberSystem, side))
+      .join(", ");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, item]) => {
+        const formatted =
+          typeof item === "number"
+            ? formatNumberValue(item, numberSystem)
+            : typeof item === "string"
+              ? item
+              : JSON.stringify(item);
+        return `${humanizeLabel(key)}: ${formatted}`;
+      })
+      .join(", ");
+  }
+  return String(value);
+}
+
+function pickKeyFields(
+  file: DiscoveredFile,
+  docFile?: DataDoc["files"][number],
+): Array<{ name: string; dtype: string }> {
+  const columnsByName = new Map(
+    file.columns.map((column) => [column.name.toLowerCase(), column]),
+  );
+  const priorityNames = [
+    ...(docFile?.key_columns ?? []),
+    ...(docFile?.measure_columns ?? []),
+    ...(docFile?.date_columns ?? []),
+    ...(docFile?.category_columns ?? []),
+  ];
+  const selected: Array<{ name: string; dtype: string }> = [];
+  for (const name of priorityNames) {
+    const column = columnsByName.get(name.toLowerCase());
+    if (!column || selected.some((item) => item.name === column.name)) continue;
+    selected.push({ name: column.name, dtype: column.dtype });
+    if (selected.length >= 5) return selected;
+  }
+  const fallback = [...file.columns].sort((a, b) => {
+    const aRank = fieldRank(a.name, a.dtype);
+    const bRank = fieldRank(b.name, b.dtype);
+    if (aRank !== bRank) return aRank - bRank;
+    return a.name.localeCompare(b.name);
+  });
+  for (const column of fallback) {
+    if (selected.some((item) => item.name === column.name)) continue;
+    selected.push({ name: column.name, dtype: column.dtype });
+    if (selected.length >= 5) return selected;
+  }
+  return selected;
+}
+
+function fieldRank(name: string, dtype: string): number {
+  const normalized = name.toLowerCase();
+  if (normalized === "id" || normalized.endsWith("_id")) return 0;
+  if (/(amount|price|cost|value|total|balance|revenue)/.test(normalized)) {
+    return 1;
+  }
+  if (dtype === "date" || dtype === "datetime") return 2;
+  if (dtype === "category" || dtype === "bool") return 3;
+  if (dtype === "int" || dtype === "float") return 4;
+  return 5;
+}
+
+function friendlyFieldLabel(name: string, dtype: string): string {
+  const normalized = name.toLowerCase();
+  if (normalized === "id" || normalized.endsWith("_id")) return "ID";
+  if (/(amount|price|cost|value|total|balance|revenue)/.test(normalized)) {
+    return "amount";
+  }
+  if (dtype === "date" || dtype === "datetime") return "date";
+  if (dtype === "int" || dtype === "float") return "number";
+  if (dtype === "bool") return "yes/no";
+  if (dtype === "category") return "category";
+  return "text";
+}
+
+function inferGrain(file: DiscoveredFile): string {
+  const label = humanizeLabel(file.friendly_name).toLowerCase();
+  const unit = singularize(label || "record");
+  return `One row per ${unit}.`;
+}
+
+function joinReadable(items: string[], numberSystem: NumberSystem): string {
+  if (items.length === 0) return "the uploaded files";
+  if (items.length === 1) return items[0]!;
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  const visible = items.slice(0, 3);
+  const hiddenCount = items.length - visible.length;
+  if (hiddenCount <= 0) {
+    return `${visible.slice(0, -1).join(", ")}, and ${visible.at(-1)}`;
+  }
+  return `${visible.join(", ")}, and ${formatNumberValue(
+    hiddenCount,
+    numberSystem,
+  )} more`;
+}
+
+function humanizeLabel(value: string): string {
+  return value
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function singularize(value: string): string {
+  if (value.endsWith("ies")) return `${value.slice(0, -3)}y`;
+  if (value.endsWith("ses")) return value.slice(0, -2);
+  if (value.endsWith("s") && value.length > 3) return value.slice(0, -1);
+  return value;
 }
 
 function cleanFilename(filename: string): string {
@@ -1605,9 +2814,48 @@ function shortText(value: string, maxLength: number): string {
   return `${normalized.slice(0, cutAt).trim()}...`;
 }
 
-function formatSize(bytes: number | null | undefined): string {
+function needsReview(
+  confidence: number | undefined,
+  reasons: string[] | undefined,
+): boolean {
+  return reviewReasons(confidence, reasons).length > 0;
+}
+
+function reviewReasons(
+  confidence: number | undefined,
+  reasons: string[] | undefined,
+): string[] {
+  if (reasons && reasons.length > 0) return reasons;
+  if (typeof confidence === "number" && confidence < CONFIDENCE_REVIEW_THRESHOLD) {
+    return ["low_confidence"];
+  }
+  return [];
+}
+
+function friendlyReason(reason: string): string {
+  const known: Record<string, string> = {
+    ambiguous_date: "Date order is ambiguous.",
+    canonicalize_low_confidence: "Some values did not cleanly match the detected type.",
+    header_low_confidence: "The detected header may need review.",
+    invalid_header: "The field names look incomplete.",
+    link_low_confidence: "The connection is not strong enough to confirm.",
+    low_confidence: "Cerno was not confident enough to confirm this.",
+    manual_field_added: "This field was added manually.",
+    type_validation_failed: "The field type does not match enough values.",
+  };
+  if (known[reason]) return known[reason]!;
+  if (reason.includes(" ") && /[.!?]$/.test(reason)) return reason;
+  if (reason.includes(" ")) return `${reason}.`;
+  const normalized = reason.replace(/_/g, " ");
+  return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}.`;
+}
+
+function formatSize(
+  bytes: number | null | undefined,
+  numberSystem: NumberSystem,
+): string {
   if (typeof bytes !== "number") return "Unknown size";
-  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024) return `${formatNumberValue(bytes, numberSystem)} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let value = bytes / 1024;
   let unit = units[0]!;
@@ -1615,11 +2863,8 @@ function formatSize(bytes: number | null | undefined): string {
     value /= 1024;
     unit = units[i]!;
   }
-  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat().format(value);
+  const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
+  return `${formatNumberValue(rounded, numberSystem)} ${unit}`;
 }
 
 function isWeakLink(stat?: LinkStat): boolean {
@@ -1639,10 +2884,10 @@ function friendlyEventMessage(event: ProcessingEvent): string {
   return step?.label ?? event.message;
 }
 
-function formatCell(value: unknown): string {
+function formatCell(value: unknown, numberSystem: NumberSystem): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
-  if (typeof value === "number") return String(value);
+  if (typeof value === "number") return formatNumberValue(value, numberSystem);
   if (typeof value === "boolean") return value ? "true" : "false";
   return JSON.stringify(value);
 }

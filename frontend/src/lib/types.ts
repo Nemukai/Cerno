@@ -30,6 +30,9 @@ export type ProcessingEventKind =
   | "queued"
   | "uploading"
   | "ingesting_file"
+  | "reading_document"
+  | "ocr_page"
+  | "quality_review"
   | "started"
   | "loading_artifacts"
   | "reading_files"
@@ -266,6 +269,35 @@ export type FileRecord = {
   created_at: string;
 };
 
+export type DocumentPageRecord = {
+  id: string;
+  page_number: number;
+  source: "text_layer" | "ocr" | "ocr_retry" | string;
+  char_count: number;
+  quality_score: number;
+  low_confidence: boolean;
+  quality_reasons: string[];
+  has_review_image: boolean;
+};
+
+export type DocumentRecord = {
+  id: string;
+  filename: string;
+  page_count: number;
+  status: "processing" | "processed" | "failed" | string;
+  created_at: string;
+  pages: DocumentPageRecord[];
+};
+
+export type DocumentPageDetail = DocumentPageRecord & {
+  markdown: string;
+  review_image_url: string | null;
+};
+
+export type DocumentDetail = Omit<DocumentRecord, "pages"> & {
+  pages: DocumentPageDetail[];
+};
+
 export type ProcessingEvent = {
   id: number;
   session_id: string;
@@ -293,6 +325,8 @@ export type DiscoveredColumn = {
   name: string;
   description: string;
   dtype: SimpleDtype;
+  confidence?: number;
+  low_confidence_reasons?: string[];
 };
 
 export type DiscoveredFile = {
@@ -310,6 +344,8 @@ export type DiscoveredLink = {
   col_b: string;
   direction: LinkDirection;
   summary: string;
+  confidence?: number;
+  low_confidence_reasons?: string[];
 };
 
 export type DiscoveryResponse = {
@@ -318,6 +354,31 @@ export type DiscoveryResponse = {
   files: DiscoveredFile[];
   links: DiscoveredLink[];
   overview: string;
+};
+
+export type SchemaCorrectionClassification = "minor" | "structural";
+export type SchemaCorrectionTargetType = "file" | "column" | "link" | "data_doc";
+
+export type SchemaCorrectionOperation = {
+  op_id: string;
+  target_type: SchemaCorrectionTargetType;
+  target: Record<string, string>;
+  op_type: string;
+  before_value: unknown;
+  after_value: unknown;
+  description: string;
+  classification: SchemaCorrectionClassification;
+  transform: { kind: "scale"; factor: number } | Record<string, unknown> | null;
+};
+
+export type SchemaCorrectionPatch = {
+  instruction: string;
+  operations: SchemaCorrectionOperation[];
+};
+
+export type SchemaCorrectionApplyResponse = {
+  discovery: DiscoveryResponse;
+  data_doc: DataDoc | null;
 };
 
 export type FilePreviewResponse = {
@@ -337,6 +398,7 @@ export type SchemaColumn = {
   position: number;
   column_id: string | null;
   description: string | null;
+  confidence_reason?: string | null;
 };
 
 export type FileSchema = {
@@ -443,6 +505,7 @@ export type ChatFeedTurn = {
 export type WorkspaceResponse = {
   session: Session;
   files: FileRecord[];
+  documents: DocumentRecord[];
   links: Link[];
   discovery: DiscoveryResponse;
   events: ProcessingEvent[];
@@ -502,6 +565,8 @@ export type DataDocColumn = {
   dtype: string;
   meaning: string;
   role: string | null;
+  confidence?: number;
+  low_confidence_reasons?: string[];
 };
 
 export type DataDocFile = {
@@ -524,6 +589,8 @@ export type DataDocRelationship = {
   right_file_id: string;
   right_column: string;
   explanation: string;
+  confidence?: number;
+  low_confidence_reasons?: string[];
 };
 
 export type DataDocGlossaryItem = {

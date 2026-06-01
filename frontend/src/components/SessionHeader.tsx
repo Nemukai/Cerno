@@ -111,7 +111,7 @@ export function SessionHeader({
             <input
               ref={inputRef}
               type="file"
-              accept=".csv,.xlsx,.xls"
+              accept=".csv,.xlsx,.xls,.pdf,.txt,.md,.markdown"
               multiple
               className="hidden"
               onChange={handleChange}

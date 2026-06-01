@@ -23,6 +23,7 @@ import {
   deleteTurn,
   getChatFeed,
   getDiscovery,
+  listDocuments,
   getOrganizationAdminDashboard,
   getOwnerDashboard,
   getProcessingEvents,
@@ -44,6 +45,7 @@ import type {
   ChatStreamEvent,
   ChatTurn,
   DataDoc,
+  DocumentRecord,
   DiscoveredFile,
   DiscoveredLink,
   DiscoveryResponse,
@@ -53,14 +55,17 @@ import type {
   OrganizationAdminDashboard,
   OrganizationMemberBody,
   ProcessingEvent,
+  SchemaCorrectionApplyResponse,
   Session,
   WorkspaceResponse,
 } from "./lib/types";
 import { ChatSidebar } from "./components/ChatSidebar";
 import {
+  DocumentLibrary,
   FilesPanel,
   WorkspaceSidebar,
 } from "./components/SessionPanels";
+import { DocumentViewer, type DocumentTarget } from "./components/DocumentViewer";
 import { SchemaTab } from "./components/SchemaTab";
 import { SessionHeader } from "./components/SessionHeader";
 import { Shell, type TabKey } from "./components/Shell";
@@ -165,6 +170,20 @@ function hasActiveProcessingEvents(events: ProcessingEvent[]): boolean {
   return latestUnscoped !== null && latestUnscoped !== "done" && latestUnscoped !== "error";
 }
 
+function isDocumentUpload(file: File): boolean {
+  const name = file.name.toLowerCase();
+  const type = file.type.split(";")[0]?.toLowerCase() ?? "";
+  return (
+    name.endsWith(".pdf") ||
+    name.endsWith(".txt") ||
+    name.endsWith(".md") ||
+    name.endsWith(".markdown") ||
+    type === "application/pdf" ||
+    type === "text/plain" ||
+    type === "text/markdown"
+  );
+}
+
 export function App() {
   const initialRoute = useRef<AppRoute>(readRoute());
   const [route, setRoute] = useState<AppRoute>(initialRoute.current);
@@ -178,6 +197,7 @@ export function App() {
     Record<string, WorkspaceMetric>
   >({});
   const [files, setFiles] = useState<FileRecord[]>([]);
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [links, setLinks] = useState<Link[]>([]);
   const [discovery, setDiscovery] = useState<DiscoveryResponse | null>(null);
   const [events, setEvents] = useState<ProcessingEvent[]>([]);
@@ -197,12 +217,14 @@ export function App() {
   const [approving, setApproving] = useState(false);
   const [sending, setSending] = useState(false);
   const [liveChat, setLiveChat] = useState<LiveChatState | null>(null);
+  const [documentTarget, setDocumentTarget] = useState<DocumentTarget | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const queryClient = useQueryClient();
   const [_navigationPending, startNavigationTransition] = useTransition();
   const bootstrapped = useRef(false);
   const pollRef = useRef<number | null>(null);
+  const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const refreshSessions = useCallback(async () => {
     const list = await listSessions();
@@ -213,6 +235,11 @@ export function App() {
   const refreshFiles = useCallback(async (sessionId: string) => {
     const fs = await listFiles(sessionId);
     setFiles(fs);
+  }, []);
+
+  const refreshDocuments = useCallback(async (sessionId: string) => {
+    const docs = await listDocuments(sessionId);
+    setDocuments(docs);
   }, []);
 
   const refreshLinks = useCallback(async (sessionId: string) => {
@@ -258,6 +285,7 @@ export function App() {
     (workspace: WorkspaceResponse) => {
       setSession(workspace.session);
       setFiles(workspace.files);
+      setDocuments(workspace.documents);
       setLinks(workspace.links);
       setDiscovery(workspace.discovery);
       setEvents(workspace.events);
@@ -398,6 +426,7 @@ export function App() {
           queryClient.invalidateQueries({ queryKey: ["workspace", id] });
           return Promise.all([
             refreshFiles(id),
+            refreshDocuments(id),
             refreshLinks(id),
             refreshSchemaGuide(id),
             refreshSessions(),
@@ -418,6 +447,7 @@ export function App() {
     discovery?.status,
     events,
     refreshFiles,
+    refreshDocuments,
     refreshLinks,
     refreshSchemaGuide,
     refreshSessions,
@@ -425,6 +455,7 @@ export function App() {
 
   const clearSessionState = useCallback(() => {
     setFiles([]);
+    setDocuments([]);
     setLinks([]);
     setDiscovery(null);
     setEvents([]);
@@ -433,6 +464,7 @@ export function App() {
     setArtifactsByTurn({});
     setActiveTurnId(null);
     setDataDoc(null);
+    setDocumentTarget(null);
     setActiveTab("ask");
   }, []);
 
@@ -600,6 +632,7 @@ export function App() {
         return true;
       });
       if (deduped.length === 0) return;
+      const hasDataUploads = deduped.some((file) => !isDocumentUpload(file));
       setError(null);
       setUploading(true);
       trackEvent("cerno_upload_selected", {
@@ -610,19 +643,23 @@ export function App() {
       setActiveTab("insights");
       navigateSessionTab(session.id, "insights");
       try {
-        await uploadFiles(session.id, deduped);
+        const result = await uploadFiles(session.id, deduped);
         trackEvent("cerno_upload_completed", {
           session_id: session.id,
           file_count: deduped.length,
           total_bytes: deduped.reduce((sum, file) => sum + file.size, 0),
         });
-        setEvents([]);
-        setProcessing(false);
-        setDiscovery(null);
-        setLinks([]);
-        setDataDoc(null);
+        const nextEvents = result.jobs.flatMap((job) => job.events);
+        setEvents(nextEvents);
+        setProcessing(result.jobs.length > 0);
+        if (hasDataUploads) {
+          setDiscovery(null);
+          setLinks([]);
+          setDataDoc(null);
+        }
         await Promise.all([
           refreshFiles(session.id),
+          refreshDocuments(session.id),
           refreshSessions(),
         ]);
         await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
@@ -641,6 +678,7 @@ export function App() {
       session,
       navigateSessionTab,
       refreshFiles,
+      refreshDocuments,
       refreshSessions,
       refreshDiscovery,
       queryClient,
@@ -758,6 +796,29 @@ export function App() {
       refreshFiles,
       refreshLinks,
       refreshSchemaGuide,
+      refreshSessions,
+      queryClient,
+    ],
+  );
+
+  const handleSchemaCorrectionApplied = useCallback(
+    async (result: SchemaCorrectionApplyResponse) => {
+      if (!session) return;
+      setDiscovery(result.discovery);
+      setDataDoc(result.data_doc);
+      await Promise.all([
+        refreshFiles(session.id),
+        refreshLinks(session.id),
+        refreshEvents(session.id),
+        refreshSessions(),
+      ]);
+      await queryClient.invalidateQueries({ queryKey: ["workspace", session.id] });
+    },
+    [
+      session,
+      refreshFiles,
+      refreshLinks,
+      refreshEvents,
       refreshSessions,
       queryClient,
     ],
@@ -1054,6 +1115,7 @@ export function App() {
   }
 
   const chatReady = discoveryStatus === "approved";
+  const hasWorkspaceContent = files.length > 0 || documents.length > 0;
 
   return (
     <ThemeProvider defaultTheme="light"><AuthGate>
@@ -1064,6 +1126,8 @@ export function App() {
           <WorkspaceSidebar
             session={session}
             files={files}
+            documents={documents}
+            numberSystem={user.number_system}
             turns={turns}
             messagesByTurn={messagesByTurn}
             activeTurnId={activeTurnId}
@@ -1093,27 +1157,55 @@ export function App() {
         showTabs={showSessionTabs}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((current) => !current)}
+        rightPanel={
+          documentTarget ? (
+            <DocumentViewer
+              sessionId={session.id}
+              target={documentTarget}
+              documents={documents}
+              numberSystem={user.number_system}
+              onClose={() => setDocumentTarget(null)}
+            />
+          ) : undefined
+        }
       >
+        <input
+          ref={documentUploadInputRef}
+          type="file"
+          accept=".pdf,.txt,.md,.markdown"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            const selected = Array.from(event.target.files ?? []);
+            if (selected.length > 0) handleUpload(selected);
+            event.target.value = "";
+          }}
+        />
         {workspaceLoading ? (
           <WorkspaceLoadingPanel activeTab={activeTab} />
-        ) : files.length === 0 ? (
+        ) : !hasWorkspaceContent ? (
           <FilesPanel
             files={files}
+            documents={documents}
             discoveryStatus={discoveryStatus}
             uploading={uploading}
             processing={processing}
+            events={events}
+            numberSystem={user.number_system}
             onUpload={handleUpload}
             onDeleteFile={handleDeleteFile}
             onProcess={handleProcess}
+            onOpenDocument={setDocumentTarget}
           />
         ) : null}
-        {!workspaceLoading && files.length > 0 && activeTab === "ask" ? (
+        {!workspaceLoading && hasWorkspaceContent && activeTab === "ask" ? (
           <ChatSidebar
             turns={turns}
             messagesByTurn={messagesByTurn}
             artifactsByTurn={artifactsByTurn}
             activeTurnId={activeTurnId}
             files={files}
+            documents={documents}
             discovery={discovery}
             dataDoc={dataDoc}
             discoveryStatus={discoveryStatus}
@@ -1122,22 +1214,53 @@ export function App() {
             liveChat={liveChat}
             onSend={handleSend}
             onOpenInsights={() => handleTabChange("insights")}
+            onOpenDocumentCitation={setDocumentTarget}
           />
         ) : null}
-        {!workspaceLoading && files.length > 0 && activeTab === "insights" ? (
-          <SchemaTab
-            files={files}
-            links={links}
-            discovery={discovery}
-            doc={dataDoc}
-            events={events}
-            processing={processing}
-            approving={approving}
-            canProcess={files.length > 0}
-            onProcess={handleProcess}
-            onApprove={handleApprove}
-            onDeleteFile={handleDeleteFile}
-          />
+        {!workspaceLoading && hasWorkspaceContent && activeTab === "insights" ? (
+          files.length > 0 ? (
+            <div>
+              <DocumentLibrary
+                documents={documents}
+                numberSystem={user.number_system}
+                uploading={uploading}
+                events={events}
+                onUploadDocuments={() => documentUploadInputRef.current?.click()}
+                onOpenDocument={setDocumentTarget}
+              />
+              <SchemaTab
+                sessionId={session.id}
+                files={files}
+                links={links}
+                discovery={discovery}
+                doc={dataDoc}
+                numberSystem={user.number_system}
+                events={events}
+                processing={processing}
+                approving={approving}
+                canProcess={files.length > 0}
+                onProcess={handleProcess}
+                onApprove={handleApprove}
+                onCorrectionApplied={handleSchemaCorrectionApplied}
+                onCorrectionError={setError}
+                onDeleteFile={handleDeleteFile}
+              />
+            </div>
+          ) : (
+            <FilesPanel
+              files={files}
+              documents={documents}
+              discoveryStatus={discoveryStatus}
+              uploading={uploading}
+              processing={processing}
+              events={events}
+              numberSystem={user.number_system}
+              onUpload={handleUpload}
+              onDeleteFile={handleDeleteFile}
+              onProcess={handleProcess}
+              onOpenDocument={setDocumentTarget}
+            />
+          )
         ) : null}
       </Shell>
       {error ? (
