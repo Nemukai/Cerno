@@ -5,13 +5,14 @@ import json
 import shutil
 import tempfile
 import unittest
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
 
 from cerno.config import Settings
-from cerno.models import AssetArtifact, File, WorkspaceTable
+from cerno.models import AssetArtifact, DocumentChunk, DocumentChunkSearchRow, File, WorkspaceTable
 from cerno.services.chat import _file_spec_from_raw_header
 from cerno.services.tools import ToolContext, ToolTable, build_tool_registry
 
@@ -211,6 +212,57 @@ class ChatToolRegistryTests(unittest.TestCase):
         self.assertIn("columns", tool.description)
         self.assertIn("rows", tool.description)
 
+    def test_search_regulations_returns_scoped_cited_chunks(self) -> None:
+        store = FakeRegulationSearchStore(
+            rows=[
+                _chunk_row("chunk-1", session_id="s1", organization_id="org-1"),
+                _chunk_row("chunk-2", session_id="other-session", organization_id="org-1"),
+            ]
+        )
+        ctx = ToolContext(
+            session_id="s1",
+            tables={},
+            organization_id="org-1",
+            user_id="user-1",
+            settings=Settings(_env_file=None),
+            regulation_search_store=store,
+            embedding_provider=FakeEmbeddingProvider(),
+        )
+        registry = build_tool_registry(ctx)
+
+        self.assertIn("search_regulations", registry.names())
+        result = asyncio.run(
+            registry.get("search_regulations").handler(
+                {"query": "maximum shipment value", "top_n": 3}
+            )
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result_count"], 1)
+        chunk = result["chunks"][0]
+        self.assertEqual(chunk["chunk_id"], "chunk-1")
+        self.assertTrue(chunk["low_confidence"])
+        self.assertEqual(chunk["citation"]["document"], "Regulation.pdf")
+        self.assertEqual(chunk["citation"]["page"], 7)
+        self.assertIn("section 12", chunk["citation"]["label"])
+        self.assertEqual(
+            store.calls,
+            [
+                ("bm25", "s1", "org-1", "user-1"),
+                ("vector", "s1", "org-1", "user-1"),
+            ],
+        )
+
+    def test_search_regulations_requires_query(self) -> None:
+        result = asyncio.run(
+            build_tool_registry(ToolContext(session_id="s1", tables={}))
+            .get("search_regulations")
+            .handler({})
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("query", result["error"])
+
     def test_raw_header_fallback_builds_reingest_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -305,6 +357,85 @@ class FakeObjectStore:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(self.source, destination)
         return destination
+
+
+class FakeEmbeddingProvider:
+    name = "fake"
+    model = "fake"
+    dimension = 3
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        llm_client: object | None = None,
+    ) -> list[list[float]]:
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+
+class FakeRegulationSearchStore:
+    def __init__(self, rows: Sequence[DocumentChunkSearchRow]) -> None:
+        self.rows = list(rows)
+        self.calls: list[tuple[str, str, str, str]] = []
+
+    def search_bm25(
+        self,
+        *,
+        query: str,
+        session_id: str,
+        organization_id: str,
+        user_id: str,
+        limit: int,
+    ) -> list[DocumentChunkSearchRow]:
+        self.calls.append(("bm25", session_id, organization_id, user_id))
+        return self._filtered(session_id, organization_id)[:limit]
+
+    def search_vector(
+        self,
+        *,
+        embedding: Sequence[float],
+        session_id: str,
+        organization_id: str,
+        user_id: str,
+        limit: int,
+    ) -> list[DocumentChunkSearchRow]:
+        self.calls.append(("vector", session_id, organization_id, user_id))
+        return self._filtered(session_id, organization_id)[:limit]
+
+    def _filtered(self, session_id: str, organization_id: str) -> list[DocumentChunkSearchRow]:
+        return [
+            row
+            for row in self.rows
+            if row.chunk.session_id == session_id and row.chunk.organization_id == organization_id
+        ]
+
+
+def _chunk_row(
+    chunk_id: str,
+    *,
+    session_id: str,
+    organization_id: str,
+) -> DocumentChunkSearchRow:
+    return DocumentChunkSearchRow(
+        chunk=DocumentChunk(
+            id=chunk_id,
+            document_id="doc-1",
+            session_id=session_id,
+            organization_id=organization_id,
+            chunk_index=0,
+            text="Context: Regulation.pdf > Section 12\n\nClause text for shipment values.",
+            heading_path=["Section 12"],
+            section_no="12",
+            clause_no="12.1",
+            page_number=7,
+            start_char=0,
+            end_char=60,
+            low_confidence=True,
+            created_at=datetime.now(UTC),
+        ),
+        document_filename="Regulation.pdf",
+        rank=0.9,
+    )
 
 
 if __name__ == "__main__":

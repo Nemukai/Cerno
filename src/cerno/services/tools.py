@@ -5,8 +5,11 @@ from typing import Any, cast
 
 import pandas as pd
 
-from cerno.llm import Tool, ToolRegistry
+from cerno.config import Settings
+from cerno.llm import LLMClient, Tool, ToolRegistry
 from cerno.models import DataDoc, Widget, WidgetKind
+from cerno.providers import EmbeddingProvider
+from cerno.services.document_search import DocumentChunkSearchStore, retrieve_document_chunks
 from cerno.services.sandbox import run_python
 
 
@@ -26,6 +29,12 @@ class ToolContext:
     tables: dict[str, ToolTable]
     data_doc: DataDoc | None = None
     rendered_widgets: list[Widget] = field(default_factory=list)
+    organization_id: str | None = None
+    user_id: str | None = None
+    settings: Settings | None = None
+    regulation_search_store: DocumentChunkSearchStore | None = None
+    embedding_provider: EmbeddingProvider | None = None
+    llm_client: LLMClient | None = None
 
 
 def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
@@ -136,6 +145,78 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
             "ok": True,
             "schema_guide": ctx.data_doc.model_dump(mode="json"),
             "available_tables": available_table_names,
+        }
+
+    async def search_regulations(args: dict[str, Any]) -> dict[str, Any]:
+        query_arg = args.get("query")
+        if query_arg is None:
+            return {"ok": False, "error": "search_regulations missing required field: query"}
+        query = str(query_arg).strip()
+        if not query:
+            return {"ok": False, "error": "query must not be empty"}
+        top_n = _int_arg(args.get("top_n"), default=5, minimum=1, maximum=10)
+        missing = [
+            name
+            for name, value in (
+                ("organization_id", ctx.organization_id),
+                ("user_id", ctx.user_id),
+                ("settings", ctx.settings),
+                ("regulation_search_store", ctx.regulation_search_store),
+                ("embedding_provider", ctx.embedding_provider),
+            )
+            if value is None
+        ]
+        if missing:
+            return {
+                "ok": False,
+                "error": "regulation search is not configured for this chat context",
+                "missing": missing,
+            }
+        assert ctx.organization_id is not None
+        assert ctx.user_id is not None
+        assert ctx.settings is not None
+        assert ctx.regulation_search_store is not None
+        assert ctx.embedding_provider is not None
+        hits = await retrieve_document_chunks(
+            query=query,
+            session_id=ctx.session_id,
+            organization_id=ctx.organization_id,
+            user_id=ctx.user_id,
+            chunk_store=ctx.regulation_search_store,
+            embedding_provider=ctx.embedding_provider,
+            settings=ctx.settings,
+            llm_client=ctx.llm_client,
+            top_n=top_n,
+        )
+        chunks = [
+            {
+                "chunk_id": hit.chunk_id,
+                "text": hit.text,
+                "score": hit.score,
+                "low_confidence": hit.low_confidence,
+                "citation": {
+                    "document_id": hit.document_id,
+                    "document": hit.document_filename,
+                    "page": hit.page_number,
+                    "section_no": hit.section_no,
+                    "clause_no": hit.clause_no,
+                    "heading_path": list(hit.heading_path),
+                    "label": hit.citation,
+                },
+            }
+            for hit in hits
+        ]
+        return {
+            "ok": True,
+            "query": query,
+            "result_count": len(chunks),
+            "chunks": chunks,
+            "has_low_confidence": any(chunk["low_confidence"] for chunk in chunks),
+            "message": (
+                "No session-scoped regulatory chunks matched. Say explicitly that no governing clause was found."
+                if not chunks
+                else "Use citation.label for regulatory claims; flag any low_confidence chunk as a low-quality scan."
+            ),
         }
 
     registry.register(
@@ -257,8 +338,47 @@ def build_tool_registry(ctx: ToolContext) -> ToolRegistry:
             handler=read_schema_guide,
         )
     )
+    registry.register(
+        Tool(
+            name="search_regulations",
+            description=(
+                "Search ingested regulatory or reference documents for this session using hybrid full-text and vector retrieval. "
+                "Use this for compliance-style questions before making any claim about a rule, clause, section, threshold, deadline, or requirement. "
+                "Returns cited chunks with document name, page, section/clause, heading path, and low_confidence. "
+                "Regulatory claims in the final answer must cite a returned citation label. "
+                "If no chunks are returned, say that no governing clause was found; do not invent a rule. "
+                "If low_confidence is true, state that the claim is based on a low-quality scan and should be verified."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "top_n": {"type": "integer", "minimum": 1, "maximum": 10},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            handler=search_regulations,
+        )
+    )
 
     return registry
+
+
+def _int_arg(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return min(max(value, minimum), maximum)
+    if isinstance(value, float) and value.is_integer():
+        return min(max(int(value), minimum), maximum)
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return default
+        return min(max(parsed, minimum), maximum)
+    return default
 
 
 def _normalize_widget_args(args: dict[str, Any]) -> tuple[WidgetKind, dict[str, Any]]:
