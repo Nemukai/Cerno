@@ -25,12 +25,24 @@ class DiscoveryProcessingConfig:
 class OCRProcessingConfig:
     engine: str = "openai"
     model: str = "gpt-5.4-mini"
+    pdf_render_dpi: int = 200
+    pdf_retry_render_dpi: int = 300
+    pdf_max_render_side: int = 2048
+    pdf_quality_threshold: float = 0.72
+    pdf_max_pages_per_document: int = 200
+    text_layer_min_chars: int = 80
+    text_layer_min_dictionary_ratio: float = 0.18
+    text_layer_max_non_ascii_ratio: float = 0.35
 
 
 @dataclass(frozen=True)
 class EmbeddingProcessingConfig:
     provider: str = "openai"
     model: str = "text-embedding-3-small"
+    dimension: int = 1536
+    batch_size: int = 64
+    chunk_max_chars: int = 1800
+    chunk_min_chars: int = 120
 
 
 @dataclass(frozen=True)
@@ -81,9 +93,15 @@ class Settings(BaseSettings):
     schema_confidence_threshold: float = 0.85
 
     link_overlap_threshold: float = 0.6
+    link_containment_threshold: float = 0.85
+    link_parent_uniqueness_threshold: float = 0.95
+    link_candidate_score_threshold: float = 0.72
     link_sample_rows: int = 5
     link_max_avg_length: int = 100
     link_min_distinct: int = 3
+    link_min_shared_distinct: int = 5
+    link_low_cardinality_distinct: int = 12
+    discovery_reask_max_fields: int = 20
 
     anomaly_mad_threshold: float = 3.5
     anomaly_rare_threshold: float = 0.01
@@ -251,6 +269,73 @@ def load_processing_config(path: Path) -> ProcessingConfig:
         path,
         section="processing.ocr",
     )
+    pdf_render_dpi = _int_value(
+        ocr,
+        "pdf_render_dpi",
+        ocr_defaults.pdf_render_dpi,
+        path,
+        section="processing.ocr",
+        min_value=72,
+    )
+    pdf_retry_render_dpi = _int_value(
+        ocr,
+        "pdf_retry_render_dpi",
+        ocr_defaults.pdf_retry_render_dpi,
+        path,
+        section="processing.ocr",
+        min_value=pdf_render_dpi,
+    )
+    pdf_max_render_side = _int_value(
+        ocr,
+        "pdf_max_render_side",
+        ocr_defaults.pdf_max_render_side,
+        path,
+        section="processing.ocr",
+        min_value=256,
+    )
+    pdf_quality_threshold = _float_value(
+        ocr,
+        "pdf_quality_threshold",
+        ocr_defaults.pdf_quality_threshold,
+        path,
+        section="processing.ocr",
+        min_value=0.0,
+        max_value=1.0,
+    )
+    pdf_max_pages_per_document = _int_value(
+        ocr,
+        "pdf_max_pages_per_document",
+        ocr_defaults.pdf_max_pages_per_document,
+        path,
+        section="processing.ocr",
+        min_value=1,
+    )
+    text_layer_min_chars = _int_value(
+        ocr,
+        "text_layer_min_chars",
+        ocr_defaults.text_layer_min_chars,
+        path,
+        section="processing.ocr",
+        min_value=1,
+    )
+    text_layer_min_dictionary_ratio = _float_value(
+        ocr,
+        "text_layer_min_dictionary_ratio",
+        ocr_defaults.text_layer_min_dictionary_ratio,
+        path,
+        section="processing.ocr",
+        min_value=0.0,
+        max_value=1.0,
+    )
+    text_layer_max_non_ascii_ratio = _float_value(
+        ocr,
+        "text_layer_max_non_ascii_ratio",
+        ocr_defaults.text_layer_max_non_ascii_ratio,
+        path,
+        section="processing.ocr",
+        min_value=0.0,
+        max_value=1.0,
+    )
     embedding_provider = _string_value(
         embedding,
         "provider",
@@ -264,6 +349,39 @@ def load_processing_config(path: Path) -> ProcessingConfig:
         embedding_defaults.model,
         path,
         section="processing.embedding",
+    )
+    embedding_dimension = _int_value(
+        embedding,
+        "dimension",
+        embedding_defaults.dimension,
+        path,
+        section="processing.embedding",
+        min_value=1,
+    )
+    embedding_batch_size = _int_value(
+        embedding,
+        "batch_size",
+        embedding_defaults.batch_size,
+        path,
+        section="processing.embedding",
+        min_value=1,
+    )
+    embedding_chunk_max_chars = _int_value(
+        embedding,
+        "chunk_max_chars",
+        embedding_defaults.chunk_max_chars,
+        path,
+        section="processing.embedding",
+        min_value=200,
+    )
+    embedding_chunk_min_chars = _int_value(
+        embedding,
+        "chunk_min_chars",
+        embedding_defaults.chunk_min_chars,
+        path,
+        section="processing.embedding",
+        min_value=1,
+        max_value=embedding_chunk_max_chars,
     )
 
     if reasoning_effort not in _REASONING_EFFORTS:
@@ -293,10 +411,25 @@ def load_processing_config(path: Path) -> ProcessingConfig:
             analysis_model=analysis_model,
             analysis_reasoning_effort=analysis_reasoning_effort,
         ),
-        ocr=OCRProcessingConfig(engine=ocr_engine, model=ocr_model),
+        ocr=OCRProcessingConfig(
+            engine=ocr_engine,
+            model=ocr_model,
+            pdf_render_dpi=pdf_render_dpi,
+            pdf_retry_render_dpi=pdf_retry_render_dpi,
+            pdf_max_render_side=pdf_max_render_side,
+            pdf_quality_threshold=pdf_quality_threshold,
+            pdf_max_pages_per_document=pdf_max_pages_per_document,
+            text_layer_min_chars=text_layer_min_chars,
+            text_layer_min_dictionary_ratio=text_layer_min_dictionary_ratio,
+            text_layer_max_non_ascii_ratio=text_layer_max_non_ascii_ratio,
+        ),
         embedding=EmbeddingProcessingConfig(
             provider=embedding_provider,
             model=embedding_model,
+            dimension=embedding_dimension,
+            batch_size=embedding_batch_size,
+            chunk_max_chars=embedding_chunk_max_chars,
+            chunk_min_chars=embedding_chunk_min_chars,
         ),
     )
 
@@ -349,6 +482,55 @@ def _string_value(
             f"Invalid {section}.{key} in {path}: expected a non-empty string"
         )
     return value.strip()
+
+
+def _int_value(
+    table: dict[str, object],
+    key: str,
+    default: int,
+    path: Path,
+    *,
+    section: str,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int:
+    value = table.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise CernoConfigError(f"Invalid {section}.{key} in {path}: expected an integer")
+    if min_value is not None and value < min_value:
+        raise CernoConfigError(
+            f"Invalid {section}.{key} in {path}: expected >= {min_value}"
+        )
+    if max_value is not None and value > max_value:
+        raise CernoConfigError(
+            f"Invalid {section}.{key} in {path}: expected <= {max_value}"
+        )
+    return value
+
+
+def _float_value(
+    table: dict[str, object],
+    key: str,
+    default: float,
+    path: Path,
+    *,
+    section: str,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    value = table.get(key, default)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise CernoConfigError(f"Invalid {section}.{key} in {path}: expected a number")
+    parsed = float(value)
+    if min_value is not None and parsed < min_value:
+        raise CernoConfigError(
+            f"Invalid {section}.{key} in {path}: expected >= {min_value}"
+        )
+    if max_value is not None and parsed > max_value:
+        raise CernoConfigError(
+            f"Invalid {section}.{key} in {path}: expected <= {max_value}"
+        )
+    return parsed
 
 
 def _string_list_value(
