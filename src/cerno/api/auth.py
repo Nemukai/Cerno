@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -19,6 +20,15 @@ from cerno.repositories import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Collapse sign-in retry bursts: a beta-gated user landing on "Under review"
+# often re-initiates Google sign-in repeatedly, each a genuine OAuth round-trip.
+# Record at most one user_signed_in per user per window.
+_SIGNIN_EVENT_DEDUP_WINDOW = timedelta(minutes=10)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class CurrentOrganization(BaseModel):
@@ -89,12 +99,17 @@ async def google_callback(request: Request, conn: ConnDep, settings: SettingsDep
     organization_id = None
     if user.access_status == "granted":
         organization_id = OrganizationRepository(conn).ensure_personal_for_user(user).id
-    AnalyticsRepository(conn).record_product_event(
-        event_name="user_signed_in",
-        organization_id=organization_id,
-        user_id=user.id,
-        metadata={"site_role": "site_owner" if is_site_owner else "user"},
+    analytics = AnalyticsRepository(conn)
+    last_signin = analytics.last_product_event_at(
+        event_name="user_signed_in", user_id=user.id
     )
+    if last_signin is None or _utcnow() - last_signin >= _SIGNIN_EVENT_DEDUP_WINDOW:
+        analytics.record_product_event(
+            event_name="user_signed_in",
+            organization_id=organization_id,
+            user_id=user.id,
+            metadata={"site_role": "site_owner" if is_site_owner else "user"},
+        )
     conn.commit()
     response = RedirectResponse(url=settings.frontend_origin, status_code=302)
     _set_session_cookie(response, settings=settings, user_id=user.id)
