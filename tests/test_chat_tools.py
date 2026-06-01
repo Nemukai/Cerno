@@ -133,8 +133,9 @@ class ChatToolRegistryTests(unittest.TestCase):
         )
 
         self.assertEqual(len(ctx.rendered_widgets), 1)
-        self.assertEqual(result["widget"]["kind"], "kpi")
-        self.assertEqual(result["widget"]["title"], "Orders")
+        self.assertTrue(result["rendered"])
+        self.assertEqual(result["kind"], "kpi")
+        self.assertEqual(result["title"], "Orders")
 
     def test_run_python_requires_loaded_dataframe(self) -> None:
         ctx = ToolContext(

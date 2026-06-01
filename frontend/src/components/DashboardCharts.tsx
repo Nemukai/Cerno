@@ -35,10 +35,21 @@ function palette(dark: boolean) {
   };
 }
 
+// Events that are not deliberate product usage: auth churn (sign-in fires on every
+// OAuth callback) and background worker/system jobs. Counting these makes the
+// activity chart show usage on days with no real user activity.
+const NON_ACTIVITY_EVENTS = new Set([
+  "user_signed_in",
+  "processing_job_queued",
+  "processing_job_completed",
+  "processing_job_failed",
+]);
+
 function bucketByDay(events: DayEvent[]): { day: string; count: number }[] {
   const map = new Map<string, number>();
   for (const e of events) {
     if (!e.occurred_at) continue;
+    if (e.event_name && NON_ACTIVITY_EVENTS.has(e.event_name)) continue;
     const day = e.occurred_at.slice(0, 10);
     map.set(day, (map.get(day) ?? 0) + 1);
   }
@@ -51,9 +62,9 @@ const FONT = "'JetBrains Mono', ui-monospace, monospace";
 export function ActivityChart({ events, height = 220 }: { events: DayEvent[]; height?: number }) {
   const { theme } = useTheme();
   const dark = theme === "dark";
+  const data = useMemo(() => bucketByDay(events), [events]);
   const option = useMemo(() => {
     const c = palette(dark);
-    const data = bucketByDay(events);
     return {
       backgroundColor: c.bg,
       grid: { left: 36, right: 14, top: 16, bottom: 28 },
@@ -89,9 +100,9 @@ export function ActivityChart({ events, height = 220 }: { events: DayEvent[]; he
         },
       ],
     };
-  }, [events, dark]);
+  }, [data, dark]);
 
-  if (events.length === 0) {
+  if (data.length === 0) {
     return (
       <div
         className="flex items-center justify-center border border-dashed border-border font-hud text-[10px] text-muted-foreground"

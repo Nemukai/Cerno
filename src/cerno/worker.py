@@ -397,6 +397,14 @@ async def _run_ingest_document(settings: Settings, job: ProcessingJob, worker_id
         )
         sessions_repo.set_status(job.session_id, "new")
         jobs_repo.mark_succeeded(job.id)
+        _append_event(
+            events_repo,
+            job=job,
+            kind="done",
+            step_key="done",
+            progress=100,
+            message=f"document ready — {len(ingested.pages)} page(s) embedded",
+        )
         AnalyticsRepository(conn).record_product_event(
             event_name="processing_job_completed",
             organization_id=job.organization_id,

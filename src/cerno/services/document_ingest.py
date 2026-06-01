@@ -416,10 +416,10 @@ async def ingest_document(
     processed = documents_repo.get(document.id) or document
     _emit(
         progress,
-        "done",
-        "done",
-        f"finished ingesting {len(pages)} document page(s)",
-        100,
+        "reading_document",
+        "pages_read",
+        f"read {len(pages)} document page(s)",
+        92,
         {"page_count": len(pages), "truncated": truncated},
     )
     return IngestedDocument(
