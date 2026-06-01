@@ -52,11 +52,15 @@ def _normalize_key(value: str) -> str:
 def _register_defaults() -> None:
     register_ocr_engine(
         "openai",
-        lambda settings: OpenAIOCREngine(model=settings.processing.ocr.model),
+        lambda settings: OpenAIOCREngine(settings=settings, model=settings.processing.ocr.model),
     )
     register_embedding_provider(
         "openai",
-        lambda settings: OpenAIEmbeddingProvider(model=settings.processing.embedding.model),
+        lambda settings: OpenAIEmbeddingProvider(
+            settings=settings,
+            model=settings.processing.embedding.model,
+            dimension=settings.processing.embedding.dimension,
+        ),
     )
 
 

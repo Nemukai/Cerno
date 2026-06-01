@@ -1,4 +1,4 @@
-from cerno.providers.protocols import EmbeddingProvider, OCREngine
+from cerno.providers.protocols import EmbeddingProvider, OCREngine, OCRPageResult
 from cerno.providers.registry import (
     available_embedding_providers,
     available_ocr_engines,
@@ -11,6 +11,7 @@ from cerno.providers.registry import (
 __all__ = [
     "EmbeddingProvider",
     "OCREngine",
+    "OCRPageResult",
     "available_embedding_providers",
     "available_ocr_engines",
     "register_embedding_provider",

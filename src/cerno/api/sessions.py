@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from cerno.api.deps import ConnDep, GrantedUserDep, OrgDep, SettingsDep
+from cerno.api.deps import ConnDep, GrantedUserDep, LLMDep, OrgDep, SettingsDep
 from cerno.config import Settings
 from cerno.db import DbConnection, session_scope
 from cerno.models import (
@@ -18,19 +18,23 @@ from cerno.models import (
     DataDoc,
     DataDocColumn,
     DataDocFile,
+    DataDocGlossaryItem,
     DataDocRelationship,
     Link,
     ProcessingEvent,
     ProcessingJob,
+    ProcessingJobKind,
     Session,
 )
 from cerno.models import File as FileModel
 from cerno.repositories import (
     AnalyticsRepository,
     AssetArtifactRepository,
+    AuditRepository,
     ChatArtifactRepository,
     ChatRepository,
     DataDocRepository,
+    DocumentRepository,
     FileRepository,
     LinkRepository,
     OrganizationRepository,
@@ -45,6 +49,8 @@ from cerno.repositories import (
     WorkspaceTableRepository,
     new_id,
 )
+from cerno.services.discovery_validation import decode_confidence_reasons
+from cerno.services.document_ingest import is_supported_document
 from cerno.services.ingest import IngestedFile, IngestError, ingest_file
 from cerno.services.reingest import (
     ApprovalPayload,
@@ -54,6 +60,16 @@ from cerno.services.reingest import (
     ReingestError,
     apply_approval,
     preview_rows,
+)
+from cerno.services.schema_corrections import (
+    CorrectionOperation,
+    SchemaCorrectionError,
+    SchemaCorrectionPatch,
+    apply_operations_to_payload,
+    interpret_schema_correction,
+    minor_operations,
+    normalize_patch,
+    selected_structural_operations,
 )
 from cerno.services.storage_gc import cleanup_unused_storage_for_user
 from cerno.storage import StorageError, get_object_store, staging_upload_key
@@ -501,7 +517,9 @@ def complete_upload_intent(
     if intent is None or intent.session_id != session_id:
         raise HTTPException(status_code=404, detail="upload intent not found")
     jobs_repo = ProcessingJobRepository(conn)
-    idempotency_key = f"ingest_upload:{intent.id}"
+    is_document = is_supported_document(intent.original_filename, intent.mime_type)
+    job_kind: ProcessingJobKind = "ingest_document" if is_document else "ingest_upload"
+    idempotency_key = f"{job_kind}:{intent.id}"
     existing_job = jobs_repo.get_by_idempotency_key(idempotency_key)
     if existing_job is not None and intent.status in {"uploaded", "processing", "processed"}:
         return _build_job_response(
@@ -531,7 +549,7 @@ def complete_upload_intent(
         user_id=user.id,
         organization_id=session.organization_id or organization.id,
         session_id=session_id,
-        kind="ingest_upload",
+        kind=job_kind,
         idempotency_key=idempotency_key,
         checkpoint_json={"upload_intent_id": intent.id},
     )
@@ -542,14 +560,17 @@ def complete_upload_intent(
         step_key="queued",
         level="info",
         progress=0,
-        message=f"{intent.original_filename} uploaded to R2 and queued for ingest",
+        message=(
+            f"{intent.original_filename} uploaded to R2 and queued for "
+            f"{'document ingest' if is_document else 'ingest'}"
+        ),
     )
     AnalyticsRepository(conn).record_product_event(
         event_name="processing_job_queued",
         organization_id=session.organization_id or organization.id,
         user_id=user.id,
         session_id=session_id,
-        metadata={"kind": "ingest_upload", "job_id": job.id},
+        metadata={"kind": job_kind, "job_id": job.id},
     )
     _record_upload_completed(
         conn,
@@ -747,6 +768,8 @@ class DiscoveredColumnBody(BaseModel):
     name: str
     description: str = ""
     dtype: str = "string"
+    confidence: float = 1.0
+    low_confidence_reasons: list[str] = Field(default_factory=list)
 
 
 class DiscoveredFileBody(BaseModel):
@@ -764,6 +787,8 @@ class DiscoveredLinkBody(BaseModel):
     col_b: str
     direction: str = "many_to_many"
     summary: str = ""
+    confidence: float = 1.0
+    low_confidence_reasons: list[str] = Field(default_factory=list)
 
 
 class DiscoveryResponse(BaseModel):
@@ -774,15 +799,64 @@ class DiscoveryResponse(BaseModel):
     overview: str
 
 
+class SchemaCorrectionInterpretRequest(BaseModel):
+    instruction: str
+
+
+class SchemaCorrectionApplyRequest(BaseModel):
+    patch: SchemaCorrectionPatch
+    approved_op_ids: list[str] = Field(default_factory=list)
+
+
+class SchemaCorrectionApplyResponse(BaseModel):
+    discovery: DiscoveryResponse
+    data_doc: DataDoc | None = None
+
+
 class ChatFeedTurn(BaseModel):
     turn: ChatTurn
     messages: list[ChatMessage]
     artifacts: list[ChatArtifact]
 
 
+class WorkspaceDocumentPageBody(BaseModel):
+    id: str
+    page_number: int
+    source: str
+    char_count: int
+    quality_score: float
+    low_confidence: bool
+    quality_reasons: list[str] = Field(default_factory=list)
+    has_review_image: bool = False
+
+
+class WorkspaceDocumentBody(BaseModel):
+    id: str
+    filename: str
+    page_count: int
+    status: str
+    created_at: datetime
+    pages: list[WorkspaceDocumentPageBody] = Field(default_factory=list)
+
+
+class DocumentPageDetailBody(WorkspaceDocumentPageBody):
+    markdown: str
+    review_image_url: str | None = None
+
+
+class DocumentDetailBody(BaseModel):
+    id: str
+    filename: str
+    page_count: int
+    status: str
+    created_at: datetime
+    pages: list[DocumentPageDetailBody] = Field(default_factory=list)
+
+
 class WorkspaceResponse(BaseModel):
     session: Session
     files: list[FileModel]
+    documents: list[WorkspaceDocumentBody] = Field(default_factory=list)
     links: list[Link]
     discovery: DiscoveryResponse
     events: list[ProcessingEvent]
@@ -799,6 +873,41 @@ _INFERRED_TO_SIMPLE = {
     "bool": "bool",
     "category": "category",
 }
+
+
+def _workspace_document_body(document_repo: DocumentRepository, document_id: str) -> WorkspaceDocumentBody | None:
+    document = document_repo.get(document_id)
+    if document is None:
+        return None
+    return WorkspaceDocumentBody(
+        id=document.id,
+        filename=document.filename,
+        page_count=document.page_count,
+        status=document.status,
+        created_at=document.created_at,
+        pages=[
+            WorkspaceDocumentPageBody(
+                id=page.id,
+                page_number=page.page_number,
+                source=page.source,
+                char_count=page.char_count,
+                quality_score=page.quality_score,
+                low_confidence=page.low_confidence,
+                quality_reasons=page.quality_reasons,
+                has_review_image=page.image_object_key is not None,
+            )
+            for page in document_repo.list_pages(document.id)
+        ],
+    )
+
+
+def _workspace_documents(document_repo: DocumentRepository, session_id: str) -> list[WorkspaceDocumentBody]:
+    documents: list[WorkspaceDocumentBody] = []
+    for document in document_repo.list_for_session(session_id):
+        body = _workspace_document_body(document_repo, document.id)
+        if body is not None:
+            documents.append(body)
+    return documents
 
 
 def _build_discovery_response(
@@ -833,6 +942,8 @@ def _build_discovery_response(
                     name=c.name,
                     description=c.description or "",
                     dtype=_INFERRED_TO_SIMPLE.get(c.inferred_kind, "string"),
+                    confidence=c.confidence,
+                    low_confidence_reasons=decode_confidence_reasons(c.confidence_reason),
                 )
                 for c in schema.columns
             ]
@@ -853,6 +964,10 @@ def _build_discovery_response(
             col_b=link.col_b,
             direction=link.direction,
             summary=link.summary or "",
+            confidence=link.score,
+            low_confidence_reasons=(
+                [] if link.score >= 0.85 else ["link_confidence_below_threshold"]
+            ),
         )
         for link in links_repo.list_for_session(session_id)
     ]
@@ -863,6 +978,139 @@ def _build_discovery_response(
         links=link_bodies,
         overview=session.overview or "",
     )
+
+
+def _schema_context_from_discovery(
+    discovery: DiscoveryResponse, data_doc: DataDoc | None
+) -> dict[str, Any]:
+    return {
+        "session_id": discovery.session_id,
+        "overview": discovery.overview,
+        "files": [file.model_dump(mode="json") for file in discovery.files],
+        "links": [link.model_dump(mode="json") for link in discovery.links],
+        "data_doc": data_doc.model_dump(mode="json") if data_doc else None,
+    }
+
+
+def _approval_payload_from_discovery(discovery: DiscoveryResponse) -> ApprovalPayload:
+    return ApprovalPayload(
+        files=[
+            FileSpec(
+                file_id=file.file_id,
+                header_row=file.header_row,
+                friendly_name=file.friendly_name,
+                description=file.description,
+                columns=[
+                    ColumnSpec(
+                        column_id=column.column_id,
+                        name=column.name,
+                        dtype=column.dtype,
+                        description=column.description,
+                    )
+                    for column in file.columns
+                ],
+            )
+            for file in discovery.files
+        ],
+        links=[
+            LinkSpec(
+                file_a_id=link.file_a_id,
+                col_a=link.col_a,
+                file_b_id=link.file_b_id,
+                col_b=link.col_b,
+                direction=link.direction,
+                summary=link.summary,
+            )
+            for link in discovery.links
+        ],
+        overview=discovery.overview,
+    )
+
+
+def _apply_minor_schema_corrections(
+    *,
+    conn: DbConnection,
+    session_id: str,
+    operations: list[CorrectionOperation],
+    user_id: str,
+) -> None:
+    files_repo = FileRepository(conn)
+    data_docs_repo = DataDocRepository(conn)
+    files_by_id = {file.id: file for file in files_repo.list_for_session(session_id)}
+    data_doc = data_docs_repo.get(session_id)
+    for operation in operations:
+        target = operation.target
+        if operation.op_type == "set_friendly_name":
+            file_id = target.get("file_id")
+            if file_id:
+                files_repo.set_metadata(file_id=file_id, friendly_name=str(operation.after_value))
+        elif operation.op_type == "set_file_description":
+            file_id = target.get("file_id")
+            if file_id:
+                files_repo.set_metadata(file_id=file_id, description=str(operation.after_value))
+        elif operation.op_type == "set_column_description":
+            file_id = target.get("file_id")
+            column_id = target.get("column_id")
+            file = files_by_id.get(file_id or "")
+            if file is not None and column_id:
+                conn.execute(
+                    """UPDATE schema_columns
+                       SET description = ?
+                       WHERE file_id = ?
+                         AND schema_version = ?
+                         AND (column_id = ? OR name = ?)""",
+                    (
+                        str(operation.after_value),
+                        file_id,
+                        file.schema_version,
+                        column_id,
+                        column_id,
+                    ),
+                )
+        elif operation.op_type in {"set_usage_note", "set_glossary_term", "set_starter_question"}:
+            data_doc = _apply_data_doc_minor_operation(data_doc, session_id, operation)
+        AuditRepository(conn).log(
+            session_id=session_id,
+            kind="schema_correction_applied",
+            details={
+                "user_id": user_id,
+                "classification": operation.classification,
+                "op_type": operation.op_type,
+                "target": operation.target,
+                "before": operation.before_value,
+                "after": operation.after_value,
+            },
+        )
+    if data_doc is not None:
+        data_docs_repo.replace(data_doc)
+
+
+def _apply_data_doc_minor_operation(
+    data_doc: DataDoc | None, session_id: str, operation: CorrectionOperation
+) -> DataDoc:
+    now = datetime.now(UTC)
+    doc = data_doc or DataDoc(
+        session_id=session_id,
+        overview="",
+        files=[],
+        relationships=[],
+        glossary=[],
+        created_at=now,
+        updated_at=now,
+    )
+    if operation.op_type == "set_usage_note":
+        doc.usage_notes = [str(operation.after_value)]
+    elif operation.op_type == "set_starter_question":
+        doc.starter_questions = [str(operation.after_value)]
+    elif operation.op_type == "set_glossary_term":
+        after = operation.after_value if isinstance(operation.after_value, dict) else {}
+        term = str(after.get("term") or operation.target.get("term") or "")
+        meaning = str(after.get("meaning") or after.get("description") or "")
+        if term:
+            existing = [item for item in doc.glossary if item.term != term]
+            doc.glossary = [*existing, DataDocGlossaryItem(term=term, meaning=meaning)]
+    doc.updated_at = now
+    return doc
 
 
 @router.post("/sessions/{session_id}/process", response_model=ProcessingJobBody, status_code=202)
@@ -935,6 +1183,120 @@ def get_discovery(
     return _build_discovery_response(session_id, conn, user.id, organization.id)
 
 
+@router.post(
+    "/sessions/{session_id}/schema/interpret-correction",
+    response_model=SchemaCorrectionPatch,
+)
+async def post_interpret_schema_correction(
+    session_id: str,
+    body: SchemaCorrectionInterpretRequest,
+    conn: ConnDep,
+    settings: SettingsDep,
+    llm_client: LLMDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> SchemaCorrectionPatch:
+    _require_session(conn, session_id, user.id, organization.id)
+    if not settings.llm_api_key:
+        raise HTTPException(status_code=400, detail="schema correction requires an LLM")
+    discovery = _build_discovery_response(session_id, conn, user.id, organization.id)
+    data_doc = DataDocRepository(conn).get(session_id)
+    try:
+        return await interpret_schema_correction(
+            instruction=body.instruction,
+            schema_context=_schema_context_from_discovery(discovery, data_doc),
+            llm_client=llm_client,
+            config=settings.processing.discovery,
+        )
+    except SchemaCorrectionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post(
+    "/sessions/{session_id}/schema/apply-correction",
+    response_model=SchemaCorrectionApplyResponse,
+)
+def post_apply_schema_correction(
+    session_id: str,
+    body: SchemaCorrectionApplyRequest,
+    conn: ConnDep,
+    settings: SettingsDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> SchemaCorrectionApplyResponse:
+    _require_session(conn, session_id, user.id, organization.id)
+    patch = normalize_patch(body.patch)
+    approved_op_ids = set(body.approved_op_ids)
+    minor = minor_operations(patch)
+    structural = selected_structural_operations(patch, approved_op_ids)
+
+    if minor:
+        _apply_minor_schema_corrections(
+            conn=conn,
+            session_id=session_id,
+            operations=minor,
+            user_id=user.id,
+        )
+
+    data_docs_repo = DataDocRepository(conn)
+    if structural:
+        discovery = _build_discovery_response(session_id, conn, user.id, organization.id)
+        payload = apply_operations_to_payload(
+            _approval_payload_from_discovery(discovery),
+            structural,
+        )
+        files_repo = FileRepository(conn)
+        apply_approval(
+            session_id=session_id,
+            user_id=user.id,
+            organization_id=organization.id,
+            payload=payload,
+            settings=settings,
+            files_repo=files_repo,
+            schemas_repo=SchemaRepository(conn),
+            links_repo=LinkRepository(conn),
+            sessions_repo=SessionRepository(conn),
+            events_repo=ProcessingEventRepository(conn),
+            artifacts_repo=AssetArtifactRepository(conn),
+            tables_repo=WorkspaceTableRepository(conn),
+            object_store=get_object_store(settings),
+        )
+        _refresh_docs_from_approval(
+            session_id=session_id,
+            payload=payload,
+            files_repo=files_repo,
+            data_docs_repo=data_docs_repo,
+        )
+        for operation in structural:
+            AuditRepository(conn).log(
+                session_id=session_id,
+                kind="schema_correction_applied",
+                details={
+                    "user_id": user.id,
+                    "classification": operation.classification,
+                    "op_type": operation.op_type,
+                    "target": operation.target,
+                    "before": operation.before_value,
+                    "after": operation.after_value,
+                    "transform": operation.transform,
+                },
+            )
+    elif minor:
+        discovery = _build_discovery_response(session_id, conn, user.id, organization.id)
+        _refresh_docs_from_approval(
+            session_id=session_id,
+            payload=_approval_payload_from_discovery(discovery),
+            files_repo=FileRepository(conn),
+            data_docs_repo=data_docs_repo,
+        )
+
+    discovery = _build_discovery_response(session_id, conn, user.id, organization.id)
+    return SchemaCorrectionApplyResponse(
+        discovery=discovery,
+        data_doc=data_docs_repo.get(session_id),
+    )
+
+
 @router.get("/sessions/{session_id}/workspace", response_model=WorkspaceResponse)
 def get_workspace(
     session_id: str,
@@ -944,6 +1306,8 @@ def get_workspace(
 ) -> WorkspaceResponse:
     session = _require_session(conn, session_id, user.id, organization.id)
     files = FileRepository(conn).list_for_session(session_id)
+    document_repo = DocumentRepository(conn)
+    documents = _workspace_documents(document_repo, session_id)
     links = LinkRepository(conn).list_for_session(session_id)
     discovery = _build_discovery_response(session_id, conn, user.id, organization.id)
     events = ProcessingEventRepository(conn).list_for_session(session_id)
@@ -979,11 +1343,80 @@ def get_workspace(
     return WorkspaceResponse(
         session=session,
         files=files,
+        documents=documents,
         links=links,
         discovery=discovery,
         events=events,
         chat_feed=chat_feed,
         data_doc=data_doc,
+    )
+
+
+@router.get("/sessions/{session_id}/documents", response_model=list[WorkspaceDocumentBody])
+def list_documents(
+    session_id: str,
+    conn: ConnDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> list[WorkspaceDocumentBody]:
+    _require_session(conn, session_id, user.id, organization.id)
+    return _workspace_documents(DocumentRepository(conn), session_id)
+
+
+@router.get(
+    "/sessions/{session_id}/documents/{document_id}",
+    response_model=DocumentDetailBody,
+)
+def get_document_detail(
+    session_id: str,
+    document_id: str,
+    conn: ConnDep,
+    settings: SettingsDep,
+    user: GrantedUserDep,
+    organization: OrgDep,
+) -> DocumentDetailBody:
+    _require_session(conn, session_id, user.id, organization.id)
+    document_repo = DocumentRepository(conn)
+    document = document_repo.get(document_id)
+    if (
+        document is None
+        or document.session_id != session_id
+        or document.user_id != user.id
+        or document.organization_id != organization.id
+    ):
+        raise HTTPException(status_code=404, detail="document not found")
+    object_store = None
+    pages: list[DocumentPageDetailBody] = []
+    for page in document_repo.list_pages(document.id):
+        review_url = None
+        if page.image_object_key:
+            if object_store is None:
+                object_store = get_object_store(settings)
+            review_url = object_store.presigned_get_url(
+                page.image_object_key,
+                expires_seconds=settings.upload_url_expires_seconds,
+            )
+        pages.append(
+            DocumentPageDetailBody(
+                id=page.id,
+                page_number=page.page_number,
+                source=page.source,
+                char_count=page.char_count,
+                quality_score=page.quality_score,
+                low_confidence=page.low_confidence,
+                quality_reasons=page.quality_reasons,
+                has_review_image=page.image_object_key is not None,
+                markdown=page.markdown,
+                review_image_url=review_url,
+            )
+        )
+    return DocumentDetailBody(
+        id=document.id,
+        filename=document.filename,
+        page_count=document.page_count,
+        status=document.status,
+        created_at=document.created_at,
+        pages=pages,
     )
 
 

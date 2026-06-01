@@ -140,6 +140,17 @@ def _live_object_key_queries(
             """,
             (user_id, storage_backend),
         ),
+        (
+            """
+            SELECT DISTINCT dp.image_object_key AS object_key
+            FROM document_pages dp
+            JOIN documents d ON d.id = dp.document_id
+            JOIN sessions s ON s.id = d.session_id
+            WHERE COALESCE(s.created_by_user_id, s.user_id) = ?
+              AND dp.image_object_key IS NOT NULL
+            """,
+            (user_id,),
+        ),
     ]
 
 
