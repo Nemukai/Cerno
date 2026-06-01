@@ -494,6 +494,14 @@ class AnalyticsRepository:
         if self.auto_commit:
             self.conn.commit()
 
+    def last_product_event_at(self, *, event_name: str, user_id: str) -> datetime | None:
+        row = self.conn.execute(
+            """SELECT MAX(occurred_at) AS last_at FROM product_events
+               WHERE event_name = ? AND user_id = ?""",
+            (event_name, user_id),
+        ).fetchone()
+        return _parse_dt(row["last_at"]) if row else None
+
     def record_usage_event(
         self,
         *,
