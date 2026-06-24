@@ -145,7 +145,23 @@ def to_polars_series(name: str, column: CanonicalColumn) -> pl.Series:
         return pl.Series(name, column.values, dtype=pl.Int64)
     if column.kind == "float":
         return pl.Series(name, column.values, dtype=pl.Float64)
-    return pl.Series(name, column.values)
+    return pl.Series(name, [_stringify(value) for value in column.values], dtype=pl.String)
+
+
+def _stringify(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, float):
+        if value != value:
+            return None
+        if value.is_integer():
+            return str(int(value))
+        return repr(value)
+    return str(value)
 
 
 def iso_to_datetime_series(name: str, column: CanonicalColumn, *, as_date: bool) -> pl.Series:

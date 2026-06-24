@@ -29,6 +29,20 @@ class IngestCanonicalizeTests(unittest.TestCase):
 
         self.assertEqual(frame["c0"].to_list(), ["café", "München"])
 
+    def test_string_column_with_numeric_cells_does_not_crash(self) -> None:
+        frame = _raw_to_frame([["Sr No"], [1.0], [2.0], [3.0]])
+
+        self.assertEqual(frame.schema["c0"], pl.String)
+        self.assertEqual(frame["c0"].to_list(), ["Sr No", "1", "2", "3"])
+
+    def test_mixed_type_string_column_coerces_all_cells(self) -> None:
+        frame = _raw_to_frame([["Name", "x"], ["Alice", 2.5], [12.0, True]])
+
+        self.assertEqual(frame.schema["c0"], pl.String)
+        self.assertEqual(frame.schema["c1"], pl.String)
+        self.assertEqual(frame["c0"].to_list(), ["Name", "Alice", "12"])
+        self.assertEqual(frame["c1"].to_list(), ["x", "2.5", "TRUE"])
+
     def test_semicolon_delimited_csv_uses_detected_dialect(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sample.csv"
