@@ -1244,6 +1244,8 @@ export function App() {
                 onCorrectionApplied={handleSchemaCorrectionApplied}
                 onCorrectionError={setError}
                 onDeleteFile={handleDeleteFile}
+                onUpload={handleUpload}
+                uploading={uploading}
               />
             </div>
           ) : (

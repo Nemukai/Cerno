@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { EChart } from "./EChart";
 import { useTheme } from "@/lib/theme";
 import {
@@ -51,6 +51,8 @@ type Props = {
   ) => Promise<void> | void;
   onCorrectionError: (message: string) => void;
   onDeleteFile: (fileId: string) => void;
+  onUpload: (files: File[]) => void;
+  uploading: boolean;
 };
 
 const DTYPES: SimpleDtype[] = [
@@ -93,6 +95,8 @@ export function SchemaTab({
   onCorrectionApplied,
   onCorrectionError,
   onDeleteFile,
+  onUpload,
+  uploading,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draftFiles, setDraftFiles] = useState<DiscoveredFile[]>([]);
@@ -398,7 +402,15 @@ export function SchemaTab({
       ) : null}
 
       {status === "empty" && !processing ? (
-        <EmptyState canProcess={canProcess} onProcess={onProcess} />
+        <EmptyState
+          canProcess={canProcess}
+          onProcess={onProcess}
+          files={files}
+          numberSystem={numberSystem}
+          uploading={uploading}
+          onUpload={onUpload}
+          onDeleteFile={onDeleteFile}
+        />
       ) : null}
 
       {discovery && (status === "pending_review" || status === "approved") ? (
@@ -528,30 +540,112 @@ function headerDescription(
 function EmptyState({
   canProcess,
   onProcess,
+  files,
+  numberSystem,
+  uploading,
+  onUpload,
+  onDeleteFile,
 }: {
   canProcess: boolean;
   onProcess: () => void;
+  files: FileRecord[];
+  numberSystem: NumberSystem;
+  uploading: boolean;
+  onUpload: (files: File[]) => void;
+  onDeleteFile: (fileId: string) => void;
 }) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(event.target.files ?? []);
+    if (selected.length > 0) onUpload(selected);
+    event.target.value = "";
+  };
+
   return (
-    <div className="mt-10 max-w-2xl border border-border bg-card p-5">
-      <div className="flex flex-wrap items-start justify-between gap-5">
-        <div className="min-w-0 flex-1">
-          <h3 className="font-mono text-base text-foreground">Start with uploaded documents</h3>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            {canProcess
-              ? "Cerno will identify headers, explain fields, and look for connections between files."
-              : "Upload one or more files first, then Cerno can build the data map."}
-          </p>
+    <div className="relative z-10 mt-10 max-w-3xl">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".csv,.xlsx,.xls"
+        multiple
+        className="hidden"
+        onChange={handleChange}
+      />
+      {files.length > 0 ? (
+        <div className="mb-4 border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-5 py-3">
+            <h3 className="small-caps text-sm text-foreground">
+              data files ({formatNumberValue(files.length, numberSystem)})
+            </h3>
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={uploading}
+              className="small-caps border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {uploading ? "uploading…" : "+ add spreadsheets"}
+            </button>
+          </div>
+          <ul>
+            {files.map((file) => (
+              <li
+                key={file.id}
+                className="flex items-center justify-between gap-4 border-b border-border px-5 py-3 last:border-b-0"
+              >
+                <div className="min-w-0">
+                  <p className="truncate font-mono text-sm text-foreground">
+                    {file.friendly_name || file.filename}
+                  </p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {formatNumberValue(file.row_count, numberSystem)} rows
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm(`Remove ${file.filename}?`)) onDeleteFile(file.id);
+                  }}
+                  className="small-caps shrink-0 border border-destructive/40 px-3 py-1.5 text-xs text-destructive transition hover:bg-destructive/10"
+                >
+                  delete
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
-        {canProcess ? (
-          <button
-            type="button"
-            onClick={onProcess}
-            className="small-caps shrink-0 border border-foreground bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
-          >
-            process files
-          </button>
-        ) : null}
+      ) : null}
+      <div className="border border-border bg-card p-5">
+        <div className="flex flex-wrap items-start justify-between gap-5">
+          <div className="min-w-0 flex-1">
+            <h3 className="font-mono text-base text-foreground">
+              {canProcess ? "Build the data map" : "Add spreadsheets to begin"}
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              {canProcess
+                ? "Cerno will identify headers, explain fields, and look for connections between files."
+                : "Upload one or more CSV or Excel files first, then Cerno can build the data map."}
+            </p>
+          </div>
+          {canProcess ? (
+            <button
+              type="button"
+              onClick={onProcess}
+              className="small-caps shrink-0 border border-foreground bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
+            >
+              process files
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={uploading}
+              className="small-caps shrink-0 border border-foreground bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {uploading ? "uploading…" : "add spreadsheets"}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
