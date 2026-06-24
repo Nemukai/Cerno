@@ -346,7 +346,7 @@ def delete_session(
         event_name="session_deleted",
         organization_id=organization.id,
         user_id=user.id,
-        session_id=session_id,
+        metadata={"session_id": session_id},
     )
     conn.commit()
     session_dir = settings.session_dir(user.id, session_id)

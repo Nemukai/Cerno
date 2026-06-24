@@ -8,7 +8,7 @@ import polars as pl
 
 from cerno.services.canonicalize import cast_column_for_dtype
 from cerno.services.ingest import _raw_to_frame, _read_csv_rows
-from cerno.services.reingest import _cast_column_with_metadata
+from cerno.services.reingest import _apply_header_to_raw_preview, _cast_column_with_metadata
 
 
 class IngestCanonicalizeTests(unittest.TestCase):
@@ -42,6 +42,31 @@ class IngestCanonicalizeTests(unittest.TestCase):
         self.assertEqual(frame.schema["c1"], pl.String)
         self.assertEqual(frame["c0"].to_list(), ["Name", "Alice", "12"])
         self.assertEqual(frame["c1"].to_list(), ["x", "2.5", "TRUE"])
+
+    def test_raw_preview_promotes_header_row_and_drops_preamble(self) -> None:
+        raw = pl.DataFrame(
+            {
+                "c0": ["Title", None, "FOR DATE", "19-MAR-2026", "20-MAR-2026"],
+                "c1": [None, None, "CASHIER", "A. Singh", "B. Rao"],
+            }
+        )
+
+        preview = _apply_header_to_raw_preview(raw, 2)
+
+        self.assertEqual(preview.columns, ["FOR DATE", "CASHIER"])
+        self.assertEqual(preview["FOR DATE"].to_list(), ["19-MAR-2026", "20-MAR-2026"])
+
+    def test_raw_preview_without_header_row_is_unchanged(self) -> None:
+        raw = pl.DataFrame({"c0": ["a", "b"], "c1": ["c", "d"]})
+
+        self.assertEqual(_apply_header_to_raw_preview(raw, None).columns, ["c0", "c1"])
+
+    def test_raw_preview_deduplicates_and_fills_blank_headers(self) -> None:
+        raw = pl.DataFrame({"c0": ["Year", "1"], "c1": ["Year", "2"], "c2": [None, "3"]})
+
+        preview = _apply_header_to_raw_preview(raw, 0)
+
+        self.assertEqual(preview.columns, ["Year", "Year_2", "column_3"])
 
     def test_semicolon_delimited_csv_uses_detected_dialect(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

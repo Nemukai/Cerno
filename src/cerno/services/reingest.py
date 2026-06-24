@@ -387,6 +387,32 @@ def apply_approval(
     )
 
 
+def _apply_header_to_raw_preview(frame: pl.DataFrame, header_row: int | None) -> pl.DataFrame:
+    """Make a raw-parquet preview readable before processing exists.
+
+    The raw frame is positional (c0..cN) and still carries any title rows above
+    the detected header. Promote the header row to column names and drop
+    everything up to and including it, so the review page shows real field names
+    and real data rows instead of the file's top-of-sheet preamble.
+    """
+    if header_row is None or header_row < 0 or header_row >= frame.height:
+        return frame
+    raw_header = frame.row(header_row)
+    names: list[str] = []
+    seen: dict[str, int] = {}
+    for index, value in enumerate(raw_header):
+        base = str(value).strip() if value not in (None, "") else f"column_{index + 1}"
+        if base in seen:
+            seen[base] += 1
+            base = f"{base}_{seen[base]}"
+        else:
+            seen[base] = 1
+        names.append(base)
+    body = frame.slice(header_row + 1)
+    body.columns = names
+    return body
+
+
 def preview_rows(
     *,
     file_id: str,
@@ -406,6 +432,7 @@ def preview_rows(
         artifacts_repo=artifacts_repo,
         object_store=object_store,
     )
+    used_raw = False
     if not path:
         path = ensure_file_artifact_cached(
             file=file,
@@ -414,9 +441,13 @@ def preview_rows(
             artifacts_repo=artifacts_repo,
             object_store=object_store,
         )
+        used_raw = True
     if not path:
         raise ReingestError(f"no R2 parquet artifact available for file {file_id}")
-    frame = pl.read_parquet(path).head(limit)
+    frame = pl.read_parquet(path)
+    if used_raw:
+        frame = _apply_header_to_raw_preview(frame, file.header_row)
+    frame = frame.head(limit)
     columns = frame.columns
     rows = frame.to_dicts()
     return {
