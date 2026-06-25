@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
+import { FileSpreadsheet, FileText } from "lucide-react";
 import type { KpiData, Widget } from "../lib/types";
 import { EMBER } from "../lib/echarts";
 import { EChart } from "./EChart";
 import { KpiCard } from "./KpiCard";
 import { useTheme } from "../lib/theme";
+import { exportTableToCsv, exportTableToXlsx } from "../lib/xlsx";
 
 // Chart colours resolve against the active theme. WidgetRenderer sets DARK from
 // the theme context on each render before any option is built, so charts stay
@@ -1013,19 +1015,51 @@ function Caption({ caption }: { caption: string }) {
 function ChartShell({
   title,
   caption,
+  action,
   children,
 }: {
   title: string;
   caption?: string | null;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div className="py-4">
-      <div className="mb-2 flex items-baseline justify-between">
+      <div className="mb-2 flex items-baseline justify-between gap-2">
         <h3 className="small-caps text-xs text-muted-foreground">{title}</h3>
+        {action}
       </div>
       {children}
       {caption ? <Caption caption={caption} /> : null}
+    </div>
+  );
+}
+
+function TableExportActions({ title, data }: { title: string; data: TableData }) {
+  const columns = data.columns ?? [];
+  const rows = data.rows ?? [];
+  if (columns.length === 0 || rows.length === 0) return null;
+  const table = { columns, rows, title: title || "table" };
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <button
+        type="button"
+        onClick={() => exportTableToXlsx(table)}
+        title="Download as Excel (.xlsx)"
+        className="inline-flex items-center gap-1 border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+      >
+        <FileSpreadsheet className="h-3.5 w-3.5" />
+        Excel
+      </button>
+      <button
+        type="button"
+        onClick={() => exportTableToCsv(table)}
+        title="Download as CSV"
+        className="inline-flex items-center gap-1 border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+      >
+        <FileText className="h-3.5 w-3.5" />
+        CSV
+      </button>
     </div>
   );
 }
@@ -1142,7 +1176,11 @@ export function WidgetRenderer({ widget, height }: Props) {
 
   if (kind === "table") {
     return (
-      <ChartShell title={title} caption={caption}>
+      <ChartShell
+        title={title}
+        caption={caption}
+        action={<TableExportActions title={title} data={data as TableData} />}
+      >
         <TableWidget data={data as TableData} searchable={widgetOptions.searchable} />
       </ChartShell>
     );
