@@ -1,11 +1,11 @@
 [project]
 name = "cerno"
 version = "0.1.0"
-description = "Ranked anomaly triage for bulk tabular data. A Nemukai project."
+description = "Turn messy Excel and CSV files into an approved data map, dashboards, and grounded chat analysis. Archived."
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
-license = { text = "UNLICENSED" }
-authors = [{ name = "Nemukai" }]
+license = { text = "MIT" }
+authors = [{ name = "Priyansh Kumar Singh" }]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -41,7 +41,6 @@ dev = [
 ]
 
 [project.scripts]
-cerno = "cerno.desktop:main"
 cerno-server = "cerno.main:run"
 cerno-admin = "cerno.admin:main"
 cerno-worker = "cerno.worker:main"

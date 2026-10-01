@@ -22,9 +22,9 @@ Cerno is a **link-aware data analysis tool**: landing page → workspace dashboa
 ## Verification and deploys
 
 - After every service change, run `cd frontend && bun run build`.
-- Anomaly thresholds (MAD 3.5, rare-value 1%, key-overlap 60%) are first-cut numbers. Tune against Dad's eval set before shipping. Do not silently change thresholds without updating the canonical product notes.
+- Anomaly thresholds (MAD 3.5, rare-value 1%, key-overlap 60%) are first-cut numbers. Tune against a real-world eval set before shipping. Do not silently change thresholds without updating the canonical product notes.
 - All thresholds live in `~/.cerno/config.toml`, hot-reloaded, user-editable in Settings.
-- No `git push` or release actions without explicit user approval. No auto-update testing against Dad's machine without explicit user approval.
+- No `git push` or release actions without explicit user approval.
 
 ## LLM calls
 

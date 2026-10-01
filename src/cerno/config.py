@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     session_max_age_seconds: int = 60 * 60 * 24 * 30
 
     operator_emails: str = ""
-    site_owner_emails: str = "priyanshnikka@gmail.com"
+    site_owner_emails: str = ""
 
     per_user_quota_gb: int = 5
     daily_token_cap: int = 200_000
